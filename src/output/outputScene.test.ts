@@ -23,8 +23,11 @@ import {
   shouldRenderFrame,
   VIDEO_FRAME_MS,
   STATIC_FRAME_MS,
+  contentKindFor,
   createOutputScene,
+  type OutputLayerInput,
 } from './outputScene'
+import { MAX_OUTPUT_LAYERS } from './layerStack'
 import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS } from './equirectRtt'
 
 describe('resolveFramebufferSize', () => {
@@ -51,6 +54,38 @@ describe('resolveFramebufferSize', () => {
     expect(resolveFramebufferSize(1).width).toBe(1024)
     expect(resolveFramebufferSize(0).width).toBe(1024)
     expect(resolveFramebufferSize(-1).width).toBe(1024)
+  })
+})
+
+describe('contentKindFor', () => {
+  it('is idle with nothing loaded', () => {
+    expect(contentKindFor(null)).toBe('idle')
+  })
+
+  it('paces a playing video at the video rate', () => {
+    expect(contentKindFor({ kind: 'video', video: { paused: false } })).toBe('video')
+  })
+
+  it('paces a PAUSED video at the static floor', () => {
+    // The bug this exists for: `kind` latched from the dataset stays
+    // 'video' when `outputSync` pauses the element, so an output
+    // holding one frame redraws it 30 times a second — 30x the GPU for
+    // an identical picture, on hardware that may drive sixteen of
+    // these.
+    expect(frameIntervalMs(contentKindFor({ kind: 'video', video: { paused: true } }))).toBe(
+      STATIC_FRAME_MS,
+    )
+  })
+
+  it('paces a still image at the static floor', () => {
+    expect(frameIntervalMs(contentKindFor({ kind: 'image', video: null }))).toBe(STATIC_FRAME_MS)
+  })
+
+  it('reads the element, not the sync outcome, so a no-range loop keeps its rate', () => {
+    // A dataset with no time axis is left looping by design —
+    // `outputSync` returns `no-range` and does not touch the element.
+    // Pacing off the outcome would drop that animation to 1 Hz.
+    expect(contentKindFor({ kind: 'video', video: { paused: false } })).toBe('video')
   })
 })
 
@@ -95,6 +130,7 @@ describe('the sphere texture binding', () => {
 
   function fakeThree() {
     const uniformsSeen: Array<Record<string, { value: unknown }>> = []
+    const shadersSeen: string[] = []
     const disposed: string[] = []
     const THREE_ = {
       WebGLRenderer: class {
@@ -114,12 +150,42 @@ describe('the sphere texture binding', () => {
       },
       ShaderMaterial: class {
         uniforms: Record<string, { value: unknown }>
-        constructor(args: { uniforms: Record<string, { value: unknown }> }) {
+        fragmentShader: string
+        constructor(args: {
+          uniforms: Record<string, { value: unknown }>
+          fragmentShader: string
+        }) {
           this.uniforms = args.uniforms
+          this.fragmentShader = args.fragmentShader
           uniformsSeen.push(args.uniforms)
+          shadersSeen.push(args.fragmentShader)
         }
         dispose(): void { disposed.push('material') }
       },
+      Vector4: class {
+        constructor(public x = 0, public y = 0, public z = 0, public w = 0) {}
+      },
+      Texture: class {
+        needsUpdate = false
+        constructor(public image: unknown) {}
+        dispose(): void { disposed.push('texture') }
+      },
+      VideoTexture: class {
+        needsUpdate = false
+        constructor(public image: unknown) {}
+        dispose(): void { disposed.push('videoTexture') }
+      },
+      DataTexture: class {
+        needsUpdate = false
+        constructor(
+          public data: Uint8Array,
+          public width: number,
+          public height: number,
+          public format: unknown,
+        ) {}
+        dispose(): void { disposed.push('dataTexture') }
+      },
+      RGBAFormat: 'RGBAFormat',
       PlaneGeometry: class { dispose(): void { disposed.push('geometry') } },
       // Retains its constructor args, as the real Mesh does: `dispose()`
       // reaches through `quad.geometry`, and a fake that drops them
@@ -132,7 +198,7 @@ describe('the sphere texture binding', () => {
         ) {}
       },
     }
-    return { THREE_: THREE_ as never, uniformsSeen, disposed }
+    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, disposed }
   }
 
   function fakeEarth(base: FakeTexture, upgrade?: FakeTexture) {
@@ -241,6 +307,269 @@ describe('the sphere texture binding', () => {
 
     expect(earth.unsubscribed.value).toBe(true)
     expect(earth.earthDisposed.value).toBe(true)
+  })
+
+  describe('compositing layers', () => {
+    const build = async () => {
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' })
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+      return { three, scene }
+    }
+
+    const layer = (over: Partial<OutputLayerInput> = {}): OutputLayerInput => ({
+      kind: 'video',
+      element: { tag: 'video-a' } as never,
+      overlay: { datasetId: 'SST' },
+      ...over,
+    })
+
+    const SCALE = {
+      vmin: 0,
+      vmax: 1,
+      units: 'K',
+      stops: [
+        { t: 0, rgba: [0, 0, 0, 255] as [number, number, number, number] },
+        { t: 1, rgba: [255, 255, 255, 255] as [number, number, number, number] },
+      ],
+    }
+
+    it('starts with no overlay slots at all', async () => {
+      const { three } = await build()
+      // Zero layers must hand back the projection pass untouched, not a
+      // rewritten tail carrying unused hit variables.
+      expect(three.shadersSeen[0]).not.toContain('uLayer0Map')
+    })
+
+    it('recompiles when the slot count changes, because the shader is unrolled', async () => {
+      const { three, scene } = await build()
+
+      scene.setLayers([layer()])
+
+      expect(three.shadersSeen).toHaveLength(2)
+      expect(three.shadersSeen[1]).toContain('uLayer0Map')
+      // The old material is released — an installation switching
+      // layouts all day would otherwise accumulate compiled programs.
+      expect(three.disposed).toContain('material')
+    })
+
+    it('keeps the projection across a recompile', async () => {
+      const { three, scene } = await build()
+      scene.setParams({ cameraOffset: { x: 0.4, y: 0, z: 0 }, split: true })
+
+      scene.setLayers([layer()])
+
+      // Same uniforms object, so the operator's camera survives. A
+      // rebuild that made fresh uniforms would snap every output back
+      // to centred whenever a layer appeared.
+      expect(three.uniformsSeen[1]).toBe(three.uniformsSeen[0])
+      const offset = three.uniformsSeen[1][EQUIRECT_UNIFORMS.cameraOffset].value as {
+        x: number
+      }
+      expect(offset.x).toBe(0.4)
+      expect(three.uniformsSeen[1][EQUIRECT_UNIFORMS.split].value).toBe(true)
+    })
+
+    it('does not recompile for a metadata-only change', async () => {
+      const { three, scene } = await build()
+      const element = { tag: 'video-a' } as never
+      scene.setLayers([layer({ element })])
+      const compiles = three.shadersSeen.length
+
+      // Same element, new overlay — an operator nudging a palette.
+      scene.setLayers([layer({ element, overlay: { datasetId: 'SST', lonOrigin: 20 } })])
+
+      expect(three.shadersSeen).toHaveLength(compiles)
+    })
+
+    it('keeps the map texture when the element is unchanged', async () => {
+      const { three, scene } = await build()
+      const element = { tag: 'video-a' } as never
+      scene.setLayers([layer({ element })])
+      const first = three.uniformsSeen[0].uLayer0Map.value
+
+      scene.setLayers([layer({ element, overlay: { datasetId: 'SST', lonOrigin: 20 } })])
+
+      // Rebuilding a VideoTexture restarts the upload path for a change
+      // the decoder never saw.
+      expect(three.uniformsSeen[0].uLayer0Map.value).toBe(first)
+      expect(three.disposed).not.toContain('videoTexture')
+    })
+
+    it('replaces and releases the map texture when the element changes', async () => {
+      const { three, scene } = await build()
+      scene.setLayers([layer({ element: { tag: 'a' } as never })])
+      const first = three.uniformsSeen[0].uLayer0Map.value
+
+      scene.setLayers([layer({ element: { tag: 'b' } as never })])
+
+      expect(three.uniformsSeen[0].uLayer0Map.value).not.toBe(first)
+      expect(three.disposed).toContain('videoTexture')
+    })
+
+    it('uses a VideoTexture for video and a self-updating Texture for an image', async () => {
+      const { three, scene } = await build()
+
+      scene.setLayers([
+        layer({ kind: 'video', element: { tag: 'v' } as never }),
+        layer({ kind: 'image', element: { tag: 'i' } as never }),
+      ])
+
+      // A still needs `needsUpdate` set once; a VideoTexture sets it
+      // itself every frame, which is why they are different classes.
+      const still = three.uniformsSeen[0].uLayer1Map.value as { needsUpdate: boolean }
+      expect(still.needsUpdate).toBe(true)
+      expect(three.uniformsSeen[0].uLayer0Map.value).not.toBe(still)
+    })
+
+    it('binds a palette and the data-encoded flag only for a data-encoded layer', async () => {
+      const { three, scene } = await build()
+
+      scene.setLayers([
+        layer({ overlay: { datasetId: 'AOD', colorScale: SCALE } }),
+        layer({ kind: 'image', element: { tag: 'pic' } as never }),
+      ])
+
+      // `colorScale`'s presence *is* data-encoded mode — the field the
+      // protocol carries it across on.
+      expect(three.uniformsSeen[0].uLayer0DataEncoded.value).toBe(1)
+      expect(three.uniformsSeen[0].uLayer0Lut.value).not.toBeNull()
+      expect(three.uniformsSeen[0].uLayer1DataEncoded.value).toBe(0)
+      expect(three.uniformsSeen[0].uLayer1Lut.value).toBeNull()
+    })
+
+    it('builds the palette through the operator’s display transform', async () => {
+      const { three, scene } = await build()
+      scene.setLayers([layer({ overlay: { datasetId: 'AOD', colorScale: SCALE } })])
+      const plain = (three.uniformsSeen[0].uLayer0Lut.value as { data: Uint8Array }).data
+
+      scene.setLayers([
+        layer({
+          element: { tag: 'video-a' } as never,
+          overlay: { datasetId: 'AOD', colorScale: SCALE },
+          display: {
+            palette: 'magma',
+            stretch: { lo: 0, hi: 1 },
+            threshold: { min: null, max: null },
+          },
+        }),
+      ])
+      const magma = (three.uniformsSeen[0].uLayer0Lut.value as { data: Uint8Array }).data
+
+      // Built *through* buildDisplayLut rather than by post-processing,
+      // so the dataset's own alpha profile survives a palette swap.
+      expect(Array.from(magma)).not.toEqual(Array.from(plain))
+    })
+
+    it('passes the bbox through, and flags its absence', async () => {
+      const { three, scene } = await build()
+
+      scene.setLayers([
+        layer({ overlay: { datasetId: 'US', boundingBox: { n: 50, s: 24, w: -125, e: -66 } } }),
+        layer({ element: { tag: 'global' } as never, overlay: { datasetId: 'G' } }),
+      ])
+
+      const bbox = three.uniformsSeen[0].uLayer0Bbox.value as Record<string, number>
+      expect([bbox.x, bbox.y, bbox.z, bbox.w]).toEqual([50, 24, -125, -66])
+      expect(three.uniformsSeen[0].uLayer0HasBbox.value).toBe(1)
+      expect(three.uniformsSeen[0].uLayer1HasBbox.value).toBe(0)
+    })
+
+    it('passes lonOrigin and the Y flip', async () => {
+      const { three, scene } = await build()
+
+      scene.setLayers([
+        layer({ overlay: { datasetId: 'X', lonOrigin: 20, isFlippedInY: true } }),
+      ])
+
+      expect(three.uniformsSeen[0].uLayer0LonOrigin.value).toBe(20)
+      expect(three.uniformsSeen[0].uLayer0FlipY.value).toBe(1)
+    })
+
+    it('caps at the guaranteed texture-unit budget rather than failing', async () => {
+      const { three, scene } = await build()
+
+      scene.setLayers(
+        Array.from({ length: MAX_OUTPUT_LAYERS + 2 }, (_, i) =>
+          layer({ element: { tag: `l${i}` } as never }),
+        ),
+      )
+
+      // WebGL guarantees only 8 fragment texture units and each slot
+      // spends two. Dropping the tail beats taking the sphere down.
+      expect(three.shadersSeen[1]).toContain(`uLayer${MAX_OUTPUT_LAYERS - 1}Map`)
+      expect(three.shadersSeen[1]).not.toContain(`uLayer${MAX_OUTPUT_LAYERS}Map`)
+    })
+
+    it('releases the textures of a slot that goes away', async () => {
+      const { three, scene } = await build()
+      // One element object, reused: identity is the reuse test, and two
+      // literals with the same contents are deliberately not the same
+      // element — the mirror hands back the element it holds.
+      const kept = { tag: 'a' } as never
+      scene.setLayers([
+        layer({ element: kept }),
+        layer({ element: { tag: 'b' } as never, overlay: { datasetId: 'B', colorScale: SCALE } }),
+      ])
+      const before = three.disposed.filter(d => d === 'videoTexture').length
+
+      scene.setLayers([layer({ element: kept })])
+
+      expect(three.disposed.filter(d => d === 'videoTexture').length).toBe(before + 1)
+      expect(three.disposed).toContain('dataTexture')
+    })
+
+    it('drops the uniform’s reference to a slot that goes away', async () => {
+      const { three, scene } = await build()
+      const kept = { tag: 'a' } as never
+      scene.setLayers([
+        layer({ element: kept }),
+        layer({ element: { tag: 'b' } as never, overlay: { datasetId: 'B', colorScale: SCALE } }),
+      ])
+      expect(three.uniformsSeen[0].uLayer1Map.value).not.toBeNull()
+
+      scene.setLayers([layer({ element: kept })])
+
+      // Disposing the texture is only half of it. `uniforms` is
+      // long-lived and keyed by slot name, and a Three texture holds
+      // its `image` — so leaving the value in place pins one decoded
+      // video element per removed slot for the life of the window,
+      // even though the rebuilt shader no longer samples it.
+      expect(three.uniformsSeen[0].uLayer1Map.value).toBeNull()
+      expect(three.uniformsSeen[0].uLayer1Lut.value).toBeNull()
+    })
+
+    it('drops every slot’s reference when the layers go away entirely', async () => {
+      const { three, scene } = await build()
+      scene.setLayers([layer({ overlay: { datasetId: 'AOD', colorScale: SCALE } })])
+
+      scene.setLayers([])
+
+      expect(three.uniformsSeen[0].uLayer0Map.value).toBeNull()
+      expect(three.uniformsSeen[0].uLayer0Lut.value).toBeNull()
+    })
+
+    it('marks the scene dirty so a composite change does not wait out the 1 Hz floor', async () => {
+      const { scene } = await build()
+      scene.consumeDirty()
+
+      scene.setLayers([layer()])
+
+      expect(scene.consumeDirty()).toBe(true)
+    })
+
+    it('releases every slot texture on dispose', async () => {
+      const { three, scene } = await build()
+      scene.setLayers([layer({ overlay: { datasetId: 'AOD', colorScale: SCALE } })])
+
+      scene.dispose()
+
+      expect(three.disposed).toContain('videoTexture')
+      expect(three.disposed).toContain('dataTexture')
+    })
   })
 })
 

@@ -70,6 +70,10 @@ import {
   IDENTITY_PARAMS,
   type EquirectParams,
 } from './equirectRtt'
+import { MAX_OUTPUT_LAYERS, buildOutputFragmentShader, overlayUniformNames } from './layerStack'
+import { COLOR_SCALE_LUT_SIZE, buildColorScaleLut } from '../types/color-scale'
+import { buildDisplayLut, type ColorScaleDisplay } from '../services/colorScaleDisplay'
+import type { DatasetOverlayOptions } from '../types'
 
 /**
  * Framebuffer widths the resolution picker offers. Heights are always
@@ -112,6 +116,34 @@ export const VIDEO_FRAME_MS = 1000 / 30
 /** 1 Hz for anything static. Redrawing an unchanged frame at 30 fps
  *  burns a decoder-budget's worth of GPU for no visible difference. */
 export const STATIC_FRAME_MS = 1000
+
+/**
+ * How fast the loop should redraw for the media currently loaded.
+ *
+ * **A paused video is static.** `kind` cannot be latched from the
+ * dataset: an output holding one frame — the operator paused, or the
+ * date is outside this dataset's span, both of which `outputSync`
+ * expresses by pausing the element — would redraw that identical frame
+ * 30 times a second, which is 30× the GPU for no picture change on
+ * hardware that may be driving sixteen of these.
+ *
+ * Read off the element rather than off the sync outcome, because the
+ * element is the ground truth: a dataset with no time axis is left
+ * looping by design (`outputSync` returns `no-range` and does not touch
+ * it), and pacing that at the static floor would judder an animation
+ * nothing is wrong with.
+ *
+ * Structural in its parameter so a test needs no media element.
+ */
+export function contentKindFor(
+  media: { kind: 'image' | 'video'; video: { paused: boolean } | null } | null,
+): OutputContentKind {
+  if (!media) return 'idle'
+  if (media.kind === 'video' && media.video !== null && !media.video.paused) return 'video'
+  // Everything that is not `'video'` buckets at the static floor in
+  // `frameIntervalMs`, which is what a held frame wants.
+  return 'image'
+}
 
 export function frameIntervalMs(kind: OutputContentKind): number {
   return kind === 'video' ? VIDEO_FRAME_MS : STATIC_FRAME_MS
@@ -158,6 +190,28 @@ export interface OutputSceneOptions {
   params?: EquirectParams
 }
 
+/**
+ * One composited overlay: the mirrored dataset, or one of its layers.
+ *
+ * `kind` is carried rather than sniffed with `instanceof`. A
+ * `HTMLVideoElement` check is unavailable to a test running in
+ * happy-dom against a plain object, so sniffing would make the video
+ * path — the one that needs a per-frame-updating `VideoTexture` —
+ * exactly the path no test could reach.
+ */
+export interface OutputLayerInput {
+  kind: 'image' | 'video'
+  element: HTMLImageElement | HTMLVideoElement
+  overlay: DatasetOverlayOptions
+  /**
+   * The operator's palette / stretch / threshold, for a data-encoded
+   * layer. Absent leaves the dataset's own palette — which is the right
+   * answer for a stacked layer, since the operator's controls act on
+   * the primary.
+   */
+  display?: ColorScaleDisplay | null
+}
+
 export interface OutputScene {
   readonly size: FramebufferSize
   /** Whether something changed since the last call — read once and
@@ -168,6 +222,14 @@ export interface OutputScene {
   render(): void
   /** Swap the projection parameters (camera offset / split). */
   setParams(params: EquirectParams): void
+  /**
+   * Composite these overlays over the base Earth, in array order.
+   *
+   * Array order *is* z-order — one fragment shader, no depth buffer to
+   * disagree with it. Called on a state change, never per frame: it
+   * can rebuild the shader.
+   */
+  setLayers(layers: readonly OutputLayerInput[]): void
   dispose(): void
 }
 
@@ -199,6 +261,76 @@ function defaultCreateEarth(): Promise<CreateEarth> {
  * and nothing more. Reading `EQUIRECT_VERTEX_SHADER` makes that plain:
  * it writes clip space directly and ignores the matrices.
  */
+/** The slice of a Three texture this module touches. */
+interface TextureLike {
+  needsUpdate?: boolean
+  dispose(): void
+}
+
+interface ShaderMaterialLike {
+  dispose(): void
+}
+
+/** What is currently bound to one overlay slot. */
+interface LayerSlot {
+  /** Identity, so a metadata-only `setLayers` keeps the map texture. */
+  element: unknown
+  map: TextureLike
+  lut: TextureLike | null
+}
+
+/**
+ * A still image needs `needsUpdate` set once; a `VideoTexture` sets it
+ * itself every frame, which is the whole reason the two are different
+ * classes.
+ */
+function imageTexture(THREE_: ThreeModule, element: unknown): TextureLike {
+  const tex = new (THREE_ as unknown as { Texture: new (i: unknown) => TextureLike }).Texture(
+    element,
+  )
+  tex.needsUpdate = true
+  return tex
+}
+
+/**
+ * The 256×1 palette a data-encoded layer is coloured through, or `null`
+ * when the layer is already a picture.
+ *
+ * When the operator has a display transform, it is built *through*
+ * `buildDisplayLut` rather than by post-processing
+ * `buildColorScaleLut`: the transform has to keep the dataset's own
+ * alpha profile, and a palette swap that dropped it would paint the
+ * no-data band instead of leaving it clear.
+ */
+function paletteTexture(
+  THREE_: ThreeModule,
+  overlay: DatasetOverlayOptions,
+  display: ColorScaleDisplay | null,
+): TextureLike | null {
+  const scale = overlay.colorScale
+  if (!scale) return null
+  const bytes = display ? buildDisplayLut(scale, display) : buildColorScaleLut(scale)
+  const api = THREE_ as unknown as {
+    DataTexture: new (d: Uint8Array, w: number, h: number, f: unknown) => TextureLike
+    RGBAFormat: unknown
+  }
+  const tex = new api.DataTexture(bytes, COLOR_SCALE_LUT_SIZE, 1, api.RGBAFormat)
+  tex.needsUpdate = true
+  return tex
+}
+
+/** Uniforms are created lazily: a slot's entry does not exist until the
+ *  shader that declares it has been built. */
+function setUniform(
+  uniforms: Record<string, { value: unknown }>,
+  name: string,
+  value: unknown,
+): void {
+  const existing = uniforms[name]
+  if (existing) existing.value = value
+  else uniforms[name] = { value }
+}
+
 export async function createOutputScene(
   options: OutputSceneOptions,
   deps: OutputSceneDeps = {},
@@ -252,14 +384,31 @@ export async function createOutputScene(
     [EQUIRECT_UNIFORMS.split]: { value: (options.params ?? IDENTITY_PARAMS).split },
   }
 
-  const material = new THREE_.ShaderMaterial({
-    vertexShader: EQUIRECT_VERTEX_SHADER,
-    fragmentShader: EQUIRECT_FRAGMENT_SHADER,
-    uniforms: uniforms as never,
-    depthTest: false,
-    depthWrite: false,
-  })
-  const quad = new THREE_.Mesh(new THREE_.PlaneGeometry(2, 2), material)
+  /**
+   * Rebuilt whenever the slot *count* changes, and only then.
+   *
+   * GLSL ES 1.00 has no dynamic sampler indexing, so `layerStack`
+   * unrolls one block per slot at build time — which means the shader
+   * text is a function of the count and a new count is a recompile.
+   * Everything else about a layer (its texture, bbox, palette) is a
+   * uniform write, so an operator changing a palette costs an upload
+   * rather than a compile.
+   */
+  const buildMaterial = (layerCount: number): ShaderMaterialLike =>
+    new THREE_.ShaderMaterial({
+      vertexShader: EQUIRECT_VERTEX_SHADER,
+      // The same `uniforms` object every time: the base sphere sampler
+      // and the projection params must survive a recompile, and
+      // rebuilding them would reset the camera on every layer change.
+      fragmentShader: buildOutputFragmentShader(layerCount),
+      uniforms: uniforms as never,
+      depthTest: false,
+      depthWrite: false,
+    }) as unknown as ShaderMaterialLike
+
+  let slotCount = 0
+  let material = buildMaterial(slotCount)
+  const quad = new THREE_.Mesh(new THREE_.PlaneGeometry(2, 2), material as never)
   // The quad covers clip space regardless of the camera; frustum
   // culling would test its (unused) world bounds and can cull it.
   quad.frustumCulled = false
@@ -274,6 +423,16 @@ export async function createOutputScene(
     uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = tex
     textureUpgraded = true
   })
+
+  /** What is bound to each slot, so a `setLayers` that changes only
+   *  metadata can keep the decoder's texture rather than rebuilding
+   *  it — the same reason `datasetMirror` keeps the decoder. */
+  let slots: LayerSlot[] = []
+
+  const disposeSlot = (slot: LayerSlot): void => {
+    slot.map.dispose()
+    slot.lut?.dispose()
+  }
 
   return {
     size,
@@ -294,8 +453,91 @@ export async function createOutputScene(
       offset.set(params.cameraOffset.x, params.cameraOffset.y, params.cameraOffset.z)
       uniforms[EQUIRECT_UNIFORMS.split].value = params.split
     },
+    setLayers(layers) {
+      // Capped rather than an error: WebGL guarantees only 8 fragment
+      // texture units and each slot spends two (map + palette), so the
+      // ceiling is the hardware's. Dropping the tail is what the plan
+      // asks for; failing the whole composite because a fifth shell
+      // arrived would take the sphere down over a nicety.
+      const wanted = layers.slice(0, MAX_OUTPUT_LAYERS)
+
+      const nextSlots: LayerSlot[] = wanted.map((layer, i) => {
+        const previous = slots[i]
+        // The palette is rebuilt every time — a 1 KB array — while the
+        // *map* is reused when the element is identical. That is the
+        // split that matters: rebuilding a `VideoTexture` restarts the
+        // upload path for a change the decoder never saw.
+        const reusable = previous && previous.element === layer.element
+        if (previous && !reusable) disposeSlot(previous)
+        else if (previous) previous.lut?.dispose()
+
+        const map = reusable
+          ? previous.map
+          : layer.kind === 'video'
+            ? (new THREE_.VideoTexture(layer.element as never) as unknown as TextureLike)
+            : imageTexture(THREE_, layer.element)
+        const lut = paletteTexture(THREE_, layer.overlay, layer.display ?? null)
+        return { element: layer.element, map, lut }
+      })
+
+      // Slots the new set no longer has. Each holds a GPU texture, and
+      // an installation switching datasets all day leaks them all.
+      for (const stale of slots.slice(wanted.length)) disposeSlot(stale)
+      slots = nextSlots
+
+      // Disposing the texture is only half of it: `uniforms` is
+      // long-lived and keyed by slot name, so a removed slot's entry
+      // keeps pointing at the disposed texture — and a Three texture
+      // holds its `image`, which is the decoded video element. The
+      // shader stops declaring these samplers on the rebuild below, so
+      // nothing uploads them, but the reference alone pins one media
+      // element per removed slot for the life of the window.
+      for (let i = wanted.length; i < MAX_OUTPUT_LAYERS; i++) {
+        const n = overlayUniformNames(i)
+        if (uniforms[n.map]) uniforms[n.map].value = null
+        if (uniforms[n.lut]) uniforms[n.lut].value = null
+      }
+
+      if (wanted.length !== slotCount) {
+        slotCount = wanted.length
+        const previousMaterial = material
+        material = buildMaterial(slotCount)
+        ;(quad as { material: unknown }).material = material
+        previousMaterial.dispose()
+      }
+
+      wanted.forEach((layer, i) => {
+        const n = overlayUniformNames(i)
+        const slot = nextSlots[i]
+        const bbox = layer.overlay.boundingBox
+        setUniform(uniforms, n.map, slot.map)
+        setUniform(uniforms, n.lut, slot.lut)
+        setUniform(
+          uniforms,
+          n.bbox,
+          new THREE_.Vector4(bbox?.n ?? 0, bbox?.s ?? 0, bbox?.w ?? 0, bbox?.e ?? 0),
+        )
+        setUniform(uniforms, n.hasBbox, bbox ? 1 : 0)
+        setUniform(uniforms, n.lonOrigin, layer.overlay.lonOrigin ?? 0)
+        setUniform(uniforms, n.flipY, layer.overlay.isFlippedInY ? 1 : 0)
+        // `colorScale`'s presence *is* data-encoded mode — it is the
+        // field the protocol carries the mode across on, so the shader
+        // asks the same question every other render surface does.
+        setUniform(uniforms, n.dataEncoded, layer.overlay.colorScale ? 1 : 0)
+        // Per-layer opacity is out of scope (plan §MVP): the output
+        // surfaces what the operator already configured, and nothing
+        // upstream configures this.
+        setUniform(uniforms, n.opacity, 1)
+      })
+
+      // A composite change that did not also upgrade a texture would
+      // otherwise wait out the 1 Hz static floor before appearing.
+      textureUpgraded = true
+    },
     dispose() {
       unsubscribeDiffuse()
+      for (const slot of slots) disposeSlot(slot)
+      slots = []
       // Disposes the textures this scene's sampler was bound to, so it
       // must come before the renderer loses its context.
       earth.dispose()

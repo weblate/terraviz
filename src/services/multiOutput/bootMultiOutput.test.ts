@@ -58,6 +58,8 @@ function datasetPatch(id: string): { dataset: MirroredDataset } {
       url: `https://cdn.example/${id}.jpg`,
       kind: 'image',
       overlay: { datasetId: id, datasetTitle: id },
+      startTime: null,
+      endTime: null,
     },
   }
 }

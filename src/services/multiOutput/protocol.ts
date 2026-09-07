@@ -111,6 +111,30 @@ export interface MirroredDataset {
    * agree.
    */
   overlay: DatasetOverlayOptions
+  /**
+   * The dataset's own temporal span, ISO 8601, or `null` for a dataset
+   * with no time axis.
+   *
+   * **The output cannot derive this and cannot sync without it.**
+   * `computeSiblingSyncCorrection` maps the primary's real-world
+   * `playback.date` onto a video time through the *sibling's* own
+   * `sibStart` / `sibEnd`, and an output has no catalog to look them up
+   * in — `MirroredPrimary.rangeMs` gives the span's length but not
+   * where it starts, so a date cannot be placed on the timeline from it
+   * alone.
+   *
+   * They belong on the dataset rather than beside `duration` in
+   * `MirroredPrimary` because they are properties of the *data*, fixed
+   * for as long as it is loaded, while `duration` is a property of one
+   * decoded media element and is unknown until its metadata arrives.
+   *
+   * In the mirroring case these equal the primary's own range and the
+   * pacing ratio comes out at 1. That is the degenerate case of the
+   * general one, not a separate path — which is why the output runs the
+   * same control law a sibling globe does rather than a simplified one.
+   */
+  startTime: string | null
+  endTime: string | null
 }
 
 /**

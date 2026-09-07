@@ -51,7 +51,36 @@ describe('toMirroredDataset', () => {
       url: 'https://cdn/x.m3u8',
       kind: 'video',
       overlay: { datasetId: 'INTERNAL_plain', datasetTitle: 'A Plain Picture' },
+      startTime: null,
+      endTime: null,
     })
+  })
+
+  it('carries the dataset’s own temporal range, which the output cannot derive', () => {
+    // `computeSiblingSyncCorrection` places the primary's real-world
+    // date on the output's timeline through `sibStart`/`sibEnd`. An
+    // output has no catalog to look those up in, and `primary.rangeMs`
+    // gives the span's length without saying where it starts — so
+    // without these the output can hold a date it cannot act on.
+    const dataset = plainDataset()
+    dataset.startTime = '2026-03-01T00:00:00Z'
+    dataset.endTime = '2026-03-08T00:00:00Z'
+
+    const mirrored = toMirroredDataset(dataset, 'video', 'https://cdn/x.m3u8')
+
+    expect(mirrored?.startTime).toBe('2026-03-01T00:00:00Z')
+    expect(mirrored?.endTime).toBe('2026-03-08T00:00:00Z')
+  })
+
+  it('normalises an absent range to null rather than leaving it undefined', () => {
+    // The aggregator diffs by deep structural equality, where an absent
+    // key and a present-but-undefined one are different objects meaning
+    // the same thing — which would forward a dataset diff that
+    // changed nothing, and an output rebuilds its HLS instance on one.
+    const mirrored = toMirroredDataset(plainDataset(), 'image', 'https://cdn/x.jpg')
+
+    expect(mirrored).toHaveProperty('startTime', null)
+    expect(mirrored).toHaveProperty('endTime', null)
   })
 
   it.each([

@@ -71,6 +71,11 @@ import {
 // (`sos-equirect`, `uCameraOffset` — both absent from
 // `dist/assets/main-*.js`), never chunk filenames.
 import { cameraOffsetForCamera } from '../../output/equirectRtt'
+// Shared with the output's own store rather than defined here: both
+// ends must give the same answer to "did this change?", and the cost
+// of disagreeing is an output rebuilding its HLS instance on every
+// idle heartbeat. See `stateEquality.ts`.
+import { hasOwn, sameValue } from './stateEquality'
 
 /** The camera offset that produces a uniform 1:1 equirectangular
  *  unwrap — the identity, and what an output that does not track the
@@ -239,43 +244,6 @@ export function projectState(
   // diff" contract above depends on.
   if (!state.view) return state as Partial<OutputGlobeState>
   return { ...state, view: projectView(state.view, settings, mode) }
-}
-
-/** `Object.hasOwn` in a codebase whose `tsconfig` targets ES2020.
- *  Own-property, not `in`: an inherited key must not be read as a
- *  present value. */
-function hasOwn(obj: object, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key)
-}
-
-/**
- * Structural equality over the mirrored-state values.
- *
- * These cross a structured-clone boundary by contract (see
- * `protocol.ts`), so they are plain data all the way down and a
- * recursive compare is exact rather than approximate. `JSON.stringify`
- * would be shorter and wrong: it is key-order sensitive, so two objects
- * built by different call sites with the same fields would compare
- * unequal and re-broadcast forever.
- */
-function sameValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  if (a === null || b === null) return false
-  if (typeof a !== 'object' || typeof b !== 'object') return false
-
-  const aArr = Array.isArray(a)
-  if (aArr !== Array.isArray(b)) return false
-  if (aArr) {
-    const x = a as unknown[]
-    const y = b as unknown[]
-    return x.length === y.length && x.every((v, i) => sameValue(v, y[i]))
-  }
-
-  const x = a as Record<string, unknown>
-  const y = b as Record<string, unknown>
-  const keys = Object.keys(x)
-  if (keys.length !== Object.keys(y).length) return false
-  return keys.every(k => hasOwn(y, k) && sameValue(x[k], y[k]))
 }
 
 /**
