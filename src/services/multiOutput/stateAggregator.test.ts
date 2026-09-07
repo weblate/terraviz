@@ -49,7 +49,7 @@ describe('initial state', () => {
     const a = initialState()
     const b = initialState()
     expect(a).not.toBe(b)
-    expect(a.view.equirect.cameraOffset).not.toBe(b.view.equirect.cameraOffset)
+    expect(a.view.params.cameraOffset).not.toBe(b.view.params.cameraOffset)
     expect(a).toEqual(b)
   })
 
@@ -59,7 +59,8 @@ describe('initial state', () => {
     expect(s.playback).toBeNull()
     expect(s.layers).toEqual([])
     expect(s.view.dayNight).toBe(true)
-    expect(s.view.equirect.cameraOffset).toEqual(CENTRED_CAMERA)
+    expect(s.view.mode).toBe('sos-equirect')
+    expect(s.view.params.cameraOffset).toEqual(CENTRED_CAMERA)
   })
 })
 
@@ -104,11 +105,16 @@ describe('apply', () => {
   it('compares regardless of key order', () => {
     const agg = new StateAggregator()
     agg.apply({
-      view: { dayNight: true, equirect: { cameraOffset: { x: 1, y: 2, z: 3 }, split: false } },
+      view: {
+        mode: 'sos-equirect' as const,
+        dayNight: true,
+        params: { cameraOffset: { x: 1, y: 2, z: 3 }, split: false },
+      },
     })
     const reordered = {
-      equirect: { split: false, cameraOffset: { z: 3, y: 2, x: 1 } },
+      params: { split: false, cameraOffset: { z: 3, y: 2, x: 1 } },
       dayNight: true,
+      mode: 'sos-equirect' as const,
     }
     expect(agg.apply({ view: reordered })).toBeNull()
   })
@@ -241,47 +247,75 @@ describe('sequence numbers', () => {
 
 describe('per-output view projection', () => {
   const shared = {
+    mode: 'sos-equirect' as const,
     dayNight: false,
-    equirect: { cameraOffset: { x: 0.4, y: -0.2, z: 0.1 }, split: false },
+    params: { cameraOffset: { x: 0.4, y: -0.2, z: 0.1 }, split: false },
   }
 
   it('passes the operator camera through when tracking', () => {
-    const v = projectView(shared, { trackCamera: true, split: false })
-    expect(v.equirect.cameraOffset).toEqual(shared.equirect.cameraOffset)
+    const v = projectView(shared, { trackCamera: true, split: false }, 'sos-equirect')
+    expect(v.params.cameraOffset).toEqual(shared.params.cameraOffset)
     expect(v.dayNight).toBe(false)
   })
 
   it('centres the camera when not tracking', () => {
-    const v = projectView(shared, { trackCamera: false, split: false })
-    expect(v.equirect.cameraOffset).toEqual(CENTRED_CAMERA)
+    const v = projectView(shared, { trackCamera: false, split: false }, 'sos-equirect')
+    expect(v.params.cameraOffset).toEqual(CENTRED_CAMERA)
   })
 
   it('takes split from the output, never from the shared view', () => {
-    expect(projectView(shared, { trackCamera: true, split: true }).equirect.split).toBe(true)
-    const sharedSplit = { ...shared, equirect: { ...shared.equirect, split: true } }
-    expect(projectView(sharedSplit, DEFAULT_VIEW_SETTINGS).equirect.split).toBe(false)
+    expect(
+      projectView(shared, { trackCamera: true, split: true }, 'sos-equirect').params.split,
+    ).toBe(true)
+    const sharedSplit = { ...shared, params: { ...shared.params, split: true } }
+    expect(
+      projectView(sharedSplit, DEFAULT_VIEW_SETTINGS, 'sos-equirect').params.split,
+    ).toBe(false)
   })
 
   it('does not alias the shared offset, so one output cannot mutate another', () => {
-    const v = projectView(shared, { trackCamera: true, split: false })
-    expect(v.equirect.cameraOffset).not.toBe(shared.equirect.cameraOffset)
-    // The bag itself is rebuilt too, not spread from the shared one.
-    expect(v.equirect).not.toBe(shared.equirect)
+    const v = projectView(shared, { trackCamera: true, split: false }, 'sos-equirect')
+    expect(v.params.cameraOffset).not.toBe(shared.params.cameraOffset)
+    // The params object itself is rebuilt too, not spread from shared.
+    expect(v.params).not.toBe(shared.params)
   })
 
   it('leaves a diff without a view untouched', () => {
     const diff = { simulationDate: '2026-01-01T00:00:00Z' }
-    const projected = projectState(diff, { trackCamera: false, split: true })
+    const projected = projectState(diff, { trackCamera: false, split: true }, 'sos-equirect')
     expect(projected).toBe(diff)
     expect('view' in projected).toBe(false)
   })
 
   it('projects a diff that does carry a view', () => {
     const diff = { view: shared }
-    const projected = projectState(diff, { trackCamera: false, split: true })
-    expect(projected.view.equirect.cameraOffset).toEqual(CENTRED_CAMERA)
-    expect(projected.view.equirect.split).toBe(true)
+    const projected = projectState(diff, { trackCamera: false, split: true }, 'sos-equirect')
+    expect(projected.view.params.cameraOffset).toEqual(CENTRED_CAMERA)
+    expect(projected.view.params.split).toBe(true)
     // The input is not mutated — two outputs project the same diff.
-    expect(diff.view.equirect.cameraOffset).toEqual({ x: 0.4, y: -0.2, z: 0.1 })
+    expect(diff.view.params.cameraOffset).toEqual({ x: 0.4, y: -0.2, z: 0.1 })
+  })
+
+  it('stamps the arm with the mode the output was given', () => {
+    // The discriminant is what lets an output check the view it
+    // received against the mode it booted in, so it has to be on the
+    // wire rather than implied by the fields present.
+    const v = projectView(shared, DEFAULT_VIEW_SETTINGS, 'sos-equirect')
+    expect(v.mode).toBe('sos-equirect')
+    const projected = projectState({ view: shared }, DEFAULT_VIEW_SETTINGS, 'sos-equirect')
+    expect(projected.view.mode).toBe('sos-equirect')
+  })
+
+  it('throws loudly rather than silently mis-projecting an unknown mode', () => {
+    // Unreachable through the type system, and through persistence too
+    // — `outputPersistence` fail-closes on a mode it does not know. This
+    // covers the remaining way in: a cast, or a future arm added to
+    // `OutputMode` whose `projectView` case was forgotten and forced
+    // past the compiler. Returning an unprojected view there would put
+    // one geometry's settings on another's renderer, which is the exact
+    // failure the union exists to prevent — so it must not be quiet.
+    expect(() =>
+      projectView(shared, DEFAULT_VIEW_SETTINGS, 'flat-perspective' as 'sos-equirect'),
+    ).toThrow(/no view projection for mode/)
   })
 })

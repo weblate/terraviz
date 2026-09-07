@@ -20,7 +20,7 @@ import {
   STATE_TICK_MS,
   IPC_STALE_MS,
   IPC_ORPHAN_MS,
-  type MirroredEquirectView,
+  type MirroredEquirectParams,
   type MirroredGlobeState,
   type OutputStateMessage,
 } from './protocol'
@@ -78,7 +78,11 @@ describe('isFullState', () => {
     display: null,
     layers: [],
     simulationDate: null,
-    view: { dayNight: true, equirect: { cameraOffset: { x: 0, y: 0, z: 0 }, split: false } },
+    view: {
+      mode: 'sos-equirect',
+      dayNight: true,
+      params: { cameraOffset: { x: 0, y: 0, z: 0 }, split: false },
+    },
   }
 
   it('narrows a snapshot to the complete state', () => {
@@ -123,7 +127,7 @@ describe('the equirect view is the shader’s own parameter object', () => {
    * Assignable **both ways**, which is the whole property.
    *
    * One direction alone is satisfied by a subset: if the wire type
-   * lost `split`, `MirroredEquirectView` would still be assignable to
+   * lost `split`, `MirroredEquirectParams` would still be assignable to
    * nothing useful, but `EquirectParams` would remain assignable to a
    * widened wire type and a one-way check would stay green. Two
    * declarations mean neither side can quietly gain or drop a field.
@@ -134,15 +138,15 @@ describe('the equirect view is the shader’s own parameter object', () => {
    * does not load. A test imports both freely, so this is where the
    * promise is kept.
    */
-  type _WireIsParams = MirroredEquirectView extends EquirectParams ? true : never
-  type _ParamsIsWire = EquirectParams extends MirroredEquirectView ? true : never
+  type _WireIsParams = MirroredEquirectParams extends EquirectParams ? true : never
+  type _ParamsIsWire = EquirectParams extends MirroredEquirectParams ? true : never
   const _bothWays: [_WireIsParams, _ParamsIsWire] = [true, true]
 
   it('accepts the shader’s identity params as a wire value', () => {
     // The types above prove the shapes match; this proves a real value
     // crosses, so the pairing cannot be satisfied by two types that
     // agree only because both are structurally empty.
-    const view: MirroredEquirectView = IDENTITY_PARAMS
+    const view: MirroredEquirectParams = IDENTITY_PARAMS
     expect(view.split).toBe(false)
     expect(view.cameraOffset).toEqual({ x: 0, y: 0, z: 0 })
     expect(_bothWays).toEqual([true, true])

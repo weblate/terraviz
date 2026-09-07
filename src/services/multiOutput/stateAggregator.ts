@@ -27,20 +27,29 @@
  * others correctly applied. Only a real change advances the sequence.
  *
  * **The view is projected per output, not stored per output.** Both
- * `equirect.cameraOffset` and `equirect.split` are per-output settings
- * in the plan, but only one of them *originates* per output: `split` is
- * a pure operator choice, while `cameraOffset` is derived once from the operator's
- * MapLibre camera and then either passed through or zeroed depending on
- * whether that output tracks the camera. Holding one shared view and
- * projecting it at the send boundary (`projectState`) keeps a single
- * source of truth for the camera; holding N views would mean N copies
- * of the same derivation, drifting the moment one update path misses
- * one of them.
+ * `params.cameraOffset` and `params.split` are per-output settings in
+ * the plan, but only one of them *originates* per output: `split` is a
+ * pure operator choice, while `cameraOffset` is derived once from the
+ * operator's MapLibre camera and then either passed through or zeroed
+ * depending on whether that output tracks the camera. Holding one
+ * shared view and projecting it at the send boundary (`projectState`)
+ * keeps a single source of truth for the camera; holding N views would
+ * mean N copies of the same derivation, drifting the moment one update
+ * path misses one of them.
+ *
+ * The output's **mode** joins them at that same boundary. `MirroredView`
+ * is a union keyed on `OutputMode`, the shared view is stored in
+ * `CANONICAL_VIEW_MODE`, and `projectView` takes the mode the output
+ * actually booted in rather than reading the canonical one — so an
+ * output can never be handed an arm belonging to a geometry it does not
+ * render.
  */
 
 import {
+  CANONICAL_VIEW_MODE,
   type MirroredGlobeState,
   type MirroredView,
+  type OutputMode,
   type OutputStateMessage,
 } from './protocol'
 
@@ -66,8 +75,9 @@ export function initialState(): MirroredGlobeState {
     layers: [],
     simulationDate: null,
     view: {
+      mode: CANONICAL_VIEW_MODE,
       dayNight: true,
-      equirect: {
+      params: {
         cameraOffset: { ...CENTRED_CAMERA },
         split: false,
       },
@@ -94,7 +104,7 @@ export interface OutputViewSettings {
    *  the operator has panned. */
   trackCamera: boolean
   /** Mirror the area of focus to the antipodal hemisphere.
-   *  `sos-equirect` only — see `MirroredEquirectView`. */
+   *  `sos-equirect` only — see `MirroredEquirectParams`. */
   split: boolean
 }
 
@@ -104,33 +114,60 @@ export const DEFAULT_VIEW_SETTINGS: OutputViewSettings = {
 }
 
 /**
- * Apply one output's settings to the shared view.
+ * Build one output's view from the shared one and that output's own
+ * settings and mode.
  *
- * The equirect half is rebuilt **whole** rather than spread over the
- * shared one. Spreading would silently pass through any field a later
- * commit adds to `MirroredEquirectView` without deciding whether it is
- * shared or per-output — and the wrong answer there is invisible,
- * because it looks like the setting simply working. Listing the fields
- * means a new one fails to compile until someone chooses.
+ * **`mode` is the third argument, not read off `shared`.** The shared
+ * view is stored in `CANONICAL_VIEW_MODE` because the control window
+ * has one globe and N outputs that need not agree on geometry; the arm
+ * an output *receives* is a property of that output. Reading it from
+ * the shared view would silently drive every output as whatever the
+ * canonical arm happens to be, which is exactly right today, wrong the
+ * day a second mode lands, and untestable in between.
  *
- * This is also where a second `OutputMode` branches: the projection
- * would take the output's mode and emit only that mode's settings,
- * rather than every mode's. It is not written that way today because
- * there is one mode, and a `switch` with one arm proves nothing.
+ * Each arm is built **whole**, field by field. Spreading the shared one
+ * would pass through any field a later commit adds to that arm's params
+ * without deciding whether it is shared or per-output — and the wrong
+ * answer there is invisible, because it looks like the setting simply
+ * working. Listing the fields means a new one fails to compile until
+ * someone chooses.
+ *
+ * The `switch` has one arm today. It is a `switch` rather than an
+ * `if` because that is where the second mode's derivation goes, and
+ * because the exhaustiveness check below turns "you added a mode and
+ * forgot to project it" into a compile error rather than a projection
+ * that returns the wrong geometry.
  */
 export function projectView(
   shared: MirroredView,
   settings: OutputViewSettings,
+  mode: OutputMode,
 ): MirroredView {
-  return {
-    dayNight: shared.dayNight,
-    equirect: {
-      cameraOffset: settings.trackCamera
-        ? { ...shared.equirect.cameraOffset }
-        : { ...CENTRED_CAMERA },
-      split: settings.split,
-    },
+  switch (mode) {
+    case 'sos-equirect':
+      return {
+        mode: 'sos-equirect',
+        dayNight: shared.dayNight,
+        params: {
+          cameraOffset: settings.trackCamera
+            ? { ...shared.params.cameraOffset }
+            : { ...CENTRED_CAMERA },
+          split: settings.split,
+        },
+      }
+    default:
+      // `mode` narrows to `never` here while every `OutputMode` has a
+      // case above. Adding one without a case makes this assignment
+      // fail, which is the whole point of the annotation.
+      return assertUnreachableMode(mode)
   }
+}
+
+/** Reached only if a new `OutputMode` skipped `projectView`'s switch —
+ *  a compile error there, and a loud one here if it is ever forced
+ *  through at runtime by an `as`. */
+function assertUnreachableMode(mode: never): never {
+  throw new Error(`[multiOutput] no view projection for mode: ${String(mode)}`)
 }
 
 /**
@@ -145,9 +182,10 @@ export function projectView(
 export function projectState<T extends Partial<MirroredGlobeState>>(
   state: T,
   settings: OutputViewSettings,
+  mode: OutputMode,
 ): T {
   if (!state.view) return state
-  return { ...state, view: projectView(state.view, settings) }
+  return { ...state, view: projectView(state.view, settings, mode) }
 }
 
 /** `Object.hasOwn` in a codebase whose `tsconfig` targets ES2020.

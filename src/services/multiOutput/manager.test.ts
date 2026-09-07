@@ -459,14 +459,18 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: false } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: { dayNight: true, equirect: { cameraOffset: { x: 0.6, y: 0, z: 0 }, split: false } },
+      view: {
+        mode: 'sos-equirect',
+        dayNight: true,
+        params: { cameraOffset: { x: 0.6, y: 0, z: 0 }, split: false },
+      },
     })
     fake.emitted.length = 0
 
     await manager.tick()
 
-    const state = fake.emitted[0].payload.state as { view: { equirect: { cameraOffset: unknown } } }
-    expect(state.view.equirect.cameraOffset).toEqual({ x: 0, y: 0, z: 0 })
+    const state = fake.emitted[0].payload.state as { view: { params: { cameraOffset: unknown } } }
+    expect(state.view.params.cameraOffset).toEqual({ x: 0, y: 0, z: 0 })
   })
 
   it('does not beat at an output that is not ready', async () => {
@@ -491,13 +495,17 @@ describe('the heartbeat', () => {
     fake.emitted.length = 0
 
     await manager.applyState({
-      view: { dayNight: true, equirect: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false } },
+      view: {
+        mode: 'sos-equirect',
+        dayNight: true,
+        params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false },
+      },
     })
 
     const byLabel = Object.fromEntries(fake.emitted.map(e => [e.label, e.payload]))
-    expect((byLabel['output-1'].state as { view: { equirect: { cameraOffset: unknown } } }).view.equirect.cameraOffset)
+    expect((byLabel['output-1'].state as { view: { params: { cameraOffset: unknown } } }).view.params.cameraOffset)
       .toEqual({ x: 0.5, y: 0, z: 0 })
-    expect((byLabel['output-2'].state as { view: { equirect: { cameraOffset: unknown } } }).view.equirect.cameraOffset)
+    expect((byLabel['output-2'].state as { view: { params: { cameraOffset: unknown } } }).view.params.cameraOffset)
       .toEqual({ x: 0, y: 0, z: 0 })
   })
 
@@ -524,7 +532,11 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: true } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: { dayNight: true, equirect: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false } },
+      view: {
+        mode: 'sos-equirect',
+        dayNight: true,
+        params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false },
+      },
     })
     fake.emitted.length = 0
 
@@ -532,7 +544,7 @@ describe('the heartbeat', () => {
 
     // Without this the toggle looks inert until someone pans.
     expect(fake.emitted).toHaveLength(1)
-    expect((fake.emitted[0].payload.state as { view: { equirect: { cameraOffset: unknown } } }).view.equirect.cameraOffset)
+    expect((fake.emitted[0].payload.state as { view: { params: { cameraOffset: unknown } } }).view.params.cameraOffset)
       .toEqual({ x: 0, y: 0, z: 0 })
   })
 
@@ -543,7 +555,11 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: true } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: { dayNight: true, equirect: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false } },
+      view: {
+        mode: 'sos-equirect',
+        dayNight: true,
+        params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false },
+      },
     })
     const lastApplied = fake.emitted[fake.emitted.length - 1].payload.seq
 

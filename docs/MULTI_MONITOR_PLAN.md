@@ -2462,26 +2462,54 @@ working unchanged:
 - the mesh stays out of `localStorage`, per the typed-array finding
   below — the persisted config holds a path, not a blob.
 
-**`MirroredView` was mode-specific without saying so, and now says
-so.** `cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the
-camera must stay inside the sphere; `split` folds U across an
-equirectangular frame. Both were flat fields beside `dayNight`, which
-*is* projection-independent, and both went to every output with nothing
-in the type marking them conditional. They now sit in
-`MirroredEquirectView`, reached as `view.equirect` — declared
-structurally identical to `equirectRtt`'s own `EquirectParams`, which
-is what `setParams` already takes, so an output hands the bag straight
-to the shader with no adapter and `protocol.test.ts` holds the two
-assignable in both directions.
+**`MirroredView` was mode-specific without saying so, and is now a
+union keyed on `OutputMode`.** `cameraOffset` is bounded by
+`MAX_CAMERA_OFFSET` because the camera must stay inside the sphere;
+`split` folds U across an equirectangular frame. Both were flat fields
+beside `dayNight`, which *is* projection-independent, and all three
+went to every output with nothing in the type marking two of them
+conditional.
 
-That is grouping, not discrimination, and the difference is the point:
-a union keyed on `OutputMode` with one arm proves nothing and taxes
-every consumer with a narrow that cannot fail. The second mode makes it
-a union and gives its own settings a sibling of `equirect`;
-`stateAggregator`'s `projectView` is where that branch lands, since it
-is already the one place a value is made per-output. `projectView`
-rebuilds the equirect bag field-by-field rather than spreading the
-shared one, so a field added later cannot pass through un-decided.
+The shape now is one arm per mode — `{ mode, dayNight, params }` — where
+`params` is that arm's renderer parameter object. `sos-equirect`'s is
+`MirroredEquirectParams`, declared structurally identical to
+`equirectRtt`'s own `EquirectParams`, which is what
+`outputScene.setParams` already takes; `protocol.test.ts` holds the two
+assignable in both directions. A second mode adds an arm whose `params`
+is *its* renderer's object, and nothing else in the union changes.
+
+The discriminant earns itself twice. An output can no longer be handed
+settings it has no meaning for — that is the type's job now rather than
+prose's. And because an output already announces its own mode in
+`OutputReadyEvent`, `view.mode` disagreeing with it is a detectable
+fault: a window that booted as one geometry being driven as another,
+which previously would simply have rendered wrongly.
+
+Two compile-time guards tie the union to `OutputMode`, both directions,
+so neither list can gain a member without the other: a mode with no arm
+would be broadcast as some other mode's shape, and an arm with no mode
+could never be selected. A third guard sits in `projectView`'s
+`switch`, whose `default` narrows to `never`. Adding a mode without an
+arm and without a projection case fails at both `protocol.ts` and
+`stateAggregator.ts` — verified by doing exactly that.
+
+`projectView` takes the output's mode as an argument rather than
+reading it off the shared view, which is the part that matters for a
+second mode. The control window has one globe and N outputs that need
+not agree on geometry, so the aggregator's single stored view has to be
+canonical in *some* mode; `CANONICAL_VIEW_MODE` names that rather than
+leaving it implicit. It is also the grep target for the one decision
+deliberately left open: whether a second mode promotes the shared
+camera to a mode-independent encoding (the operator's lat/lon/zoom,
+which is what `cameraOffsetForCamera` consumes) or derives from the
+canonical arm. The equirect offset is recoverable either way — `|o|`
+gives the zoom factor, its direction gives lat/lon — so nothing is lost
+by leaving that to the commit with a second consumer to test against.
+
+Each arm is built whole, field by field, rather than spread from the
+shared view: a field added later then cannot pass through without
+someone deciding whether it is shared or per-output, and the wrong
+answer there is invisible because it looks like the setting working.
 
 `OutputViewSettings` — the operator's per-output toggles — stays flat
 on purpose. Only `split` is equirect-only there (`trackCamera` is
