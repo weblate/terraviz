@@ -64,6 +64,7 @@ import {
   type OutputEvent,
   type OutputMode,
   type OutputStateMessage,
+  type SharedStateMessage,
 } from './protocol'
 import {
   DEFAULT_VIEW_SETTINGS,
@@ -380,7 +381,7 @@ export class MultiOutputManager {
     await this.emit(record, {
       seq: this.aggregator.bump(),
       full: false,
-      state: projectState({ view: shared }, record.view),
+      state: projectState({ view: shared }, record.view, record.mode),
     })
   }
 
@@ -486,13 +487,18 @@ export class MultiOutputManager {
   }
 
   /** Send one message to every ready output, projected through that
-   *  output's own view settings. */
-  private async broadcast(message: OutputStateMessage): Promise<void> {
+   *  output's own view settings and mode.
+   *
+   *  Takes a `SharedStateMessage` and emits an `OutputStateMessage`:
+   *  this method *is* the boundary between the state the control
+   *  window accumulates and the state a window can render, which is
+   *  why the two types differ either side of it. */
+  private async broadcast(message: SharedStateMessage): Promise<void> {
     await Promise.all(
       this.readyRecords().map(record =>
         this.emit(record, {
           ...message,
-          state: projectState(message.state, record.view),
+          state: projectState(message.state, record.view, record.mode),
         }),
       ),
     )
@@ -531,7 +537,7 @@ export class MultiOutputManager {
       this.readyRecords().map(record =>
         this.emit(record, {
           ...snapshot,
-          state: projectState(snapshot.state, record.view),
+          state: projectState(snapshot.state, record.view, record.mode),
         }),
       ),
     )
@@ -587,7 +593,7 @@ export class MultiOutputManager {
       const snapshot = this.aggregator.full()
       void this.emit(record, {
         ...snapshot,
-        state: projectState(snapshot.state, record.view),
+        state: projectState(snapshot.state, record.view, record.mode),
       })
     } else if (event.type === 'output_closing') {
       record.ready = false

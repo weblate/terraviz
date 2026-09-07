@@ -7,7 +7,7 @@
  * Every fact an output needs arrives here from a different place and on
  * a different schedule — a dataset load, a palette change, a playback
  * tick, a camera move — and leaves as one ordered stream of
- * `OutputStateMessage`s. Design: `docs/MULTI_MONITOR_PLAN.md` §3
+ * `SharedStateMessage`s. Design: `docs/MULTI_MONITOR_PLAN.md` §3
  * "Globe state — what gets mirrored" and "Per-state-change flow".
  *
  * It is **pure**: no DOM, no Tauri, no timers, no subscriptions. Facts
@@ -26,28 +26,70 @@
  * far along they are, and the late joiner would out-rank a diff the
  * others correctly applied. Only a real change advances the sequence.
  *
- * **The view is projected per output, not stored per output.** Both
- * `cameraOffset` and `split` are per-output settings in the plan, but
- * only one of them *originates* per output: `split` is a pure operator
- * choice, while `cameraOffset` is derived once from the operator's
- * MapLibre camera and then either passed through or zeroed depending on
- * whether that output tracks the camera. Holding one shared view and
- * projecting it at the send boundary (`projectState`) keeps a single
- * source of truth for the camera; holding N views would mean N copies
- * of the same derivation, drifting the moment one update path misses
- * one of them.
+ * **The view is projected per output, not stored per output.** What is
+ * stored is `SharedView` — `dayNight` plus the operator's own
+ * `camera` (MapLibre lat/lon/zoom). What an output receives is a
+ * `MirroredView` arm, built at the send boundary by `projectView` from
+ * that shared camera, the output's `OutputViewSettings` and its
+ * `OutputMode`.
+ *
+ * So the camera is one fact stored once and *derived* N times, not one
+ * derivation copied N times. Storing the derived value instead would
+ * put N copies of it behind N update paths, drifting the moment one
+ * missed an update — and it would have to be stored in some *one*
+ * geometry's encoding, which is the thing this shape exists to avoid.
+ * `split` is the other half of the per-output view and originates
+ * there: it is a pure operator choice with no globe fact behind it.
+ *
+ * **The shared view has no mode**, and that is what makes an output
+ * driven as the wrong geometry impossible rather than merely unlikely:
+ * `projectView` takes the mode the output actually booted in, and
+ * there is no canonical arm for it to fall back to.
  */
 
 import {
   type MirroredGlobeState,
   type MirroredView,
-  type OutputStateMessage,
+  type OperatorCamera,
+  type OutputGlobeState,
+  type OutputMode,
+  type SharedStateMessage,
+  type SharedView,
 } from './protocol'
+// The one import that crosses from the control side into `src/output/`,
+// and it is deliberate. `equirectRtt` is pure TS by construction — no
+// Three, no GL, no DOM — precisely so the projection maths is testable
+// without a context, which also makes it importable from here. The
+// alternative is extracting `cameraOffsetForCamera` and the
+// `MAX_CAMERA_OFFSET` it clamps against into a third module, and that
+// splits the shader's own invariant away from the shader mirror that
+// exists to hold it. Measured cost: Rollup gives `equirectRtt` its own
+// chunk, shared by `manager` and the output bundle — one copy, fetched
+// only by whoever imports it. The web entry chunk names that chunk in
+// its dynamic-import preload map, exactly as it already names `manager`
+// and `publisher`, and never fires the import. Check the markers
+// (`sos-equirect`, `uCameraOffset` — both absent from
+// `dist/assets/main-*.js`), never chunk filenames.
+import { cameraOffsetForCamera } from '../../output/equirectRtt'
 
 /** The camera offset that produces a uniform 1:1 equirectangular
  *  unwrap — the identity, and what an output that does not track the
  *  operator's camera always gets. */
 export const CENTRED_CAMERA = { x: 0, y: 0, z: 0 } as const
+
+/**
+ * The operator camera an app starts with: the whole globe, unzoomed.
+ *
+ * `zoom: 0` is load-bearing rather than a placeholder. `sos-equirect`'s
+ * derivation is `1 − 1/(zoom + 1)`, which is exactly `0` there, so this
+ * camera produces `CENTRED_CAMERA` — the uniform 1:1 unwrap — without
+ * that identity being written twice. `lat`/`lon` are then irrelevant to
+ * the result, which is why any values will do for them; `0, 0` is
+ * simply the least surprising pair to read. A mode added later gets the
+ * same guarantee for free if its own derivation is centred at zoom 0,
+ * and a test pins the equirect half of it.
+ */
+export const DEFAULT_OPERATOR_CAMERA: OperatorCamera = { lat: 0, lon: 0, zoom: 0 }
 
 /**
  * The state before anything has loaded.
@@ -67,19 +109,31 @@ export function initialState(): MirroredGlobeState {
     simulationDate: null,
     view: {
       dayNight: true,
-      cameraOffset: { ...CENTRED_CAMERA },
-      split: false,
+      camera: { ...DEFAULT_OPERATOR_CAMERA },
     },
   }
 }
 
-/** The per-output half of the view — what the Outputs panel sets on one
- *  output rather than on the globe. */
+/**
+ * The per-output half of the view — what the Outputs panel sets on one
+ * output rather than on the globe.
+ *
+ * Left flat, unlike `MirroredView`, and the asymmetry is deliberate.
+ * `trackCamera` is projection-independent (a flat mode would want a
+ * per-output camera too), so only `split` is equirect-only here — one
+ * field, against a wire type where it was two out of three. And this
+ * shape is **persisted**: `PersistedOutput` mirrors it, so regrouping
+ * it is a storage-schema change, and rung 10's version field resets a
+ * mismatched blob rather than migrating it. Trading every operator's
+ * saved outputs for the tidier home of one boolean is the wrong side
+ * of that deal until a second mode actually needs it.
+ */
 export interface OutputViewSettings {
   /** When false, this output gets `CENTRED_CAMERA` regardless of where
    *  the operator has panned. */
   trackCamera: boolean
-  /** Mirror the area of focus to the antipodal hemisphere. */
+  /** Mirror the area of focus to the antipodal hemisphere.
+   *  `sos-equirect` only — see `MirroredEquirectParams`. */
   split: boolean
 }
 
@@ -88,35 +142,103 @@ export const DEFAULT_VIEW_SETTINGS: OutputViewSettings = {
   split: false,
 }
 
-/** Apply one output's settings to the shared view. */
+/**
+ * Build one output's view from the shared one and that output's own
+ * settings and mode.
+ *
+ * This is where the operator's camera becomes a *geometry's* camera,
+ * and it is the only place that conversion happens. The shared view
+ * holds `OperatorCamera` — MapLibre's own lat/lon/zoom — so no mode is
+ * privileged: `sos-equirect` derives a ray-march origin from it here,
+ * and a mode added later derives its own thing from the same three
+ * numbers rather than from equirect's answer.
+ *
+ * **`mode` is an argument, not a property of `shared`.** The arm an
+ * output receives is a property of *that output*; the shared state has
+ * no mode at all now, which is what makes that impossible to get wrong.
+ *
+ * Each arm is built **whole**, field by field. Spreading would pass
+ * through any field a later commit adds to that arm's params without
+ * deciding whether it is shared or per-output — and the wrong answer
+ * there is invisible, because it looks like the setting simply working.
+ *
+ * The `switch` has one arm today. It is a `switch` rather than an `if`
+ * because that is where a second mode's derivation goes, and because
+ * the exhaustiveness check below turns "you added a mode and forgot to
+ * project it" into a compile error rather than a projection that
+ * returns the wrong geometry.
+ */
 export function projectView(
-  shared: MirroredView,
+  shared: SharedView,
   settings: OutputViewSettings,
+  mode: OutputMode,
 ): MirroredView {
-  return {
-    dayNight: shared.dayNight,
-    cameraOffset: settings.trackCamera
-      ? { ...shared.cameraOffset }
-      : { ...CENTRED_CAMERA },
-    split: settings.split,
+  switch (mode) {
+    case 'sos-equirect':
+      return {
+        mode: 'sos-equirect',
+        dayNight: shared.dayNight,
+        params: {
+          // Derived here, once per output, from the one shared camera —
+          // rather than derived once and stored, which would be a
+          // second copy of the same fact, or derived by each output,
+          // which would be N copies of the same code.
+          cameraOffset: settings.trackCamera
+            ? cameraOffsetForCamera(shared.camera.lat, shared.camera.lon, shared.camera.zoom)
+            : { ...CENTRED_CAMERA },
+          split: settings.split,
+        },
+      }
+    default:
+      // `mode` narrows to `never` here while every `OutputMode` has a
+      // case above. Adding one without a case makes this assignment
+      // fail, which is the whole point of the annotation.
+      return assertUnreachableMode(mode)
   }
 }
 
+/** Reached only if a new `OutputMode` skipped `projectView`'s switch —
+ *  a compile error there, and a loud one here if it is ever forced
+ *  through at runtime by an `as`. */
+function assertUnreachableMode(mode: never): never {
+  throw new Error(`[multiOutput] no view projection for mode: ${String(mode)}`)
+}
+
 /**
- * Apply one output's settings to a whole state or diff.
+ * Re-state a whole shared snapshot or diff for one output.
  *
- * Takes `Partial<MirroredGlobeState>` because it sits on the send path
- * for diffs as well as snapshots. A diff that does not mention `view`
- * passes through untouched — projecting an absent key into a present
- * one would turn "nothing about the view changed" into a redundant
- * write on every unrelated update.
+ * Overloaded rather than generic in the state, because this is the
+ * boundary where the two state types meet: a complete
+ * `MirroredGlobeState` becomes a complete `OutputGlobeState`, and a
+ * diff becomes a diff. One signature returning `T` would have to claim
+ * the view came out the same type it went in, which is exactly what
+ * stopped being true.
+ *
+ * A diff that does not mention `view` passes through **by reference**:
+ * projecting an absent key into a present one would turn "nothing about
+ * the view changed" into a redundant write on every unrelated update.
  */
-export function projectState<T extends Partial<MirroredGlobeState>>(
-  state: T,
+export function projectState(
+  state: MirroredGlobeState,
   settings: OutputViewSettings,
-): T {
-  if (!state.view) return state
-  return { ...state, view: projectView(state.view, settings) }
+  mode: OutputMode,
+): OutputGlobeState
+export function projectState(
+  state: Partial<MirroredGlobeState>,
+  settings: OutputViewSettings,
+  mode: OutputMode,
+): Partial<OutputGlobeState>
+export function projectState(
+  state: Partial<MirroredGlobeState>,
+  settings: OutputViewSettings,
+  mode: OutputMode,
+): Partial<OutputGlobeState> {
+  // Sound because the guard proves `view` is absent, and every other
+  // key is identical between the two states. The cast is what lets the
+  // reference — not a copy — reach the caller, which the "untouched
+  // diff" contract above depends on.
+  if (!state.view) return state as Partial<OutputGlobeState>
+  return { ...state, view: projectView(state.view, settings, mode) }
 }
 
 /** `Object.hasOwn` in a codebase whose `tsconfig` targets ES2020.
@@ -280,7 +402,7 @@ export class StateAggregator {
    * to be able to trust that a `dataset` in a diff means a *different*
    * dataset.
    */
-  apply(patch: Partial<MirroredGlobeState>): OutputStateMessage | null {
+  apply(patch: Partial<MirroredGlobeState>): SharedStateMessage | null {
     const changed: Partial<MirroredGlobeState> = {}
     let any = false
 
@@ -298,7 +420,7 @@ export class StateAggregator {
    * The whole state, stamped with the sequence number it is current as
    * of. Sent to an output on `output_ready` and after a reconnect.
    */
-  full(): OutputStateMessage {
+  full(): SharedStateMessage {
     return { seq: this.seq, full: true, state: this.state }
   }
 
