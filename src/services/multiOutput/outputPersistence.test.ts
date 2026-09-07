@@ -234,9 +234,11 @@ describe('parseOutputConfig', () => {
       outputs: [
         { ...persisted({ label: 'output-1' }), framebufferWidth: 8192, debugOverlay: true },
         // A hand-edited file, or a key some future build wrote as a
-        // string. The scene snaps an unsupported *number* to its own
-        // ladder, so this only has to reject what is not one.
+        // string.
         { ...persisted({ label: 'output-2' }), framebufferWidth: 'huge' },
+        // A number, but not a rung this build offers — a ladder that
+        // changed between versions, or someone typing into devtools.
+        { ...persisted({ label: 'output-3' }), framebufferWidth: 3000 },
       ],
       autoRestoreOnLaunch: false,
     })
@@ -248,6 +250,11 @@ describe('parseOutputConfig', () => {
     // Defaulted, not dropped: one bad key must not cost the operator
     // that output entirely.
     expect(outputs[1].framebufferWidth).toBe(DEFAULT_FRAMEBUFFER_WIDTH)
+    // Narrowed to a rung here, so every later reader has one — the
+    // scene would snap 3000 to 2048 while the panel's picker had no
+    // option to show for it, and the operator no way to tell which
+    // number was real.
+    expect(outputs[2].framebufferWidth).toBe(DEFAULT_FRAMEBUFFER_WIDTH)
   })
 
   it('treats a non-boolean debug flag as off', () => {

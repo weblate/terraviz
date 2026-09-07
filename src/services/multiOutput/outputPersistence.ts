@@ -38,6 +38,7 @@
 import { logger } from '../../utils/logger'
 import {
   DEFAULT_FRAMEBUFFER_WIDTH,
+  FRAMEBUFFER_WIDTHS,
   type OutputMode,
   type OutputRenderConfig,
 } from './protocol'
@@ -208,14 +209,23 @@ function parseOutput(entry: unknown): PersistedOutput | null {
     split: entry.split === true,
     // Defaulted rather than required: an entry written before rung 11
     // has neither key, and dropping it would cost an operator their
-    // outputs on the launch after an update. An unsupported width is
-    // snapped by the scene's own ladder, so a nonsense number costs a
-    // rung rather than the entry.
-    framebufferWidth: Number.isFinite(entry.framebufferWidth)
-      ? (entry.framebufferWidth as number)
+    // outputs on the launch after an update.
+    //
+    // Only a real rung is accepted. The scene snaps anything else, so a
+    // stray number would not break an output — but it would leave the
+    // panel's picker showing a value it cannot offer while the window
+    // ran at a different one, and the operator with no way to tell.
+    // Narrowing it here means every later reader has a rung.
+    framebufferWidth: isFramebufferWidth(entry.framebufferWidth)
+      ? entry.framebufferWidth
       : DEFAULT_FRAMEBUFFER_WIDTH,
     debugOverlay: entry.debugOverlay === true,
   }
+}
+
+/** Whether a stored value names a framebuffer rung this build offers. */
+function isFramebufferWidth(value: unknown): value is number {
+  return (FRAMEBUFFER_WIDTHS as readonly number[]).includes(value as number)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

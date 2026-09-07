@@ -220,3 +220,34 @@
 .output-toggle-box:disabled {
   cursor: default;
 }
+
+/* A labelled control on an output row — today the framebuffer picker.
+   Laid out beside its label rather than above it, so it reads as one
+   more line of the row's settings next to the checkboxes rather than
+   as a form. */
+.output-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  font-size: 0.75rem;
+}
+
+/* The label keeps its intrinsic width and the select takes what is
+   left, so a translation longer than "Framebuffer" pushes the control
+   rather than truncating itself. */
+.output-field-select {
+  flex: 1 1 6rem;
+  min-inline-size: 0;
+  padding: 0.125rem 0.25rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: inherit;
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.18));
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.output-field-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

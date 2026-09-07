@@ -71,6 +71,19 @@ export interface OutputPanelManager {
   removeOutput(label: string): Promise<void>
   setOutputView(label: string, view: Partial<OutputViewSettings>): Promise<void>
   setOutputRenderConfig(label: string, render: Partial<OutputRenderConfig>): Promise<void>
+  /**
+   * The framebuffer rungs this build offers.
+   *
+   * Read through the manager rather than imported from `protocol.ts`,
+   * and that is not a preference: every `multiOutput/` import in this
+   * module is type-only because `main.ts` imports the panel eagerly,
+   * so a runtime one puts the IPC contract — `sos-equirect` and all —
+   * into the web entry graph, which is the regression `c8df3380`
+   * removed and the grep in that commit polices. The manager is
+   * already the panel's only window onto the subsystem; asking it what
+   * it supports fits that exactly.
+   */
+  framebufferWidths(): readonly number[]
   isRestoreOnLaunch(): boolean
   setRestoreOnLaunch(enabled: boolean): void
 }
@@ -506,7 +519,93 @@ function buildRow(
       mgr.setOutputRenderConfig(record.label, { debugOverlay: next }),
     ),
   )
+  item.appendChild(buildFramebufferPicker(mgr, record))
   return item
+}
+
+/**
+ * The per-output framebuffer picker (rung 11b).
+ *
+ * **This is not the monitor's resolution**, and the panel says so by
+ * placement: the head line above already carries the display's own
+ * pixel count, so "3840×2160 · SOS equirectangular" over
+ * "Framebuffer: 4096×2048" makes the distinction without a sentence
+ * explaining it. Calling the control "Resolution" would erase exactly
+ * the difference the plan's "the frame and the monitor are two
+ * rectangles" section exists to keep — an output is fullscreen on its
+ * monitor whatever this says, and a rung below the monitor's own count
+ * scales *up* rather than shrinking into a corner.
+ *
+ * The whole ladder is offered rather than only the rungs at or below
+ * the monitor: 1024 is the "preview an LED sphere on a desk monitor"
+ * workflow and 8192 is a sphere fed by a 1080p preview window, so
+ * filtering by the monitor would remove the two cases the picker is
+ * most for.
+ */
+function buildFramebufferPicker(
+  mgr: OutputPanelManager,
+  record: OutputRecord,
+): HTMLElement {
+  const label = document.createElement('label')
+  label.className = 'output-field'
+
+  const text = document.createElement('span')
+  text.className = 'output-field-label'
+  text.textContent = t('outputs.item.framebuffer')
+
+  const select = document.createElement('select')
+  select.className = 'output-field-select'
+  for (const width of mgr.framebufferWidths()) {
+    const option = document.createElement('option')
+    option.value = String(width)
+    // Half, always: an equirectangular frame that is not 2:1 is not
+    // equirectangular, so the height is shown rather than chosen.
+    option.textContent = t('outputs.item.framebufferOption', {
+      width,
+      height: width / 2,
+    })
+    select.appendChild(option)
+  }
+  // Assigning and reading back is how the DOM answers "is this one of
+  // my options": an unmatched value leaves `select.value` empty. That
+  // should be unreachable — the parse only accepts a rung and this
+  // control only offers them — but a blank select reads as a broken
+  // panel, so a width from somewhere else is *shown* rather than
+  // rounded to a neighbour the output is not running at.
+  select.value = String(record.render.framebufferWidth)
+  if (!select.value) {
+    const own = document.createElement('option')
+    own.value = String(record.render.framebufferWidth)
+    own.textContent = t('outputs.item.framebufferOption', {
+      width: record.render.framebufferWidth,
+      height: record.render.framebufferWidth / 2,
+    })
+    select.prepend(own)
+    select.value = own.value
+  }
+
+  let applied = select.value
+  select.addEventListener('change', () => {
+    const next = select.value
+    select.disabled = true
+    void mgr
+      .setOutputRenderConfig(record.label, { framebufferWidth: Number(next) })
+      .then(() => {
+        applied = next
+      })
+      .catch(err => {
+        // Same posture as the toggles: a control that reports a state
+        // the output is not in is worse than one that visibly refuses.
+        logger.warn('[outputUI] framebuffer change failed:', err)
+        select.value = applied
+      })
+      .finally(() => {
+        select.disabled = false
+      })
+  })
+
+  label.append(text, select)
+  return label
 }
 
 /**

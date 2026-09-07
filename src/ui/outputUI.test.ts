@@ -76,6 +76,7 @@ function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
         if (rec) Object.assign(rec.render, render)
       },
     ),
+    framebufferWidths: vi.fn((): readonly number[] => [1024, 2048, 4096, 8192]),
     isRestoreOnLaunch: vi.fn(() => restoreOnLaunch),
     setRestoreOnLaunch: vi.fn((enabled: boolean) => {
       restoreOnLaunch = enabled
@@ -295,6 +296,96 @@ describe('the Outputs panel', () => {
     // A control that claims a state the output is not in is worse than
     // one that visibly refuses.
     expect(overlay.checked).toBe(false)
+  })
+
+  it('offers the rungs the manager reports, not a list of its own', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.framebufferWidths.mockReturnValue([2048, 4096])
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    // Read through the manager because `outputUI` may not import
+    // `multiOutput/` at runtime — a hard-coded ladder here would be a
+    // second copy free to disagree with the one the output snaps to.
+    expect([...select.options].map(o => o.value)).toEqual(['2048', '4096'])
+    expect([...select.options].map(o => o.textContent)).toEqual([
+      '2048×1024',
+      '4096×2048',
+    ])
+  })
+
+  it('starts on the resolution the output is actually running', async () => {
+    const { mgr, records } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    expect($<HTMLSelectElement>('.output-field-select')!.value).toBe(
+      String(records[0].render.framebufferWidth),
+    )
+  })
+
+  it('pushes a resolution change on the config channel', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    select.value = '8192'
+    select.dispatchEvent(new Event('change'))
+
+    await until(() => raw.setOutputRenderConfig.mock.calls.length === 1, 'the config push')
+    // A number, not the select's string: `setSize` would take '8192'
+    // and produce a buffer of NaN by NaN.
+    expect(raw.setOutputRenderConfig).toHaveBeenCalledWith('output-1', {
+      framebufferWidth: 8192,
+    })
+  })
+
+  it('puts the picker back on the running resolution when the change fails', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.setOutputRenderConfig.mockRejectedValue(new Error('out of GPU memory'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    const before = select.value
+    select.value = '8192'
+    select.dispatchEvent(new Event('change'))
+
+    await until(() => select.disabled === false, 'the in-flight guard to clear')
+    // An 8K allocation is exactly the change that can be refused, and a
+    // picker left claiming 8192 would send an operator hunting a
+    // performance problem on a buffer that never existed.
+    expect(select.value).toBe(before)
+  })
+
+  it('shows a width off the ladder rather than a blank select', async () => {
+    const { mgr, records } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+    // A record from somewhere the parse did not narrow.
+    records[0].render.framebufferWidth = 3000
+    closeOutputUI()
+    openOutputUI()
+    await until(() => $('.output-item') !== null, 'the repainted row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    // Not rounded to a neighbour the output is not running, and not
+    // blank — a blank select reads as a broken panel.
+    expect(select.value).toBe('3000')
+    expect(select.options[0].textContent).toBe('3000×1500')
   })
 
   it('pushes a view toggle straight to that output', async () => {

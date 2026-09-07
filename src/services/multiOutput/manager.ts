@@ -54,6 +54,7 @@
  */
 
 import {
+  FRAMEBUFFER_WIDTHS,
   OUTPUT_EVENT,
   OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
@@ -588,6 +589,19 @@ export class MultiOutputManager {
         }),
       ),
     )
+  }
+
+  /**
+   * The framebuffer rungs the Outputs panel may offer.
+   *
+   * Exposed as a method because the panel cannot import `protocol.ts`
+   * at runtime — it is eagerly loaded by `main.ts`, and every
+   * `multiOutput/` import there is type-only so the web entry graph
+   * stays clear of the IPC contract. The manager is already loaded by
+   * then, so it is the one place that can answer.
+   */
+  framebufferWidths(): readonly number[] {
+    return FRAMEBUFFER_WIDTHS
   }
 
   /** The current shared state, for the panel's debug readout. */
