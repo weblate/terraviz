@@ -26,23 +26,25 @@
  * far along they are, and the late joiner would out-rank a diff the
  * others correctly applied. Only a real change advances the sequence.
  *
- * **The view is projected per output, not stored per output.** Both
- * `params.cameraOffset` and `params.split` are per-output settings in
- * the plan, but only one of them *originates* per output: `split` is a
- * pure operator choice, while `cameraOffset` is derived once from the
- * operator's MapLibre camera and then either passed through or zeroed
- * depending on whether that output tracks the camera. Holding one
- * shared view and projecting it at the send boundary (`projectState`)
- * keeps a single source of truth for the camera; holding N views would
- * mean N copies of the same derivation, drifting the moment one update
- * path misses one of them.
+ * **The view is projected per output, not stored per output.** What is
+ * stored is `SharedView` — `dayNight` plus the operator's own
+ * `camera` (MapLibre lat/lon/zoom). What an output receives is a
+ * `MirroredView` arm, built at the send boundary by `projectView` from
+ * that shared camera, the output's `OutputViewSettings` and its
+ * `OutputMode`.
  *
- * The output's **mode** joins them at that same boundary. `MirroredView`
- * is a union keyed on `OutputMode`, the shared view is stored in
- * `CANONICAL_VIEW_MODE`, and `projectView` takes the mode the output
- * actually booted in rather than reading the canonical one — so an
- * output can never be handed an arm belonging to a geometry it does not
- * render.
+ * So the camera is one fact stored once and *derived* N times, not one
+ * derivation copied N times. Storing the derived value instead would
+ * put N copies of it behind N update paths, drifting the moment one
+ * missed an update — and it would have to be stored in some *one*
+ * geometry's encoding, which is the thing this shape exists to avoid.
+ * `split` is the other half of the per-output view and originates
+ * there: it is a pure operator choice with no globe fact behind it.
+ *
+ * **The shared view has no mode**, and that is what makes an output
+ * driven as the wrong geometry impossible rather than merely unlikely:
+ * `projectView` takes the mode the output actually booted in, and
+ * there is no canonical arm for it to fall back to.
  */
 
 import {
@@ -61,9 +63,13 @@ import {
 // alternative is extracting `cameraOffsetForCamera` and the
 // `MAX_CAMERA_OFFSET` it clamps against into a third module, and that
 // splits the shader's own invariant away from the shader mirror that
-// exists to hold it. The cost is that `equirectRtt` joins the
-// desktop-only `manager` chunk; the web entry chunk is unaffected, and
-// the boundary check in the plan's rung notes verifies that.
+// exists to hold it. Measured cost: Rollup gives `equirectRtt` its own
+// chunk, shared by `manager` and the output bundle — one copy, fetched
+// only by whoever imports it. The web entry chunk names that chunk in
+// its dynamic-import preload map, exactly as it already names `manager`
+// and `publisher`, and never fires the import. Check the markers
+// (`sos-equirect`, `uCameraOffset` — both absent from
+// `dist/assets/main-*.js`), never chunk filenames.
 import { cameraOffsetForCamera } from '../../output/equirectRtt'
 
 /** The camera offset that produces a uniform 1:1 equirectangular
