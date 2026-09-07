@@ -2388,12 +2388,91 @@ other geometry costs.
 | `outputUI.ts` | **No.** The mode picker is absent only because a one-option select is dead UI |
 | `layerStack.ts` | **No.** Composites base Earth + overlay + layers to a colour at a surface point. Projection-independent |
 | `outputScene.ts` + `equirectRtt.ts` | **Yes, hard-wired.** Unconditional 2:1 framebuffer, fullscreen quad, ray-march. The scene never reads `mode` — it *reports* one and nothing routes on it inbound |
+| `output.css` — how the frame reaches the monitor | **Yes, by consequence.** The drawing buffer is 2:1; the window is whatever the display is. `object-fit: contain` reconciles them by letterboxing, which is a decision rather than a formatting detail — see the next subsection |
 
 So `OutputMode` is a real extension point that is plumbed everywhere
 except the renderer. The seam is already in the right place:
 `equirectRtt` answers "which surface point is this pixel", `layerStack`
 answers "what colour is that point". Another geometry replaces the
 first and keeps the second.
+
+### Not every monitor is 2:1, and today every framebuffer is
+
+The frame and the monitor are two different rectangles, and everything
+above names only one of them.
+
+**What v1 actually does.** `resolveFramebufferSize` has exactly one
+caller, and that caller passes nothing — `options.framebufferWidth` is
+never supplied, so every output allocates 4096×2048 regardless of the
+display it landed on. Nothing anywhere reads `Monitor.size`. That
+buffer is then presented into a fullscreen window of the monitor's own
+aspect by `output.css`'s `object-fit: contain`, which letterboxes: on a
+16:9 output the signal carries a 1920×960 image with 60 rows of black
+above it and 60 below.
+
+**`contain` is the right default and the wrong thing to leave
+unexamined.** It is correct for a preview on a desk monitor, and
+correct for any downstream device that expects a 2:1 image *inside* a
+frame and finds its own edges. It is wrong for a device that expects
+the whole signal to **be** the equirect: there the bars are not
+padding, and every latitude sits 1.125× closer to the equator than the
+device places it. That error is smooth, symmetric and largest at the
+poles — on a sphere it reads as the map being slightly off rather than
+as a scaling bug, which is the same failure shape as the bottom-left
+origin below. Which behaviour an SOS driver, a warping appliance or a
+projector's own geometry engine has is not known here, and rung 9's
+smoke checklist is the first thing that could find out.
+
+Three ways out, and they are not interchangeable: letterbox (today),
+stretch to the monitor, or size the drawing buffer to the monitor's own
+pixel count. The third is unavailable *in this mode* — an
+equirectangular frame that is not 2:1 is not equirectangular, which is
+why `FRAMEBUFFER_WIDTHS` derives height instead of offering it. The
+choice between the first two belongs to the output, not to the CSS, and
+is therefore a per-output setting nobody has written yet.
+
+**What that constrains for rung 11.** Its resolution picker is framed
+as one ladder. It should be **per mode**: 2:1 rungs are a property of
+this projection, not of outputs in general. Rung 11 is also the first
+thing with a reason to read the monitor's size at all — the
+snap-**down** rule exists precisely for a caller that passes hardware's
+own number, and that caller has never existed.
+
+### Geometry is a per-output configuration, not an enum value
+
+`OutputMode` being a one-value union makes "widen the enum" look like
+the whole extension story. For the flat case below, it is. For
+projection mapping it is not, and the distinction is cheaper to make
+now than after a second value exists.
+
+A **mode** is something the build knows: `sos-equirect`, or a
+hypothetical `flat-perspective`, are shaders this repo ships. A
+**projection mapping** is something the *site* knows — a warp mesh
+measured against four projectors in one room, a normalized viewport
+rect into a shared framebuffer, an arbitrary model's UV layout. That is
+a payload an operator supplies, not a variant a `switch` enumerates. So
+the shape that survives contact with an installation is `mode` plus an
+optional geometry *reference*, and both rules already in the code keep
+working unchanged:
+
+- rung 10's fail-closed parse still refuses a `mode` it does not
+  recognise, so a downgraded build declines to spawn rather than
+  putting a plain equirect on a projector that was calibrated for a
+  warp;
+- the mesh stays out of `localStorage`, per the typed-array finding
+  below — the persisted config holds a path, not a blob.
+
+**`MirroredView` is already mode-specific without saying so.**
+`cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the camera
+must stay inside the sphere; `split` folds U across an equirectangular
+frame. Both are broadcast to every output and no layer branches on
+mode. With one mode that is simply true. With two it is a perspective
+output receiving a `split` it must silently ignore, and an offset whose
+invariant does not describe its camera. Whoever adds the second mode
+decides whether the view struct becomes per-mode or stays a flat union
+of every mode's settings; `stateAggregator`'s `projectState` is where
+that is enforced, since it is already the one place a value is made
+per-output.
 
 ### The flat case: N monitors each showing the globe
 
@@ -2410,8 +2489,10 @@ switched off at construction, because the equirect pass is the renderer.
 A perspective mode wants the mesh and those effects back, so that
 switch becomes conditional on mode.
 
-Also: `resolveFramebufferSize` snaps to 2:1 rungs. A flat mode wants the
-monitor's own aspect, so it needs a non-2:1 path.
+Also: `resolveFramebufferSize` snaps to 2:1 rungs, and this is the mode
+that actually wants the monitor's own aspect end to end — buffer,
+window and signal all the same rectangle, so none of the reconciliation
+above applies and there is nothing to letterbox.
 
 Cost: widen `OutputMode`, a per-output camera azimuth, a branch in
 `outputScene`, the two changes above. Manager, protocol, persistence,
@@ -3165,8 +3246,24 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 7. Click Add Output → pick the secondary → Confirm. The output
    window appears within ~1 s, fullscreen on the secondary,
    black until ready. No title bar, no menu bar, no cursor.
+7a. **Aspect.** On a 16:9 secondary the frame is letterboxed —
+    a 2:1 image with equal black bands top and bottom, ~5.6%
+    of the height each. Confirm that is what the display
+    shows, and photograph it. This is the first hardware
+    contact with the frame/monitor mismatch in "Not every
+    monitor is 2:1"; whether the bands are correct depends on
+    what the downstream device expects, so record the
+    behaviour rather than judging it here. Bands of *unequal*
+    height, or a full-height image, is a bug — the first says
+    the window is not where the manager put it, the second
+    that something is stretching the projection.
 8. Output renders the photoreal Earth idle state (no dataset
-   loaded yet) with day/night and atmosphere.
+   loaded yet): the base diffuse, re-projected. **Not**
+   day/night, night lights or clouds — those are unwired
+   (plan §"What the equirect path does to the Earth
+   decoration"), and specular, atmosphere, sun and ground
+   shadow never cross to an unwrap at all. A flat, evenly-lit
+   Earth is the pass condition here; a black sphere is not.
 9. The Outputs panel lists the new output with health badge:
    healthy.
 
@@ -3248,8 +3345,18 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     resolution; fps may drop (expected on the secondary's
     GPU).
 24. Change back to 1024×512 — for "preview the LED sphere
-    on a 1080p monitor" workflow. Output downsamples cleanly
-    to the 1080p secondary.
+    on a 1080p monitor" workflow. Note the buffer is now
+    *smaller* than the window, so this scales up, not down:
+    the expected result is a soft 1920×960 image with the
+    same bands as step 7a, not a small image in the middle
+    of the screen. The picker changes the framebuffer, never
+    the window.
+24a. **The ladder is this mode's, not every mode's.** Both
+    rungs above keep height at exactly half the width,
+    because an equirectangular frame that is not 2:1 is not
+    equirectangular. Whoever adds a second `OutputMode` gives
+    it its own rungs rather than widening these — see
+    "Geometry is a per-output configuration".
 
 ### Commit 12 — fullscreen + kiosk
 
