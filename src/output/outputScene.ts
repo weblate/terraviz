@@ -117,6 +117,34 @@ export const VIDEO_FRAME_MS = 1000 / 30
  *  burns a decoder-budget's worth of GPU for no visible difference. */
 export const STATIC_FRAME_MS = 1000
 
+/**
+ * How fast the loop should redraw for the media currently loaded.
+ *
+ * **A paused video is static.** `kind` cannot be latched from the
+ * dataset: an output holding one frame — the operator paused, or the
+ * date is outside this dataset's span, both of which `outputSync`
+ * expresses by pausing the element — would redraw that identical frame
+ * 30 times a second, which is 30× the GPU for no picture change on
+ * hardware that may be driving sixteen of these.
+ *
+ * Read off the element rather than off the sync outcome, because the
+ * element is the ground truth: a dataset with no time axis is left
+ * looping by design (`outputSync` returns `no-range` and does not touch
+ * it), and pacing that at the static floor would judder an animation
+ * nothing is wrong with.
+ *
+ * Structural in its parameter so a test needs no media element.
+ */
+export function contentKindFor(
+  media: { kind: 'image' | 'video'; video: { paused: boolean } | null } | null,
+): OutputContentKind {
+  if (!media) return 'idle'
+  if (media.kind === 'video' && media.video !== null && !media.video.paused) return 'video'
+  // Everything that is not `'video'` buckets at the static floor in
+  // `frameIntervalMs`, which is what a held frame wants.
+  return 'image'
+}
+
 export function frameIntervalMs(kind: OutputContentKind): number {
   return kind === 'video' ? VIDEO_FRAME_MS : STATIC_FRAME_MS
 }
@@ -456,6 +484,19 @@ export async function createOutputScene(
       // an installation switching datasets all day leaks them all.
       for (const stale of slots.slice(wanted.length)) disposeSlot(stale)
       slots = nextSlots
+
+      // Disposing the texture is only half of it: `uniforms` is
+      // long-lived and keyed by slot name, so a removed slot's entry
+      // keeps pointing at the disposed texture — and a Three texture
+      // holds its `image`, which is the decoded video element. The
+      // shader stops declaring these samplers on the rebuild below, so
+      // nothing uploads them, but the reference alone pins one media
+      // element per removed slot for the life of the window.
+      for (let i = wanted.length; i < MAX_OUTPUT_LAYERS; i++) {
+        const n = overlayUniformNames(i)
+        if (uniforms[n.map]) uniforms[n.map].value = null
+        if (uniforms[n.lut]) uniforms[n.lut].value = null
+      }
 
       if (wanted.length !== slotCount) {
         slotCount = wanted.length

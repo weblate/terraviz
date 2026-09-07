@@ -23,6 +23,7 @@ import {
   shouldRenderFrame,
   VIDEO_FRAME_MS,
   STATIC_FRAME_MS,
+  contentKindFor,
   createOutputScene,
   type OutputLayerInput,
 } from './outputScene'
@@ -53,6 +54,38 @@ describe('resolveFramebufferSize', () => {
     expect(resolveFramebufferSize(1).width).toBe(1024)
     expect(resolveFramebufferSize(0).width).toBe(1024)
     expect(resolveFramebufferSize(-1).width).toBe(1024)
+  })
+})
+
+describe('contentKindFor', () => {
+  it('is idle with nothing loaded', () => {
+    expect(contentKindFor(null)).toBe('idle')
+  })
+
+  it('paces a playing video at the video rate', () => {
+    expect(contentKindFor({ kind: 'video', video: { paused: false } })).toBe('video')
+  })
+
+  it('paces a PAUSED video at the static floor', () => {
+    // The bug this exists for: `kind` latched from the dataset stays
+    // 'video' when `outputSync` pauses the element, so an output
+    // holding one frame redraws it 30 times a second — 30x the GPU for
+    // an identical picture, on hardware that may drive sixteen of
+    // these.
+    expect(frameIntervalMs(contentKindFor({ kind: 'video', video: { paused: true } }))).toBe(
+      STATIC_FRAME_MS,
+    )
+  })
+
+  it('paces a still image at the static floor', () => {
+    expect(frameIntervalMs(contentKindFor({ kind: 'image', video: null }))).toBe(STATIC_FRAME_MS)
+  })
+
+  it('reads the element, not the sync outcome, so a no-range loop keeps its rate', () => {
+    // A dataset with no time axis is left looping by design —
+    // `outputSync` returns `no-range` and does not touch the element.
+    // Pacing off the outcome would drop that animation to 1 Hz.
+    expect(contentKindFor({ kind: 'video', video: { paused: false } })).toBe('video')
   })
 })
 
@@ -487,6 +520,36 @@ describe('the sphere texture binding', () => {
 
       expect(three.disposed.filter(d => d === 'videoTexture').length).toBe(before + 1)
       expect(three.disposed).toContain('dataTexture')
+    })
+
+    it('drops the uniform’s reference to a slot that goes away', async () => {
+      const { three, scene } = await build()
+      const kept = { tag: 'a' } as never
+      scene.setLayers([
+        layer({ element: kept }),
+        layer({ element: { tag: 'b' } as never, overlay: { datasetId: 'B', colorScale: SCALE } }),
+      ])
+      expect(three.uniformsSeen[0].uLayer1Map.value).not.toBeNull()
+
+      scene.setLayers([layer({ element: kept })])
+
+      // Disposing the texture is only half of it. `uniforms` is
+      // long-lived and keyed by slot name, and a Three texture holds
+      // its `image` — so leaving the value in place pins one decoded
+      // video element per removed slot for the life of the window,
+      // even though the rebuilt shader no longer samples it.
+      expect(three.uniformsSeen[0].uLayer1Map.value).toBeNull()
+      expect(three.uniformsSeen[0].uLayer1Lut.value).toBeNull()
+    })
+
+    it('drops every slot’s reference when the layers go away entirely', async () => {
+      const { three, scene } = await build()
+      scene.setLayers([layer({ overlay: { datasetId: 'AOD', colorScale: SCALE } })])
+
+      scene.setLayers([])
+
+      expect(three.uniformsSeen[0].uLayer0Map.value).toBeNull()
+      expect(three.uniformsSeen[0].uLayer0Lut.value).toBeNull()
     })
 
     it('marks the scene dirty so a composite change does not wait out the 1 Hz floor', async () => {

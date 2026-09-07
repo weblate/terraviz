@@ -30,9 +30,9 @@ import './output.css'
 import { createDatasetMirror } from './datasetMirror'
 import { connectOutputLink, createTauriLinkHost } from './outputLink'
 import {
+  contentKindFor,
   createOutputScene,
   shouldRenderFrame,
-  type OutputContentKind,
   type OutputLayerInput,
 } from './outputScene'
 import { logger } from '../utils/logger'
@@ -58,7 +58,6 @@ async function boot(): Promise<void> {
    *  fixture page, where the loop is just the idle Earth. */
   const steerers: (() => void)[] = []
 
-  let kind: OutputContentKind = 'idle'
   let lastFrame = 0
   // First tick always draws: nothing has been shown yet, and a black
   // canvas is indistinguishable from a failed boot on a projector.
@@ -102,7 +101,6 @@ async function boot(): Promise<void> {
         // whether that means a reload or just new metadata, since an
         // overlay-only change must not restart the decoder.
         if (changed.includes('dataset')) {
-          kind = state.dataset?.kind ?? 'idle'
           void mirror.apply(state.dataset).then(recomposite)
         } else if (changed.includes('display')) {
           // A palette change costs a LUT upload, not a reload — the
@@ -143,6 +141,11 @@ async function boot(): Promise<void> {
     // upgrading 2K → 4K → 8K after first paint. Without this the
     // upgrade waits out the 1 Hz static floor and pops on a projector.
     dirty = scene.consumeDirty() || dirty
+    // Recomputed every frame rather than latched on a dataset change:
+    // whether the element is advancing is what sets the pace, and that
+    // changes when the operator pauses without any state key changing
+    // shape. See `contentKindFor`.
+    const kind = contentKindFor(mirror.current())
     if (shouldRenderFrame({ kind, sinceLastFrameMs: now - lastFrame, dirty })) {
       scene.render()
       lastFrame = now
