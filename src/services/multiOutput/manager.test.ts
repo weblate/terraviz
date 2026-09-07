@@ -17,7 +17,14 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { OUTPUT_STATE_EVENT, type OutputEvent, type OutputStateMessage } from './protocol'
+import {
+  DEFAULT_FRAMEBUFFER_WIDTH,
+  OUTPUT_RENDER_CONFIG_EVENT,
+  OUTPUT_STATE_EVENT,
+  type OutputEvent,
+  type OutputRenderConfig,
+  type OutputStateMessage,
+} from './protocol'
 import {
   MultiOutputManager,
   OUTPUT_ENTRY_URL,
@@ -62,6 +69,27 @@ interface Emitted {
   label: string
   event: string
   payload: OutputStateMessage
+}
+
+/**
+ * The state emits only.
+ *
+ * Two channels reach an output now — state and render config — so a
+ * test about broadcast has to say which it means. Filtering rather than
+ * slicing, because config and state are emitted in a defined order and
+ * an index would quietly encode it in tests that are not about it.
+ */
+function stateEmits(emitted: readonly Emitted[]): Emitted[] {
+  return emitted.filter(e => e.event === OUTPUT_STATE_EVENT)
+}
+
+/** The render-config emits only, payload narrowed. */
+function configEmits(
+  emitted: readonly Emitted[],
+): { label: string; config: OutputRenderConfig }[] {
+  return emitted
+    .filter(e => e.event === OUTPUT_RENDER_CONFIG_EVENT)
+    .map(e => ({ label: e.label, config: e.payload as unknown as OutputRenderConfig }))
 }
 
 /** One live subscription. A **list**, not a map keyed by event name:
@@ -367,12 +395,81 @@ describe('broadcast', () => {
 
     fake.send(ready('output-1'))
 
-    expect(fake.emitted).toHaveLength(1)
-    expect(fake.emitted[0].event).toBe(OUTPUT_STATE_EVENT)
-    expect(fake.emitted[0].payload.full).toBe(true)
-    expect(fake.emitted[0].payload.state).toMatchObject({
+    const states = stateEmits(fake.emitted)
+    expect(states).toHaveLength(1)
+    expect(states[0].payload.full).toBe(true)
+    expect(states[0].payload.state).toMatchObject({
       simulationDate: '2026-01-01T00:00:00Z',
     })
+  })
+
+  it('sends the render config before the first state, not after', async () => {
+    // A restored 8K output that got its state first would render at the
+    // default and then reallocate — a resolution pop on a projector at
+    // every launch, caused by nothing but ordering.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0, render: { framebufferWidth: 8192 } })
+
+    fake.send(ready('output-1'))
+
+    expect(fake.emitted.map(e => e.event)).toEqual([
+      OUTPUT_RENDER_CONFIG_EVENT,
+      OUTPUT_STATE_EVENT,
+    ])
+    expect(configEmits(fake.emitted)[0].config.framebufferWidth).toBe(8192)
+  })
+
+  it('says nothing on the config channel to an output that is not ready', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+
+    await manager.setOutputRenderConfig('output-1', { debugOverlay: true })
+
+    // Still booting: it would apply a config against a window that does
+    // not yet have a renderer. It gets this one with its first snapshot.
+    expect(configEmits(fake.emitted)).toEqual([])
+    fake.send(ready('output-1'))
+    expect(configEmits(fake.emitted)[0].config.debugOverlay).toBe(true)
+  })
+
+  it('pushes a config change to a ready output straight away', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    fake.send(ready('output-1'))
+    fake.emitted.length = 0
+
+    await manager.setOutputRenderConfig('output-1', { debugOverlay: true })
+
+    // Ticking the box with a static globe on screen must not appear to
+    // do nothing until someone happens to pan — the same reason
+    // `setOutputView` pushes.
+    expect(configEmits(fake.emitted)).toEqual([
+      { label: 'output-1', config: { framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH, debugOverlay: true } },
+    ])
+    // And nothing on the state channel: a window setting is not a globe
+    // change, so it must not consume a sequence number.
+    expect(stateEmits(fake.emitted)).toEqual([])
+  })
+
+  it('changes only the settings named, leaving the rest alone', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0, render: { framebufferWidth: 8192 } })
+    fake.send(ready('output-1'))
+    fake.emitted.length = 0
+
+    await manager.setOutputRenderConfig('output-1', { debugOverlay: true })
+
+    // A partial that reset the resolution would drop an installation's
+    // 8K output to the default because someone ticked a debug box.
+    expect(configEmits(fake.emitted)[0].config.framebufferWidth).toBe(8192)
   })
 
   it('sends diffs to every ready output once they are ready', async () => {
@@ -668,7 +765,7 @@ describe('lifecycle', () => {
     // One delivery, not three.
     await manager.addOutput({ monitorIndex: 0 })
     fake.send(ready('output-1'))
-    expect(fake.emitted).toHaveLength(1)
+    expect(stateEmits(fake.emitted)).toHaveLength(1)
   })
 
   it('a stop() during an in-flight start() leaves nothing listening', async () => {
@@ -729,8 +826,24 @@ describe('persistence', () => {
         mode: 'sos-equirect',
         trackOperatorCamera: true,
         split: false,
+        framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
+        debugOverlay: false,
       },
     ])
+  })
+
+  it('records a config change even before the output has announced itself', async () => {
+    const fake = createFakeHost()
+    const store = memoryStore()
+    const manager = makeManager(fake.host, { store })
+    await manager.addOutput({ monitorIndex: 0 })
+
+    await manager.setOutputRenderConfig('output-1', { framebufferWidth: 8192 })
+
+    // The operator's choice is theirs whether or not the window has
+    // announced itself; one made during boot that vanished at relaunch
+    // would be a very hard thing to report.
+    expect(store.current().outputs[0].framebufferWidth).toBe(8192)
   })
 
   it('forgets a removed output', async () => {
@@ -788,6 +901,8 @@ describe('restoreOutputs', () => {
     mode: 'sos-equirect' as const,
     trackOperatorCamera: true,
     split: false,
+    framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
+    debugOverlay: false,
   })
 
   it('costs nothing when the operator never opted in', async () => {

@@ -55,14 +55,17 @@
 
 import {
   OUTPUT_EVENT,
+  OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
   STATE_TICK_MS,
+  defaultRenderConfig,
   isOutputLabel,
   outputLabel,
   outputLabelIndex,
   type MirroredGlobeState,
   type OutputEvent,
   type OutputMode,
+  type OutputRenderConfig,
   type OutputStateMessage,
   type SharedStateMessage,
 } from './protocol'
@@ -76,6 +79,7 @@ import {
   OUTPUT_RESTORE_STAGGER_MS,
   createOutputConfigStore,
   matchMonitorIndex,
+  renderConfigFrom,
   toPersistedOutput,
   type OutputConfigStore,
 } from './outputPersistence'
@@ -137,6 +141,7 @@ export interface AddOutputOptions {
   monitorIndex: number
   mode?: OutputMode
   view?: Partial<OutputViewSettings>
+  render?: Partial<OutputRenderConfig>
 }
 
 /** The manager's record of one live output. */
@@ -144,6 +149,18 @@ export interface OutputRecord {
   label: string
   mode: OutputMode
   view: OutputViewSettings
+  /**
+   * This window's render settings — framebuffer resolution and debug
+   * HUD (rung 11).
+   *
+   * Held beside `view` rather than folded into it because they travel
+   * on a different channel and for a different reason: `view` is a
+   * projection of globe state and is diffed against a sequence, while
+   * this is window configuration that changes only when the operator
+   * changes it. Putting them together would mean either sequencing a
+   * checkbox or un-sequencing the camera.
+   */
+  render: OutputRenderConfig
   /** The monitor it was placed on, captured at spawn. Commit 10 matches
    *  this against `availableMonitors()` on restore, on **both** name and
    *  signed origin — a Windows display name alone is positional and
@@ -268,6 +285,7 @@ export class MultiOutputManager {
       monitor,
       options.mode ?? 'sos-equirect',
       { ...DEFAULT_VIEW_SETTINGS, ...definedOnly(options.view) },
+      { ...defaultRenderConfig(), ...definedOnly(options.render) },
     )
     this.persist()
     return record
@@ -291,6 +309,7 @@ export class MultiOutputManager {
     monitor: OutputMonitor,
     mode: OutputMode,
     view: OutputViewSettings,
+    render: OutputRenderConfig,
   ): Promise<OutputRecord> {
     const handle = await this.host.createWindow(label, OUTPUT_ENTRY_URL)
 
@@ -318,6 +337,7 @@ export class MultiOutputManager {
       label,
       mode,
       view,
+      render,
       monitor,
       ready: false,
       lastEvent: null,
@@ -386,6 +406,32 @@ export class MultiOutputManager {
   }
 
   /**
+   * Change one output's render settings — resolution, debug HUD.
+   *
+   * Deliberately shaped like `setOutputView` and deliberately *not*
+   * routed through it: this travels on `OUTPUT_RENDER_CONFIG_EVENT`
+   * with no `seq`, because a checkbox has no ordering hazard worth a
+   * sequence number, and folding it into the state stream would make
+   * the aggregator diff a window setting (see `OutputRenderConfig`).
+   *
+   * Persisted before the ready gate for the same reason the view is:
+   * the operator's choice is theirs whether or not the window has
+   * announced itself yet, and a setting flipped during boot that
+   * vanished at relaunch would be very hard to report.
+   */
+  async setOutputRenderConfig(
+    label: string,
+    render: Partial<OutputRenderConfig>,
+  ): Promise<void> {
+    const record = this.records.get(label)
+    if (!record) return
+    record.render = { ...record.render, ...definedOnly(render) }
+    this.persist()
+    if (!record.ready) return
+    await this.emit(record, record.render, OUTPUT_RENDER_CONFIG_EVENT)
+  }
+
+  /**
    * Recreate the outputs a previous launch left configured.
    *
    * Returns without enumerating a single monitor or opening the IPC
@@ -426,10 +472,13 @@ export class MultiOutputManager {
       if (restored.length > 0) await this.sleep(OUTPUT_RESTORE_STAGGER_MS)
       try {
         restored.push(
-          await this.spawn(output.label, monitors[index], output.mode, {
-            trackCamera: output.trackOperatorCamera,
-            split: output.split,
-          }),
+          await this.spawn(
+            output.label,
+            monitors[index],
+            output.mode,
+            { trackCamera: output.trackOperatorCamera, split: output.split },
+            renderConfigFrom(output),
+          ),
         )
       } catch (err) {
         logger.warn(`[multiOutput] could not restore ${output.label}:`, err)
@@ -456,9 +505,7 @@ export class MultiOutputManager {
     const config = this.store.read()
     this.store.write({
       ...config,
-      outputs: [...this.records.values()].map(r =>
-        toPersistedOutput(r.label, r.monitor, r.mode, r.view),
-      ),
+      outputs: [...this.records.values()].map(r => toPersistedOutput(r)),
     })
   }
 
@@ -565,11 +612,15 @@ export class MultiOutputManager {
    * dead output; this only makes sure the others keep rendering in the
    * meantime.
    */
-  private async emit(record: OutputRecord, payload: unknown): Promise<void> {
+  private async emit(
+    record: OutputRecord,
+    payload: unknown,
+    event: string = OUTPUT_STATE_EVENT,
+  ): Promise<void> {
     try {
-      await this.host.emitTo(record.label, OUTPUT_STATE_EVENT, payload)
+      await this.host.emitTo(record.label, event, payload)
     } catch (err) {
-      logger.warn(`[multiOutput] state emit to ${record.label} failed:`, err)
+      logger.warn(`[multiOutput] ${event} emit to ${record.label} failed:`, err)
     }
   }
 
@@ -590,6 +641,11 @@ export class MultiOutputManager {
     record.lastEvent = event
     if (event.type === 'output_ready') {
       record.ready = true
+      // Config first. A restored 8K output that received its state
+      // before its resolution would render one or more frames at the
+      // default and then reallocate — visible on a projector as a
+      // resolution pop at every launch, for no reason but ordering.
+      void this.emit(record, record.render, OUTPUT_RENDER_CONFIG_EVENT)
       const snapshot = this.aggregator.full()
       void this.emit(record, {
         ...snapshot,

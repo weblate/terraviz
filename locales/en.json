@@ -524,6 +524,7 @@
   "outputs.adding": "Adding…",
   "outputs.close": "Close outputs",
   "outputs.intro": "Send a projection-corrected view of the live globe to another display — a Science On a Sphere projector, a dome, or a second monitor.",
+  "outputs.item.debugOverlay": "Debug overlay (drawn on the output)",
   "outputs.item.meta": "{width}×{height} · {mode}",
   "outputs.item.remove": "Remove",
   "outputs.item.removeAria": "Remove the output on {monitor}",

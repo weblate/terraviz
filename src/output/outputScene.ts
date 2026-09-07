@@ -71,18 +71,15 @@ import {
   type EquirectParams,
 } from './equirectRtt'
 import { MAX_OUTPUT_LAYERS, buildOutputFragmentShader, overlayUniformNames } from './layerStack'
+// The rung ladder lives in `protocol.ts` because the Outputs panel
+// offers it and this module snaps to it, and the panel cannot import
+// the output bundle. Re-exported so the scene's own callers do not have
+// to know that.
+import { FRAMEBUFFER_WIDTHS, type FramebufferWidth } from '../services/multiOutput/protocol'
+export { FRAMEBUFFER_WIDTHS, type FramebufferWidth }
 import { COLOR_SCALE_LUT_SIZE, buildColorScaleLut } from '../types/color-scale'
 import { buildDisplayLut, type ColorScaleDisplay } from '../services/colorScaleDisplay'
 import type { DatasetOverlayOptions } from '../types'
-
-/**
- * Framebuffer widths the resolution picker offers. Heights are always
- * half — an equirectangular frame that is not 2:1 is not
- * equirectangular.
- */
-export const FRAMEBUFFER_WIDTHS = [1024, 2048, 4096, 8192] as const
-
-export type FramebufferWidth = (typeof FRAMEBUFFER_WIDTHS)[number]
 
 export interface FramebufferSize {
   width: number
@@ -230,6 +227,30 @@ export interface OutputScene {
    * can rebuild the shader.
    */
   setLayers(layers: readonly OutputLayerInput[]): void
+  /**
+   * Resize the drawing buffer, snapping to the supported ladder.
+   *
+   * The **framebuffer**, never the window: an output is fullscreen on
+   * its monitor and stays there. A rung below the window's own pixel
+   * count scales up rather than shrinking into a corner, which is the
+   * "preview an 8K sphere on a 1080p desk monitor" workflow.
+   *
+   * A no-op when the snapped size is unchanged, so an operator
+   * re-picking the current rung does not reallocate a 128 MiB buffer.
+   */
+  setFramebufferWidth(width: number): void
+  /**
+   * The GPU this webview actually got, or `null` when the driver will
+   * not say.
+   *
+   * Surfaced because the app cannot choose: a spike found the webview
+   * silently on the iGPU of a machine with a 4090, `powerPreference` is
+   * inert, and neither wry nor tauri reads an override — so an
+   * unattended installation can run at a fraction of its provisioned
+   * capacity, undiagnosable from logs. Seeing the string is the whole
+   * mitigation (plan §Risks).
+   */
+  rendererName(): string | null
   dispose(): void
 }
 
@@ -434,8 +455,12 @@ export async function createOutputScene(
     slot.lut?.dispose()
   }
 
+  let currentSize = size
+
   return {
-    size,
+    get size() {
+      return currentSize
+    },
     /** True once since the last `render()` — drives `shouldRenderFrame`'s
      *  `dirty` input so an upgraded texture paints immediately. */
     consumeDirty() {
@@ -533,6 +558,41 @@ export async function createOutputScene(
       // A composite change that did not also upgrade a texture would
       // otherwise wait out the 1 Hz static floor before appearing.
       textureUpgraded = true
+    },
+    setFramebufferWidth(width) {
+      const next = resolveFramebufferSize(width)
+      if (next.width === currentSize.width && next.height === currentSize.height) return
+      currentSize = next
+      // `false` leaves the CSS size alone — the canvas stays full-bleed
+      // on its monitor and `object-fit` reconciles the two, which is
+      // what makes a rung smaller than the window scale up rather than
+      // shrink into a corner.
+      renderer.setSize(next.width, next.height, false)
+      // The projection is per-pixel, so a resized buffer is a different
+      // image even with nothing else changed; without this the new
+      // resolution waits out the 1 Hz static floor.
+      textureUpgraded = true
+    },
+    rendererName() {
+      try {
+        const gl = (
+          renderer as unknown as { getContext?: () => WebGLRenderingContext | null }
+        ).getContext?.()
+        if (!gl) return null
+        // Masked on most browsers and unmasked in a packaged webview,
+        // which is the case that matters — this exists for an operator
+        // standing in front of an installation, not for the web build.
+        const ext = gl.getExtension('WEBGL_debug_renderer_info') as {
+          UNMASKED_RENDERER_WEBGL: number
+        } | null
+        if (!ext) return null
+        const name = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+        return typeof name === 'string' && name.length > 0 ? name : null
+      } catch {
+        // A driver that refuses the query must cost the readout, not
+        // the frame it was going to be drawn over.
+        return null
+      }
     },
     dispose() {
       unsubscribeDiffuse()

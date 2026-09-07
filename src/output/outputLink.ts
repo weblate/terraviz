@@ -57,9 +57,12 @@ import { IDENTITY_PARAMS } from './equirectRtt'
 import { sameValue } from '../services/multiOutput/stateEquality'
 import {
   OUTPUT_EVENT,
+  OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
+  defaultRenderConfig,
   type OutputGlobeState,
   type OutputMode,
+  type OutputRenderConfig,
   type OutputStateMessage,
 } from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
@@ -251,8 +254,32 @@ export function isStateMessage(payload: unknown): payload is OutputStateMessage 
   )
 }
 
+/**
+ * Not every payload on the config channel is a config.
+ *
+ * Same posture as `isStateMessage`: a malformed payload costs one
+ * dropped message, never an exception out of the IPC callback. Each
+ * field is checked independently so a message carrying one valid half
+ * is not thrown away for the other.
+ */
+export function isRenderConfig(payload: unknown): payload is OutputRenderConfig {
+  if (typeof payload !== 'object' || payload === null) return false
+  const m = payload as Record<string, unknown>
+  return (
+    typeof m.framebufferWidth === 'number' &&
+    Number.isFinite(m.framebufferWidth) &&
+    typeof m.debugOverlay === 'boolean'
+  )
+}
+
 export interface OutputLink {
   state(): Readonly<OutputGlobeState>
+  /** The window configuration currently in force. */
+  renderConfig(): Readonly<OutputRenderConfig>
+  /** Called when the manager changes this window's configuration.
+   *  Unlike state, there is no diffing here — a setting's latest value
+   *  is the only one that matters, so every message is delivered. */
+  onRenderConfig(listener: (config: Readonly<OutputRenderConfig>) => void): () => void
   /** Called after each accepted message that changed something, with
    *  the keys that differ. Never called with an empty list — a
    *  heartbeat that changed nothing is not news. */
@@ -272,6 +299,8 @@ export async function connectOutputLink(
 ): Promise<OutputLink> {
   const store = createOutputStateStore(mode)
   const listeners = new Set<(changed: StateKey[], state: Readonly<OutputGlobeState>) => void>()
+  const configListeners = new Set<(config: Readonly<OutputRenderConfig>) => void>()
+  let currentConfig = defaultRenderConfig()
 
   const unlisten = await host.listen(OUTPUT_STATE_EVENT, payload => {
     if (!isStateMessage(payload)) {
@@ -293,8 +322,24 @@ export async function connectOutputLink(
     }
   })
 
-  // After the listener, never before: the manager answers this by
-  // sending the first full snapshot straight away.
+  const unlistenConfig = await host.listen(OUTPUT_RENDER_CONFIG_EVENT, payload => {
+    if (!isRenderConfig(payload)) {
+      logger.warn('[output] dropping a payload that is not a config message')
+      return
+    }
+    currentConfig = payload
+    for (const listener of configListeners) {
+      try {
+        listener(currentConfig)
+      } catch (err) {
+        logger.error('[output] config listener threw:', err)
+      }
+    }
+  })
+
+  // After both listeners, never before: the manager answers this by
+  // sending the first full snapshot and this window's config straight
+  // away.
   await host.emit(OUTPUT_EVENT, {
     type: 'output_ready',
     label: host.label,
@@ -305,6 +350,11 @@ export async function connectOutputLink(
   let stopped = false
   return {
     state: () => store.state(),
+    renderConfig: () => currentConfig,
+    onRenderConfig(listener) {
+      configListeners.add(listener)
+      return () => configListeners.delete(listener)
+    },
     onChange(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -313,7 +363,9 @@ export async function connectOutputLink(
       if (stopped) return
       stopped = true
       listeners.clear()
+      configListeners.clear()
       unlisten()
+      unlistenConfig()
     },
   }
 }

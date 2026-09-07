@@ -36,8 +36,12 @@
  */
 
 import { logger } from '../../utils/logger'
-import type { OutputMode } from './protocol'
-import type { OutputMonitor } from './manager'
+import {
+  DEFAULT_FRAMEBUFFER_WIDTH,
+  type OutputMode,
+  type OutputRenderConfig,
+} from './protocol'
+import type { OutputMonitor, OutputRecord } from './manager'
 import type { OutputViewSettings } from './stateAggregator'
 
 export const OUTPUT_CONFIG_STORAGE_KEY = 'sos-multi-output-config'
@@ -81,6 +85,24 @@ export interface PersistedOutput {
   mode: OutputMode
   trackOperatorCamera: boolean
   split: boolean
+  /**
+   * This output's render settings (rung 11).
+   *
+   * Both are the operator's explicit choice, so both come back — the
+   * same rule every other field here follows. `debugOverlay` is the one
+   * worth pausing on, because a HUD that survives a relaunch could in
+   * principle greet an audience: it is persisted anyway, because it is
+   * *self-announcing* (it is drawn on the sphere, so it cannot be
+   * silently on) and because an operator diagnosing a fault across
+   * relaunches is exactly who this rung is for. The alternative — one
+   * setting that quietly does not come back — is a worse surprise.
+   *
+   * Added **without** a version bump: both are read with a default when
+   * absent, so a config written before rung 11 restores unchanged.
+   * Bumping would have reset every operator's outputs to buy nothing.
+   */
+  framebufferWidth: number
+  debugOverlay: boolean
 }
 
 export interface PersistedOutputConfig {
@@ -184,6 +206,15 @@ function parseOutput(entry: unknown): PersistedOutput | null {
     mode,
     trackOperatorCamera: entry.trackOperatorCamera !== false,
     split: entry.split === true,
+    // Defaulted rather than required: an entry written before rung 11
+    // has neither key, and dropping it would cost an operator their
+    // outputs on the launch after an update. An unsupported width is
+    // snapped by the scene's own ladder, so a nonsense number costs a
+    // rung rather than the entry.
+    framebufferWidth: Number.isFinite(entry.framebufferWidth)
+      ? (entry.framebufferWidth as number)
+      : DEFAULT_FRAMEBUFFER_WIDTH,
+    debugOverlay: entry.debugOverlay === true,
   }
 }
 
@@ -225,13 +256,19 @@ export function createOutputConfigStore(
   }
 }
 
-/** Project a live output into its persisted form. */
+/**
+ * Project a live output into its persisted form.
+ *
+ * Takes the record itself rather than its fields spread across
+ * positional parameters — `Pick` ties this to the manager's own shape,
+ * so a renamed field fails here instead of silently persisting
+ * `undefined`. The dependency is type-only, and the manager already
+ * flows the other way at runtime.
+ */
 export function toPersistedOutput(
-  label: string,
-  monitor: OutputMonitor,
-  mode: OutputMode,
-  view: OutputViewSettings,
+  output: Pick<OutputRecord, 'label' | 'monitor' | 'mode' | 'view' | 'render'>,
 ): PersistedOutput {
+  const { label, monitor, mode, view, render } = output
   return {
     label,
     monitorName: monitor.name,
@@ -242,7 +279,14 @@ export function toPersistedOutput(
     mode,
     trackOperatorCamera: view.trackCamera,
     split: view.split,
+    framebufferWidth: render.framebufferWidth,
+    debugOverlay: render.debugOverlay,
   }
+}
+
+/** The render settings a restored output comes back with. */
+export function renderConfigFrom(output: PersistedOutput): OutputRenderConfig {
+  return { framebufferWidth: output.framebufferWidth, debugOverlay: output.debugOverlay }
 }
 
 /**

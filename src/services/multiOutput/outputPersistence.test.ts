@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { OutputMonitor } from './manager'
+import { DEFAULT_FRAMEBUFFER_WIDTH } from './protocol'
 import {
   createOutputConfigStore,
   defaultOutputConfig,
@@ -34,6 +35,8 @@ function persisted(over: Partial<PersistedOutput> = {}): PersistedOutput {
     mode: 'sos-equirect',
     trackOperatorCamera: true,
     split: false,
+    framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
+    debugOverlay: false,
     ...over,
   }
 }
@@ -197,14 +200,77 @@ describe('parseOutputConfig', () => {
     expect(output.trackOperatorCamera).toBe(true)
     expect(output.split).toBe(false)
   })
+
+  it('restores a config written before rung 11 rather than dropping it', () => {
+    // The whole reason rung 11 added its two fields *without* bumping
+    // `OUTPUT_CONFIG_VERSION`. A bump would have reset every operator's
+    // outputs on the launch after an update, to buy nothing — the older
+    // shape is readable, it simply has no render settings.
+    const raw = JSON.stringify({
+      version: OUTPUT_CONFIG_VERSION,
+      outputs: [
+        {
+          label: 'output-1',
+          monitorName: '\\\\.\\DISPLAY1',
+          monitorOrigin: { x: 0, y: 0 },
+          mode: 'sos-equirect',
+          trackOperatorCamera: true,
+          split: false,
+        },
+      ],
+      autoRestoreOnLaunch: true,
+    })
+
+    const { outputs } = parseOutputConfig(raw)
+
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0].framebufferWidth).toBe(DEFAULT_FRAMEBUFFER_WIDTH)
+    expect(outputs[0].debugOverlay).toBe(false)
+  })
+
+  it('keeps a stored resolution and defaults an unusable one', () => {
+    const raw = JSON.stringify({
+      version: OUTPUT_CONFIG_VERSION,
+      outputs: [
+        { ...persisted({ label: 'output-1' }), framebufferWidth: 8192, debugOverlay: true },
+        // A hand-edited file, or a key some future build wrote as a
+        // string. The scene snaps an unsupported *number* to its own
+        // ladder, so this only has to reject what is not one.
+        { ...persisted({ label: 'output-2' }), framebufferWidth: 'huge' },
+      ],
+      autoRestoreOnLaunch: false,
+    })
+
+    const { outputs } = parseOutputConfig(raw)
+
+    expect(outputs[0].framebufferWidth).toBe(8192)
+    expect(outputs[0].debugOverlay).toBe(true)
+    // Defaulted, not dropped: one bad key must not cost the operator
+    // that output entirely.
+    expect(outputs[1].framebufferWidth).toBe(DEFAULT_FRAMEBUFFER_WIDTH)
+  })
+
+  it('treats a non-boolean debug flag as off', () => {
+    const raw = JSON.stringify({
+      version: OUTPUT_CONFIG_VERSION,
+      outputs: [{ ...persisted(), debugOverlay: 'yes' }],
+      autoRestoreOnLaunch: false,
+    })
+    // A HUD is drawn into the captured signal. Anything but a real
+    // `true` resolves to off.
+    expect(parseOutputConfig(raw).outputs[0].debugOverlay).toBe(false)
+  })
 })
 
 describe('toPersistedOutput', () => {
   it('copies the origin rather than aliasing the live monitor', () => {
     const live = monitor({ position: { x: -1680, y: 0 } })
-    const output = toPersistedOutput('output-1', live, 'sos-equirect', {
-      trackCamera: false,
-      split: true,
+    const output = toPersistedOutput({
+      label: 'output-1',
+      monitor: live,
+      mode: 'sos-equirect',
+      view: { trackCamera: false, split: true },
+      render: { framebufferWidth: 8192, debugOverlay: true },
     })
 
     live.position.x = 9999
@@ -214,6 +280,10 @@ describe('toPersistedOutput', () => {
     expect(output.monitorOrigin.x).toBe(-1680)
     expect(output.trackOperatorCamera).toBe(false)
     expect(output.split).toBe(true)
+    // Rung 11's render settings ride along, so an 8K output does not
+    // silently come back at 4K next launch.
+    expect(output.framebufferWidth).toBe(8192)
+    expect(output.debugOverlay).toBe(true)
   })
 })
 

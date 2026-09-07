@@ -50,6 +50,7 @@ import type {
   OutputMonitor,
   OutputRecord,
 } from '../services/multiOutput/manager'
+import type { OutputRenderConfig } from '../services/multiOutput/protocol'
 import type { OutputViewSettings } from '../services/multiOutput/stateAggregator'
 
 /**
@@ -69,6 +70,7 @@ export interface OutputPanelManager {
   addOutput(options: AddOutputOptions): Promise<OutputRecord>
   removeOutput(label: string): Promise<void>
   setOutputView(label: string, view: Partial<OutputViewSettings>): Promise<void>
+  setOutputRenderConfig(label: string, render: Partial<OutputRenderConfig>): Promise<void>
   isRestoreOnLaunch(): boolean
   setRestoreOnLaunch(enabled: boolean): void
 }
@@ -485,36 +487,48 @@ function buildRow(
   item.appendChild(head)
 
   item.appendChild(
-    buildToggle(
-      mgr,
-      record,
-      'trackCamera',
-      t('outputs.item.trackCamera'),
-      record.view.trackCamera,
+    buildToggle(t('outputs.item.trackCamera'), record.view.trackCamera, next =>
+      mgr.setOutputView(record.label, { trackCamera: next }),
     ),
   )
   item.appendChild(
-    buildToggle(mgr, record, 'split', t('outputs.item.split'), record.view.split),
+    buildToggle(t('outputs.item.split'), record.view.split, next =>
+      mgr.setOutputView(record.label, { split: next }),
+    ),
+  )
+  item.appendChild(
+    // A different channel from the two above — window configuration
+    // rather than a projection of globe state — but the same control,
+    // because to the operator it is the same kind of switch. The label
+    // says the HUD is drawn *on the output* rather than here, since
+    // that is the part someone about to run a show needs to know.
+    buildToggle(t('outputs.item.debugOverlay'), record.render.debugOverlay, next =>
+      mgr.setOutputRenderConfig(record.label, { debugOverlay: next }),
+    ),
   )
   return item
 }
 
 /**
- * One per-output view toggle.
+ * One per-output checkbox.
  *
- * Deliberately does **not** refresh the panel on change. `setOutputView`
- * pushes the new view to that output immediately and mutates the record
- * in place, so the checkbox already agrees with the manager; a refresh
+ * Takes the commit as a callback rather than a settings key, because
+ * the three switches on a row now write through two different manager
+ * methods onto two different channels — and the part worth having once
+ * is not the field name, it is everything below: disable while in
+ * flight, put the box back on failure, and do not refresh.
+ *
+ * Deliberately does **not** refresh the panel on change. The manager
+ * pushes the new value to that output immediately and mutates the
+ * record in place, so the checkbox already agrees with it; a refresh
  * would spend a monitor enumeration on every click. On failure the box
  * is put back, because a control that reports a state the output is not
  * in is worse than one that visibly refuses.
  */
 function buildToggle(
-  mgr: OutputPanelManager,
-  record: OutputRecord,
-  key: keyof OutputViewSettings,
   labelText: string,
   initial: boolean,
+  commit: (next: boolean) => Promise<void>,
 ): HTMLElement {
   const label = document.createElement('label')
   label.className = 'output-toggle'
@@ -526,10 +540,9 @@ function buildToggle(
   box.addEventListener('change', () => {
     const next = box.checked
     box.disabled = true
-    void mgr
-      .setOutputView(record.label, { [key]: next })
+    void commit(next)
       .catch(err => {
-        logger.warn('[outputUI] view change failed:', err)
+        logger.warn('[outputUI] setting change failed:', err)
         box.checked = !next
       })
       .finally(() => {

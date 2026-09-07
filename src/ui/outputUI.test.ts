@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { until } from '../test-utils'
 import type { OutputMonitor, OutputRecord } from '../services/multiOutput/manager'
 import {
+  defaultRenderConfig,
+  type OutputRenderConfig,
+} from '../services/multiOutput/protocol'
+import {
   closeOutputUI,
   initOutputUI,
   monitorKey,
@@ -29,6 +33,7 @@ function record(label: string, on: OutputMonitor): OutputRecord {
     label,
     mode: 'sos-equirect',
     view: { trackCamera: true, split: false },
+    render: defaultRenderConfig(),
     monitor: on,
     ready: false,
     lastEvent: null,
@@ -65,6 +70,12 @@ function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
       const rec = records.find(r => r.label === label)
       if (rec) Object.assign(rec.view, view)
     }),
+    setOutputRenderConfig: vi.fn(
+      async (label: string, render: Partial<OutputRenderConfig>) => {
+        const rec = records.find(r => r.label === label)
+        if (rec) Object.assign(rec.render, render)
+      },
+    ),
     isRestoreOnLaunch: vi.fn(() => restoreOnLaunch),
     setRestoreOnLaunch: vi.fn((enabled: boolean) => {
       restoreOnLaunch = enabled
@@ -236,6 +247,54 @@ describe('the Outputs panel', () => {
     await until(() => $('.output-item') === null, 'the row to go')
     expect(raw.removeOutput).toHaveBeenCalledWith('output-1')
     expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(false)
+  })
+
+  it('pushes the debug overlay on its own channel, not as a view change', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    // Scoped to the row: the launch opt-in wears the same class, and an
+    // unscoped index would silently start meaning a different control
+    // the next time a section moves.
+    const boxes = $$('.output-item .output-toggle-box') as HTMLInputElement[]
+    // Three switches on a row now, and the HUD is the third.
+    expect(boxes).toHaveLength(3)
+    const overlay = boxes[2]
+    expect(overlay.checked).toBe(false)
+
+    overlay.checked = true
+    overlay.dispatchEvent(new Event('change'))
+
+    await until(() => raw.setOutputRenderConfig.mock.calls.length === 1, 'the config push')
+    expect(raw.setOutputRenderConfig).toHaveBeenCalledWith('output-1', {
+      debugOverlay: true,
+    })
+    // Window configuration, not globe state: routing this through
+    // `setOutputView` would put a checkbox inside the sequence the
+    // aggregator diffs.
+    expect(raw.setOutputView).not.toHaveBeenCalled()
+  })
+
+  it('puts the debug checkbox back when the output refuses it', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.setOutputRenderConfig.mockRejectedValue(new Error('output is gone'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const overlay = ($$('.output-item .output-toggle-box') as HTMLInputElement[])[2]
+    overlay.checked = true
+    overlay.dispatchEvent(new Event('change'))
+
+    await until(() => overlay.disabled === false, 'the in-flight guard to clear')
+    // A control that claims a state the output is not in is worse than
+    // one that visibly refuses.
+    expect(overlay.checked).toBe(false)
   })
 
   it('pushes a view toggle straight to that output', async () => {

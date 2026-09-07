@@ -29,6 +29,7 @@ import {
 } from './outputScene'
 import { MAX_OUTPUT_LAYERS } from './layerStack'
 import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS } from './equirectRtt'
+import { DEFAULT_FRAMEBUFFER_WIDTH } from '../services/multiOutput/protocol'
 
 describe('resolveFramebufferSize', () => {
   it('keeps every rung 2:1', () => {
@@ -128,15 +129,22 @@ describe('the sphere texture binding', () => {
 
   interface FakeTexture { readonly id: string }
 
-  function fakeThree() {
+  function fakeThree(gl?: unknown) {
     const uniformsSeen: Array<Record<string, { value: unknown }>> = []
     const shadersSeen: string[] = []
     const disposed: string[] = []
+    /** Every `setSize`, so a resize can be checked for what it actually
+     *  asked the renderer for — including the third argument, which is
+     *  what keeps the CSS size alone. */
+    const sized: Array<[number, number, boolean | undefined]> = []
     const THREE_ = {
       WebGLRenderer: class {
-        setSize(): void {}
+        setSize(w: number, h: number, updateStyle?: boolean): void {
+          sized.push([w, h, updateStyle])
+        }
         setClearColor(): void {}
         render(): void {}
+        getContext(): unknown { return gl ?? null }
         dispose(): void { disposed.push('renderer') }
         forceContextLoss(): void {}
       },
@@ -198,7 +206,7 @@ describe('the sphere texture binding', () => {
         ) {}
       },
     }
-    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, disposed }
+    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, disposed, sized }
   }
 
   function fakeEarth(base: FakeTexture, upgrade?: FakeTexture) {
@@ -569,6 +577,147 @@ describe('the sphere texture binding', () => {
 
       expect(three.disposed).toContain('videoTexture')
       expect(three.disposed).toContain('dataTexture')
+    })
+  })
+
+  describe('setFramebufferWidth', () => {
+    async function build(gl?: unknown) {
+      const three = fakeThree(gl)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        {
+          loadThree: async () => three.THREE_,
+          createEarth: fakeEarth({ id: 'base' }).createEarth,
+        },
+      )
+      return { three, scene }
+    }
+
+    it('resizes the drawing buffer and leaves the CSS size alone', async () => {
+      const { three, scene } = await build()
+      three.sized.length = 0
+
+      scene.setFramebufferWidth(8192)
+
+      // The third argument is the whole point: `true` would write the
+      // canvas's CSS size and shrink an 8K buffer into an 8K-sized
+      // element on a 1080p monitor. `false` keeps the canvas full-bleed
+      // and lets `object-fit` reconcile the two, which is what makes a
+      // rung below the monitor scale *up*.
+      expect(three.sized).toEqual([[8192, 4096, false]])
+      expect(scene.size).toEqual({ width: 8192, height: 4096 })
+    })
+
+    it('reports the new size, because that is what the HUD reads', async () => {
+      const { scene } = await build()
+
+      scene.setFramebufferWidth(1024)
+
+      // `size` was a fixed property until rung 11. A stale reading here
+      // is a debug overlay confidently naming a resolution the output
+      // is not running at, which is worse than no overlay.
+      expect(scene.size).toEqual({ width: 1024, height: 512 })
+    })
+
+    it('snaps an unsupported width rather than allocating it', async () => {
+      const { three, scene } = await build()
+      three.sized.length = 0
+
+      scene.setFramebufferWidth(3000)
+
+      expect(three.sized).toEqual([[2048, 1024, false]])
+    })
+
+    it('clamps a nonsense width up to the lowest rung', async () => {
+      const { three, scene } = await build()
+      three.sized.length = 0
+
+      scene.setFramebufferWidth(0)
+
+      // Never zero-by-zero: a drawing buffer with no pixels is a black
+      // window, the one failure indistinguishable from a lost context.
+      expect(three.sized).toEqual([[1024, 512, false]])
+    })
+
+    it('does nothing when the snapped size is already in force', async () => {
+      const { three, scene } = await build()
+      three.sized.length = 0
+
+      // The default rung, re-picked. Reallocating would spend 128 MiB
+      // and a frame on a change of nothing.
+      scene.setFramebufferWidth(DEFAULT_FRAMEBUFFER_WIDTH)
+
+      expect(three.sized).toEqual([])
+    })
+
+    it('marks the scene dirty, so a resize does not wait out the 1 Hz floor', async () => {
+      const { scene } = await build()
+      scene.consumeDirty()
+
+      scene.setFramebufferWidth(1024)
+
+      // The projection is per-pixel, so a resized buffer is a different
+      // image even with nothing else changed.
+      expect(scene.consumeDirty()).toBe(true)
+    })
+  })
+
+  describe('rendererName', () => {
+    async function build(gl?: unknown) {
+      const three = fakeThree(gl)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        {
+          loadThree: async () => three.THREE_,
+          createEarth: fakeEarth({ id: 'base' }).createEarth,
+        },
+      )
+      return scene
+    }
+
+    const glWith = (over: Record<string, unknown>) => ({
+      getExtension: () => ({ UNMASKED_RENDERER_WEBGL: 0x9246 }),
+      getParameter: () => 'NVIDIA GeForce RTX 4090',
+      ...over,
+    })
+
+    it('reads the unmasked renderer string', async () => {
+      const scene = await build(glWith({}))
+
+      // The entire mitigation for a risk the app cannot fix: a spike
+      // found the webview silently on the iGPU of a machine with a
+      // 4090, and `powerPreference` is inert.
+      expect(scene.rendererName()).toBe('NVIDIA GeForce RTX 4090')
+    })
+
+    it('returns null when the driver will not offer the extension', async () => {
+      const scene = await build(glWith({ getExtension: () => null }))
+      expect(scene.rendererName()).toBeNull()
+    })
+
+    it('returns null rather than an empty string', async () => {
+      const scene = await build(glWith({ getParameter: () => '' }))
+      // The HUD prints "unreported" for null. An empty string would
+      // print a blank field, which reads as a broken overlay.
+      expect(scene.rendererName()).toBeNull()
+    })
+
+    it('survives a driver that throws on the query', async () => {
+      const scene = await build(
+        glWith({
+          getExtension: () => {
+            throw new Error('context lost')
+          },
+        }),
+      )
+      // A refused query must cost the readout, not the frame it was
+      // going to be drawn over.
+      expect(scene.rendererName()).toBeNull()
+    })
+
+    it('returns null with no context at all', async () => {
+      const scene = await build()
+      expect(scene.rendererName()).toBeNull()
     })
   })
 })
