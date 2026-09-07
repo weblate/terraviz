@@ -60,6 +60,13 @@ export function overlayForMirror(dataset: Dataset): DatasetOverlayOptions {
  * fails somewhere far away from here. `null` is the value the schema
  * already defines as "nothing loaded", and the idle photoreal Earth is
  * a better wrong answer than a broken one.
+ *
+ * `startTime` / `endTime` are normalised to `null` rather than left
+ * `undefined`: they cross a structured-clone boundary into a state the
+ * aggregator diffs by deep structural equality, and an absent key and a
+ * present-but-undefined one are different objects there while meaning
+ * the same thing. `null` is also what the rest of the schema already
+ * uses for "no value", so the output has one absence to handle.
  */
 export function toMirroredDataset(
   dataset: Dataset,
@@ -72,6 +79,8 @@ export function toMirroredDataset(
     url,
     kind,
     overlay: overlayForMirror(dataset),
+    startTime: dataset.startTime ?? null,
+    endTime: dataset.endTime ?? null,
   }
 }
 

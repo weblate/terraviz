@@ -36,6 +36,8 @@ const DATASET: MirroredDataset = {
   url: 'https://example.test/a.m3u8',
   kind: 'video',
   overlay: { datasetId: 'ds-1', boundingBox: { n: 50, s: 24, w: -125, e: -66 } },
+  startTime: '2026-01-01T00:00:00.000Z',
+  endTime: '2026-01-08T00:00:00.000Z',
 }
 
 const LAYER: MirroredLayer = {
@@ -102,6 +104,8 @@ describe('apply', () => {
       url: 'https://example.test/a.m3u8',
       kind: 'video',
       overlay: { datasetId: 'ds-1', boundingBox: { n: 50, s: 24, w: -125, e: -66 } },
+      startTime: '2026-01-01T00:00:00.000Z',
+      endTime: '2026-01-08T00:00:00.000Z',
     }
     expect(agg.apply({ dataset: rebuilt })).toBeNull()
   })
