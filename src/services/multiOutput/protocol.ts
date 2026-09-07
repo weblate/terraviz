@@ -22,9 +22,12 @@
  *   `SIBLING_HARD_SEEK_THRESHOLD_S` and `SIBLING_SEEK_EPS_S` are tuned
  *   values in `src/utils/time.ts` with measurements behind them. The
  *   output imports them from there. A copy is a copy that drifts.
- * - **The decoder budget.** `DEFAULT_CONCURRENT_DECODERS` belongs with
- *   the code that counts decoders (`src/output/datasetMirror.ts`), not
- *   with the wire format.
+ * - **The decoder budget.** It belongs with the code that counts
+ *   decoders, not with the wire format. That turned out to be the
+ *   *manager* rather than `datasetMirror` — the count is cross-window
+ *   and an output can only see itself — so it landed as
+ *   `PersistedOutputConfig.concurrentDecoderBudget` in
+ *   `outputPersistence.ts`, machine-scoped and operator-settable.
  * - **`PersistedOutputConfig`.** That is the manager's on-disk shape,
  *   not something an output ever receives. It lands with persistence.
  */

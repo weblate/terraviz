@@ -136,6 +136,7 @@ describe('parseOutputConfig', () => {
       version: OUTPUT_CONFIG_VERSION,
       outputs: [persisted(), persisted({ label: 'output-2', split: true })],
       autoRestoreOnLaunch: true,
+      concurrentDecoderBudget: 8,
     }
     expect(parseOutputConfig(JSON.stringify(config))).toEqual(config)
   })
@@ -179,6 +180,28 @@ describe('parseOutputConfig', () => {
     // Phase 2's mode, written by a newer build. This one cannot render
     // it, and spawning it as an equirect would be inventing intent.
     expect(parseOutputConfig(raw).outputs).toEqual([])
+  })
+
+  it.each([
+    ['an absent budget', undefined, null],
+    ['a null budget', null, null],
+    ['a whole budget', 8, 8],
+    ['a fractional budget', 4.7, 4],
+    ['a zero budget', 0, null],
+    ['a negative budget', -2, null],
+    ['a string budget', '8', null],
+  ])('reads %s as %s', (_label, stored, expected) => {
+    // `null` means "nobody has measured this machine, ask it" — the
+    // manager falls back to `maxVideoPanels()`. A stored 0 would refuse
+    // every output *and* every control panel, which reads as a broken
+    // app rather than as a setting, so it resolves to unset too.
+    const raw = JSON.stringify({
+      version: OUTPUT_CONFIG_VERSION,
+      outputs: [],
+      autoRestoreOnLaunch: false,
+      concurrentDecoderBudget: stored,
+    })
+    expect(parseOutputConfig(raw).concurrentDecoderBudget).toBe(expected)
   })
 
   it('treats a non-boolean autoRestore as off', () => {

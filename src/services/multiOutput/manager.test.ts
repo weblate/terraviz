@@ -202,6 +202,12 @@ function makeManager(host: MultiOutputHost, deps: MultiOutputDeps = {}): MultiOu
   return new MultiOutputManager(host, {
     store: deps.store ?? memoryStore(),
     sleep: deps.sleep ?? (async () => {}),
+    // Stated, never inherited. The default reads `maxVideoPanels()`,
+    // which answers from happy-dom's viewport size — so a case about
+    // anything else would silently depend on the test environment's
+    // window dimensions and start refusing spawns if they changed.
+    // Large enough here that only the cases *about* the budget meet it.
+    machineDecoderBudget: deps.machineDecoderBudget ?? (() => 99),
     ...deps,
   })
 }
@@ -893,6 +899,117 @@ describe('persistence', () => {
   })
 })
 
+describe('the decoder budget', () => {
+  it('falls back to what the machine reports until someone pins it', () => {
+    const manager = makeManager(createFakeHost().host, {
+      store: memoryStore(),
+      machineDecoderBudget: () => 4,
+    })
+
+    // Falling back rather than storing the machine's answer is what
+    // keeps an unset budget tracking reality — a control window resized
+    // below the phone threshold is reflected rather than frozen at
+    // whatever was true the first time the panel was opened.
+    expect(manager.decoderBudget()).toBe(4)
+  })
+
+  it('prefers the operator\'s number once they have measured the machine', () => {
+    const store = memoryStore()
+    const manager = makeManager(createFakeHost().host, {
+      store,
+      machineDecoderBudget: () => 4,
+    })
+
+    manager.setDecoderBudget(16)
+
+    // The whole point of the field: a spike ran 16 outputs at 8192×4096
+    // at full rate on a 4090 laptop, and the same build must not crash
+    // an Intel-iGPU NUC. The value is a property of the deployment.
+    expect(manager.decoderBudget()).toBe(16)
+    expect(store.current().concurrentDecoderBudget).toBe(16)
+  })
+
+  it('clears back to the machine when the operator unsets it', () => {
+    const manager = makeManager(createFakeHost().host, {
+      machineDecoderBudget: () => 4,
+    })
+    manager.setDecoderBudget(16)
+
+    manager.setDecoderBudget(null)
+
+    expect(manager.decoderBudget()).toBe(4)
+  })
+
+  it('refuses a budget that would refuse everything', () => {
+    const manager = makeManager(createFakeHost().host, {
+      machineDecoderBudget: () => 4,
+    })
+
+    manager.setDecoderBudget(0)
+
+    // Stored as unset rather than as 0. A budget of zero refuses every
+    // output *and* every control panel, which reads as a broken app.
+    expect(manager.decoderBudget()).toBe(4)
+  })
+
+  it('counts the control window as well as the outputs', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      controlPanels: () => 2,
+      machineDecoderBudget: () => 6,
+    })
+    await manager.addOutput({ monitorIndex: 0 })
+
+    // The cross-window part is the whole reason this exists:
+    // `maxVideoPanels()` answers per window, so nothing before this
+    // could see two globes and an output as three decoders on one GPU.
+    expect(manager.decoderLoad()).toEqual({ used: 3, budget: 6 })
+  })
+
+  it('refuses an output that would cross the budget', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      controlPanels: () => 1,
+      machineDecoderBudget: () => 2,
+    })
+    await manager.addOutput({ monitorIndex: 0 })
+
+    await expect(manager.addOutput({ monitorIndex: 1 })).rejects.toThrow(/decoder budget/)
+    // Refused *before* the window: the ceiling is on decoders existing,
+    // and there is no window in which to intervene once one has been
+    // asked for.
+    expect(fake.calls.filter(c => c.startsWith('create:'))).toHaveLength(1)
+  })
+
+  it('counts a spawned output that has not announced itself yet', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      controlPanels: () => 0,
+      machineDecoderBudget: () => 1,
+    })
+    await manager.addOutput({ monitorIndex: 0 })
+
+    // Never `output_ready`. A window still booting is about to build a
+    // decoder, and a budget that waited for the announcement would let
+    // a second Add through the gap.
+    await expect(manager.addOutput({ monitorIndex: 1 })).rejects.toThrow(/decoder budget/)
+  })
+
+  it('lets a removed output give its budget back', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      controlPanels: () => 0,
+      machineDecoderBudget: () => 1,
+    })
+    await manager.addOutput({ monitorIndex: 0 })
+
+    await manager.removeOutput('output-1')
+
+    await expect(manager.addOutput({ monitorIndex: 1 })).resolves.toBeDefined()
+  })
+
+})
+
 describe('restoreOutputs', () => {
   const persistedOn = (label: string, monitor: OutputMonitor) => ({
     label,
@@ -1094,6 +1211,30 @@ describe('restoreOutputs', () => {
     // — two records, one window, and the other unreachable.
     expect(added.label).toBe('output-3')
     expect(manager.outputs().map(o => o.label)).toEqual(['output-1', 'output-2', 'output-3'])
+  })
+
+  it('is held to the decoder budget, one output at a time', async () => {
+    const fake = createFakeHost()
+    const store = memoryStore({
+      autoRestoreOnLaunch: true,
+      concurrentDecoderBudget: 2,
+      outputs: [
+        persistedOn('output-1', MONITORS[0]),
+        persistedOn('output-2', MONITORS[1]),
+        persistedOn('output-3', MONITORS[2]),
+      ],
+    })
+    const manager = makeManager(fake.host, { store, controlPanels: () => 1 })
+
+    const restored = await manager.restoreOutputs()
+
+    // A machine whose budget was lowered — or which now reports less
+    // than it did — must not bring back every window it was configured
+    // with just because they fitted last time. One control panel plus
+    // one output spends a budget of two; the rest are skipped, and the
+    // per-output failure path already in place means the set survives.
+    expect(restored.map(r => r.label)).toEqual(['output-1'])
+    expect(store.current().outputs.map(o => o.label)).toEqual(['output-1'])
   })
 
   it('rewrites the config with what actually came up', async () => {

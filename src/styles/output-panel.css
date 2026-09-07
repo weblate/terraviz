@@ -251,3 +251,16 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* Narrow on purpose: the decoder budget is a small whole number, and a
+   field sized for one is a field that says so. */
+.output-field-number {
+  inline-size: 4rem;
+  padding: 0.125rem 0.25rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: inherit;
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.18));
+  border-radius: var(--radius-sm, 0.25rem);
+}

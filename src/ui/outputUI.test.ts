@@ -51,6 +51,7 @@ function record(label: string, on: OutputMonitor): OutputRecord {
 function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
   const records: OutputRecord[] = []
   let restoreOnLaunch = false
+  let decoderBudget: number | null = null
   const mgr = {
     start: vi.fn(async () => {}),
     listMonitors: vi.fn(async () => monitors),
@@ -77,6 +78,10 @@ function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
       },
     ),
     framebufferWidths: vi.fn((): readonly number[] => [1024, 2048, 4096, 8192]),
+    decoderLoad: vi.fn(() => ({ used: 1 + records.length, budget: decoderBudget ?? 8 })),
+    setDecoderBudget: vi.fn((budget: number | null) => {
+      decoderBudget = budget
+    }),
     isRestoreOnLaunch: vi.fn(() => restoreOnLaunch),
     setRestoreOnLaunch: vi.fn((enabled: boolean) => {
       restoreOnLaunch = enabled
@@ -248,6 +253,70 @@ describe('the Outputs panel', () => {
     await until(() => $('.output-item') === null, 'the row to go')
     expect(raw.removeOutput).toHaveBeenCalledWith('output-1')
     expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(false)
+  })
+
+  it('shows what is spending the machine\'s decoder budget', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.decoderLoad.mockReturnValue({ used: 3, budget: 4 })
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    // Windows that can hold a decoder, across the control window and
+    // every output — the cross-window count `maxVideoPanels()` cannot
+    // see, which is the whole reason the field exists.
+    expect(document.body.textContent).toContain('3 of 4 video decoders in use')
+    expect($<HTMLInputElement>('.output-field-number')!.value).toBe('4')
+  })
+
+  it('refuses to offer Add when the budget is spent, and says what to close', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.decoderLoad.mockReturnValue({ used: 4, budget: 4 })
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    // The manager refuses this too and would throw; disabling here is
+    // the affordance, so an operator sees the machine is full rather
+    // than clicking and being told.
+    expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(true)
+    expect(document.body.textContent).toContain('No decoders left')
+  })
+
+  it('pins the budget and repaints against the new one', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.decoderLoad.mockReturnValue({ used: 4, budget: 4 })
+    mount(mgr)
+    await until(painted, 'the panel body')
+    expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(true)
+
+    raw.decoderLoad.mockReturnValue({ used: 4, budget: 16 })
+    const input = $<HTMLInputElement>('.output-field-number')!
+    input.value = '16'
+    input.dispatchEvent(new Event('change'))
+
+    await until(
+      () => $<HTMLButtonElement>('.output-add-btn')?.disabled === false,
+      'the Add button to come back',
+    )
+    expect(raw.setDecoderBudget).toHaveBeenCalledWith(16)
+    // The number gates the button and the warning above it, so unlike
+    // the per-output toggles this one does repaint.
+    expect(document.body.textContent).not.toContain('No decoders left')
+  })
+
+  it('clears the pin rather than storing an unusable budget', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    const input = $<HTMLInputElement>('.output-field-number')!
+    input.value = ''
+    input.dispatchEvent(new Event('change'))
+
+    // An emptied box means "I have not measured this machine", and the
+    // manager answers with what the machine reports — never 0, which
+    // would refuse every output and every globe panel.
+    await until(() => raw.setDecoderBudget.mock.calls.length === 1, 'the budget write')
+    expect(raw.setDecoderBudget).toHaveBeenCalledWith(null)
   })
 
   it('pushes the debug overlay on its own channel, not as a view change', async () => {

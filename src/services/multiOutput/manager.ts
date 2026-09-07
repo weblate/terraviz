@@ -80,10 +80,12 @@ import {
   OUTPUT_RESTORE_STAGGER_MS,
   createOutputConfigStore,
   matchMonitorIndex,
+  parseDecoderBudget,
   renderConfigFrom,
   toPersistedOutput,
   type OutputConfigStore,
 } from './outputPersistence'
+import { maxVideoPanels } from '../../utils/deviceCapability'
 import { logger } from '../../utils/logger'
 
 /** Where the output bundle lands in the build. `vite.config.ts` roots
@@ -134,6 +136,27 @@ export interface MultiOutputHost {
 export interface MultiOutputDeps {
   store?: OutputConfigStore
   sleep?: (ms: number) => Promise<void>
+  /**
+   * How many panels the **control window** is holding.
+   *
+   * Injected rather than read, because the manager has no business
+   * knowing what a viewport is and `viewportManager` has no business
+   * knowing what an output is. `main.ts` owns both and wires them
+   * together through `bootMultiOutput`.
+   *
+   * Defaults to 1 — the layout an app opens on — so a manager
+   * constructed without it still counts the control window rather than
+   * pretending the machine is empty.
+   */
+  controlPanels?: () => number
+  /**
+   * What this machine reports it can hold, for an unset budget.
+   *
+   * `maxVideoPanels()` by default. Injected so the manager stays free
+   * of `window`, and so a test can state the machine's answer instead
+   * of depending on the test environment's viewport size.
+   */
+  machineDecoderBudget?: () => number
 }
 
 /** What the operator chose when adding an output. */
@@ -206,12 +229,16 @@ export class MultiOutputManager {
   private readonly store: OutputConfigStore
   /** Injectable so the restore stagger is testable without spending it. */
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly controlPanels: () => number
+  private readonly machineDecoderBudget: () => number
 
   constructor(host: MultiOutputHost, deps: MultiOutputDeps = {}) {
     this.host = host
     this.store = deps.store ?? createOutputConfigStore()
     this.sleep =
       deps.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)))
+    this.controlPanels = deps.controlPanels ?? (() => 1)
+    this.machineDecoderBudget = deps.machineDecoderBudget ?? maxVideoPanels
   }
 
   /**
@@ -312,6 +339,24 @@ export class MultiOutputManager {
     view: OutputViewSettings,
     render: OutputRenderConfig,
   ): Promise<OutputRecord> {
+    // Before the window, not after: the plan's rule is that the ceiling
+    // is on decoders *existing*, and there is no window in which to
+    // intervene once one has been asked for.
+    //
+    // Here rather than in `addOutput` so a restore is held to the same
+    // rule — a machine whose budget was lowered, or which now reports
+    // less than it did, must not bring back eight windows on launch
+    // because they were configured when it could. `restoreOutputs`
+    // already treats a throwing spawn as one lost output rather than a
+    // lost set, so this needs nothing there.
+    const { used, budget } = this.decoderLoad()
+    if (used + 1 > budget) {
+      throw new Error(
+        `decoder budget spent: ${used} of ${budget} in use ` +
+          '(close a globe panel or an output, or raise the budget)',
+      )
+    }
+
     const handle = await this.host.createWindow(label, OUTPUT_ENTRY_URL)
 
     try {
@@ -589,6 +634,69 @@ export class MultiOutputManager {
         }),
       ),
     )
+  }
+
+  /**
+   * The machine's concurrent-decoder budget and what is spending it
+   * (plan §"Cross-window decoder budget").
+   *
+   * ## Why a *window* counts, not a decoder
+   *
+   * The plan's table counts "one per output currently showing a video
+   * dataset", and image datasets as free. That is true about the
+   * present and wrong about the moment that matters. Outputs mirror the
+   * primary, so every output flips from free to costing a decoder the
+   * instant the operator loads a video — and a dataset load is not a
+   * place a refusal can happen: it is deep inside a loader, with no
+   * control to disable and nothing for the operator to undo. So an
+   * operator could add eight outputs while an image was up, load a
+   * video, and take the installation down with the budget never once
+   * consulted.
+   *
+   * Counting spawned windows instead means the refusal lands on **Add
+   * Output**, where there is a button to disable and a number to show.
+   * The plan's §"What a throwaway spike measured" is explicit that the
+   * failure *shape* on desktop hardware is unknown — whether it is a
+   * cliff or a gradient was never established — and under that
+   * uncertainty the enforcement point has to be the one the operator
+   * can still act on. The cost is real and named in the plan: on a
+   * machine whose budget really is 4, an operator running 4 globes
+   * cannot also add an output. The budget field below is the answer to
+   * that, which is exactly why this rung ships it.
+   */
+  decoderLoad(): { used: number; budget: number } {
+    // Every spawned output, not only the ready ones: a window still
+    // booting is about to build a decoder, and a budget that ignored it
+    // would let a second Add slip through the gap.
+    return { used: this.controlPanels() + this.records.size, budget: this.decoderBudget() }
+  }
+
+  /**
+   * The budget in force — the operator's number, or the machine's.
+   *
+   * Falling back rather than storing the machine's answer keeps an
+   * unset budget tracking reality: a control window resized below the
+   * phone threshold, or a build whose thresholds change, is reflected
+   * instead of frozen at whatever was true the first time anyone opened
+   * the panel.
+   */
+  decoderBudget(): number {
+    return this.store.read().concurrentDecoderBudget ?? this.machineDecoderBudget()
+  }
+
+  /**
+   * Pin the budget, or clear it back to what the machine reports.
+   *
+   * Machine-scoped, so it is stored beside the output list rather than
+   * on any output: one GPU and one media stack are shared by every
+   * window on the box, which is the whole reason `maxVideoPanels()` —
+   * which answers per window — cannot see the constraint.
+   */
+  setDecoderBudget(budget: number | null): void {
+    this.store.write({
+      ...this.store.read(),
+      concurrentDecoderBudget: budget === null ? null : parseDecoderBudget(budget),
+    })
   }
 
   /**

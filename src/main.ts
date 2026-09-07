@@ -463,7 +463,14 @@ class InteractiveSphere {
       // Ahead of `initToolsMenu` because the menu decides whether to
       // render its Outputs entry while it builds its markup, and that
       // decision reads `available` off this handle.
-      this.multiOutput = startMultiOutput()
+      this.multiOutput = startMultiOutput({
+        // The control window's own contribution to the machine's
+        // decoder budget. Every panel is a window that can hold a
+        // video, and `maxVideoPanels()` — which the manager seeds from
+        // — answers per window, so nothing but this can tell it that
+        // four globes and an output are five decoders on one GPU.
+        controlPanels: () => this.viewports.getPanelCount(),
+      })
       initOutputUI({ manager: () => this.multiOutput?.ready ?? Promise.resolve(null) })
       initToolsMenu(this.viewports, {
         onSetLayout: (layout) => this.viewports.setLayout(layout),

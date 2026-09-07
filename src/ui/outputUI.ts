@@ -71,6 +71,11 @@ export interface OutputPanelManager {
   removeOutput(label: string): Promise<void>
   setOutputView(label: string, view: Partial<OutputViewSettings>): Promise<void>
   setOutputRenderConfig(label: string, render: Partial<OutputRenderConfig>): Promise<void>
+  /** Windows that can hold a video decoder, against the machine's
+   *  budget — see `buildDecoderBudget`. */
+  decoderLoad(): { used: number; budget: number }
+  /** Pin the budget, or `null` to go back to what the machine reports. */
+  setDecoderBudget(budget: number | null): void
   /**
    * The framebuffer rungs this build offers.
    *
@@ -393,7 +398,84 @@ function buildAdder(
 
   row.append(label, select, addBtn)
   section.appendChild(row)
+
+  const { used, budget } = mgr.decoderLoad()
+  // The manager refuses this too, and would throw. Disabling here is
+  // the affordance rather than the invariant: an operator should see
+  // that the machine is full and what to do about it, not click and be
+  // told.
+  if (used >= budget) {
+    addBtn.disabled = true
+    section.appendChild(message(t('outputs.decoders.spent'), 'output-warning'))
+  }
+  section.appendChild(buildDecoderBudget(mgr, body, used, budget))
   return section
+}
+
+/**
+ * The machine's decoder budget (rung 11c, plan §"Cross-window decoder
+ * budget").
+ *
+ * It sits under Add rather than on an output because it is a property
+ * of the **machine**, not of any window: one GPU and one media stack
+ * are shared by everything on the box, and the whole reason the field
+ * exists is that `maxVideoPanels()` answers per window and so cannot
+ * see the others.
+ *
+ * The count is windows that can hold a decoder, not decoders currently
+ * decoding — outputs mirror the primary, so every one of them flips
+ * from free to costing a decoder the moment a video is loaded, and a
+ * dataset load is not a place a refusal can happen. Counting windows
+ * puts the refusal on Add, where there is a control to disable.
+ *
+ * Repainting the whole panel on change is right here, unlike the
+ * per-output toggles: this number gates the Add button and the warning
+ * above it, so the section's own state is what changed.
+ */
+function buildDecoderBudget(
+  mgr: OutputPanelManager,
+  body: HTMLElement,
+  used: number,
+  budget: number,
+): HTMLElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'output-section'
+
+  const field = document.createElement('label')
+  field.className = 'output-field'
+
+  const label = document.createElement('span')
+  label.className = 'output-field-label'
+  label.textContent = t('outputs.decoders.label')
+
+  const input = document.createElement('input')
+  input.type = 'number'
+  input.className = 'output-field-number'
+  input.min = '1'
+  input.value = String(budget)
+
+  input.addEventListener('change', () => {
+    const next = Number(input.value)
+    // Anything unusable clears the pin rather than storing it, and the
+    // manager answers with what the machine reports — so an operator
+    // who empties the box gets the default back instead of a broken
+    // installation. `setDecoderBudget` applies the same rule; asking
+    // for `null` here is what makes "empty means unset" explicit.
+    mgr.setDecoderBudget(Number.isFinite(next) && next >= 1 ? next : null)
+    // Repaint: this number gates the Add button and the warning above
+    // it, so the section it lives in is what changed. Unlike the
+    // per-output toggles, which change only themselves and would spend
+    // a monitor enumeration per click for nothing.
+    void refresh(body)
+  })
+
+  field.append(label, input)
+  wrap.append(
+    field,
+    message(t('outputs.decoders.used', { used, budget }), 'output-note'),
+    message(t('outputs.decoders.hint'), 'output-note'),
+  )
+  return wrap
 }
 
 async function add(
