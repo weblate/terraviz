@@ -29,7 +29,12 @@
 import './output.css'
 import { createDatasetMirror } from './datasetMirror'
 import { connectOutputLink, createTauriLinkHost } from './outputLink'
-import { createOutputScene, shouldRenderFrame, type OutputContentKind } from './outputScene'
+import {
+  createOutputScene,
+  shouldRenderFrame,
+  type OutputContentKind,
+  type OutputLayerInput,
+} from './outputScene'
 import { logger } from '../utils/logger'
 
 /** The same gate `bootMultiOutput` applies on the control side. */
@@ -63,13 +68,46 @@ async function boot(): Promise<void> {
     try {
       const link = await connectOutputLink(await createTauriLinkHost())
 
+      /**
+       * Rebuild the composite from whatever the mirror currently holds.
+       *
+       * The dataset is slot 0 and the mirrored layers follow, because
+       * array order *is* z-order in the one fragment shader that draws
+       * them. It reads the *mirror*, not the link: the link's `dataset`
+       * is what the control window says, and the mirror's is what this
+       * window has actually decoded. Compositing the former would put
+       * an incoming dataset's bbox and palette over the outgoing
+       * dataset's pixels for the length of a load.
+       */
+      const recomposite = (): void => {
+        const state = link.state()
+        const media = mirror.current()
+        const primary = mirror.currentDataset()
+        const layers: OutputLayerInput[] = []
+        if (media && primary) {
+          layers.push({
+            kind: media.kind,
+            element: media.element,
+            overlay: primary.overlay,
+            // The operator's palette / stretch / threshold acts on the
+            // primary alone; a stacked layer keeps its own.
+            display: state.display,
+          })
+        }
+        scene.setLayers(layers)
+      }
+
       link.onChange((changed, state) => {
         // Only on a real dataset change: `datasetMirror` decides
         // whether that means a reload or just new metadata, since an
         // overlay-only change must not restart the decoder.
         if (changed.includes('dataset')) {
-          void mirror.apply(state.dataset)
           kind = state.dataset?.kind ?? 'idle'
+          void mirror.apply(state.dataset).then(recomposite)
+        } else if (changed.includes('display')) {
+          // A palette change costs a LUT upload, not a reload — the
+          // decoder never sees it.
+          recomposite()
         }
         if (changed.includes('view')) scene.setParams(state.view.params)
         // Anything that changed is worth a frame — including the keys
