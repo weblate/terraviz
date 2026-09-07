@@ -232,16 +232,17 @@ export interface MirroredEquirectView extends MirroredViewCommon {
 }
 
 /**
- * How one output should project the globe, discriminated on its mode.
+ * How **one output** should project the globe, discriminated on its
+ * mode. Produced by `projectView` at the send boundary; never stored.
  *
  * A union rather than a flat bag, and the discriminant earns itself
  * twice over:
  *
  * 1. **An output cannot receive settings it has no meaning for.** These
- *    fields were flat beside `dayNight` and went to every output with
- *    nothing marking two of the three conditional. With one mode that
- *    is merely untidy; with two it is a perspective output handed a
- *    `split` it has to know to ignore, and an offset whose invariant
+ *    fields were once flat beside `dayNight` and went to every output
+ *    with nothing marking two of the three conditional. With one mode
+ *    that is merely untidy; with two it is a perspective output handed
+ *    a `split` it has to know to ignore, and an offset whose invariant
  *    does not describe its camera.
  * 2. **It is checkable on arrival.** An output announces its own mode
  *    in `OutputReadyEvent`, so `view.mode` disagreeing with it is a
@@ -261,25 +262,6 @@ export interface MirroredEquirectView extends MirroredViewCommon {
 export type MirroredView = MirroredEquirectView
 
 /**
- * The arm the **shared** view is stored in.
- *
- * The control window has one globe but N outputs that need not share a
- * mode, so the aggregator's single stored view has to be canonical in
- * *some* geometry, and v1's only mode is it. `projectView` re-derives
- * each output's arm from this one.
- *
- * Naming it is the point: with a second mode, this constant is the grep
- * target for the decision that has to be made — either the shared
- * camera is promoted to a mode-independent encoding (the operator's
- * lat/lon/zoom, which is what `cameraOffsetForCamera` consumes), or
- * every arm derives from this one. The equirect offset is recoverable
- * either way — `|o|` gives the zoom factor and its direction gives
- * lat/lon — so nothing is lost by leaving the decision to the commit
- * that has a second consumer to test it against.
- */
-export const CANONICAL_VIEW_MODE = 'sos-equirect' satisfies OutputMode
-
-/**
  * Compile-time proof that `OutputMode` and the union agree.
  *
  * Both directions, because either alone is satisfiable by a subset: a
@@ -297,14 +279,71 @@ type _EveryModeHasAnArm = AssertNoneMissing<Exclude<OutputMode, MirroredView['mo
 type _EveryArmIsAMode = AssertNoneMissing<Exclude<MirroredView['mode'], OutputMode>>
 
 /**
+ * Where the operator has the control globe pointed, in the operator's
+ * own terms.
+ *
+ * These are MapLibre's numbers, unconverted, and that is the point: the
+ * operator drives one globe with one camera, and *every* output
+ * geometry is a function of it. `sos-equirect` turns it into a
+ * ray-march origin inside the unit sphere; a perspective mode would
+ * turn the same three numbers into an eye position and a field of
+ * view; a warped projector rig would feed it to a mesh. None of those
+ * is more canonical than another, so the shared state holds the input
+ * rather than any one mode's output.
+ *
+ * This replaced storing `sos-equirect`'s own `cameraOffset` as the
+ * shared value. That worked — the offset is invertible, `|o|` recovers
+ * the zoom factor and its direction the lat/lon — but it made one
+ * geometry's encoding the thing every other geometry had to be derived
+ * *through*, and a derivation chained off another mode's lossy,
+ * clamped output is a worse starting point than the operator's actual
+ * camera. `MAX_CAMERA_OFFSET` clamps the equirect offset, so a zoom
+ * past that point is no longer recoverable from it at all.
+ */
+export interface OperatorCamera {
+  /** Degrees, −90 (south pole) to 90. */
+  lat: number
+  /** Degrees, −180 to 180. */
+  lon: number
+  /** MapLibre zoom. `0` is the whole globe, and derives to a centred
+   *  camera in every mode — see `DEFAULT_OPERATOR_CAMERA`. */
+  zoom: number
+}
+
+/**
+ * What the **control window** knows about the view: one globe's facts,
+ * belonging to no output's geometry.
+ *
+ * The aggregator holds exactly one of these and diffs it. It is not
+ * what an output receives — `projectView` turns it into that output's
+ * `MirroredView` arm, using that output's own mode and settings.
+ *
+ * Keeping the two apart is what stops any mode being privileged. While
+ * the shared value was an `sos-equirect` arm, a second mode could only
+ * be reached by deriving from equirect's, and `CANONICAL_VIEW_MODE`
+ * existed to name which arm that was. There is no canonical arm now, so
+ * there is nothing to name.
+ */
+export interface SharedView extends MirroredViewCommon {
+  camera: OperatorCamera
+}
+
+/**
  * Everything an output needs to render, and nothing it does not.
+ *
+ * Generic over the view because the control window and an output hold
+ * genuinely different ones: the control window has a globe and a camera
+ * (`SharedView`), an output has a geometry and that geometry's
+ * parameters (`MirroredView`). Every other field is identical, so one
+ * structure with two instantiations says that, where two hand-written
+ * interfaces would drift the first time a field is added to one.
  *
  * `null` means "nothing loaded", which an output renders as the idle
  * photoreal Earth. Note that idle stays Earth even for a node whose
  * catalog is mostly another body — it is only the *loaded-dataset*
  * path that consults `overlay.celestialBody`.
  */
-export interface MirroredGlobeState {
+export interface GlobeState<V> {
   dataset: MirroredDataset | null
   primary: MirroredPrimary | null
   playback: MirroredPlayback | null
@@ -317,8 +356,15 @@ export interface MirroredGlobeState {
   layers: MirroredLayer[]
   /** ISO 8601, or `null` when no dataset is loaded. */
   simulationDate: string | null
-  view: MirroredView
+  view: V
 }
+
+/** What the control window accumulates and diffs. One per app. */
+export type MirroredGlobeState = GlobeState<SharedView>
+
+/** What one output receives, after `projectView` has resolved the
+ *  shared camera into that output's own geometry. */
+export type OutputGlobeState = GlobeState<MirroredView>
 
 // --- Manager → output ---
 
@@ -334,19 +380,39 @@ export const OUTPUT_STATE_EVENT = 'output_state'
  * it cannot tell a late delivery from a new one, and a stale diff
  * applied after a fresh one silently shows the wrong frame. It resets
  * on manager restart, which a `full` snapshot always accompanies.
+ *
+ * Generic over the state for the same reason `GlobeState` is: the
+ * aggregator produces these carrying shared state, the manager
+ * re-states each one per output, and only the second kind reaches a
+ * window. Typing both as one shape would let an unprojected message be
+ * emitted — an output receiving the operator's raw camera and no mode
+ * at all, which it has no way to render and no way to complain about.
  */
-export interface OutputStateMessage {
+export interface GlobeStateMessage<S> {
   seq: number
-  /** `true` → `state` is a complete `MirroredGlobeState`; `false` →
-   *  only the keys present have changed. */
+  /** `true` → `state` is complete; `false` → only the keys present
+   *  have changed. */
   full: boolean
-  state: MirroredGlobeState | Partial<MirroredGlobeState>
+  state: S | Partial<S>
 }
 
-/** Narrowing helper — a full message carries the complete state. */
-export function isFullState(
-  msg: OutputStateMessage,
-): msg is OutputStateMessage & { full: true; state: MirroredGlobeState } {
+/** Aggregator → manager. Carries the shared view; never emitted. */
+export type SharedStateMessage = GlobeStateMessage<MirroredGlobeState>
+
+/** Manager → output, over `OUTPUT_STATE_EVENT`. */
+export type OutputStateMessage = GlobeStateMessage<OutputGlobeState>
+
+/**
+ * Narrowing helper — a full message carries the complete state.
+ *
+ * Generic over the state, so it serves both directions: the manager
+ * narrows a `SharedStateMessage` from the aggregator, an output
+ * narrows the `OutputStateMessage` it received. `full` describes the
+ * envelope, not what is in it.
+ */
+export function isFullState<S>(
+  msg: GlobeStateMessage<S>,
+): msg is GlobeStateMessage<S> & { full: true; state: S } {
   return msg.full
 }
 

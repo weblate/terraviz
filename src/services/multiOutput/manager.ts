@@ -64,6 +64,7 @@ import {
   type OutputEvent,
   type OutputMode,
   type OutputStateMessage,
+  type SharedStateMessage,
 } from './protocol'
 import {
   DEFAULT_VIEW_SETTINGS,
@@ -486,8 +487,13 @@ export class MultiOutputManager {
   }
 
   /** Send one message to every ready output, projected through that
-   *  output's own view settings. */
-  private async broadcast(message: OutputStateMessage): Promise<void> {
+   *  output's own view settings and mode.
+   *
+   *  Takes a `SharedStateMessage` and emits an `OutputStateMessage`:
+   *  this method *is* the boundary between the state the control
+   *  window accumulates and the state a window can render, which is
+   *  why the two types differ either side of it. */
+  private async broadcast(message: SharedStateMessage): Promise<void> {
     await Promise.all(
       this.readyRecords().map(record =>
         this.emit(record, {

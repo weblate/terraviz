@@ -459,11 +459,7 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: false } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: {
-        mode: 'sos-equirect',
-        dayNight: true,
-        params: { cameraOffset: { x: 0.6, y: 0, z: 0 }, split: false },
-      },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
     })
     fake.emitted.length = 0
 
@@ -495,11 +491,7 @@ describe('the heartbeat', () => {
     fake.emitted.length = 0
 
     await manager.applyState({
-      view: {
-        mode: 'sos-equirect',
-        dayNight: true,
-        params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false },
-      },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
     })
 
     const byLabel = Object.fromEntries(fake.emitted.map(e => [e.label, e.payload]))
@@ -532,11 +524,7 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: true } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: {
-        mode: 'sos-equirect',
-        dayNight: true,
-        params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false },
-      },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
     })
     fake.emitted.length = 0
 
@@ -555,11 +543,7 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: true } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: {
-        mode: 'sos-equirect',
-        dayNight: true,
-        params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: false },
-      },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
     })
     const lastApplied = fake.emitted[fake.emitted.length - 1].payload.seq
 

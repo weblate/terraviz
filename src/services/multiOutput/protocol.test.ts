@@ -21,7 +21,7 @@ import {
   IPC_STALE_MS,
   IPC_ORPHAN_MS,
   type MirroredEquirectParams,
-  type MirroredGlobeState,
+  type OutputGlobeState,
   type OutputStateMessage,
 } from './protocol'
 import { IDENTITY_PARAMS, type EquirectParams } from '../../output/equirectRtt'
@@ -71,7 +71,7 @@ describe('window labels', () => {
 })
 
 describe('isFullState', () => {
-  const state: MirroredGlobeState = {
+  const state: OutputGlobeState = {
     dataset: null,
     primary: null,
     playback: null,

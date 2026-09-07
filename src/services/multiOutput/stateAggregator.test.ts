@@ -22,12 +22,14 @@ import type {
 import { isFullState } from './protocol'
 import {
   CENTRED_CAMERA,
+  DEFAULT_OPERATOR_CAMERA,
   DEFAULT_VIEW_SETTINGS,
   StateAggregator,
   initialState,
   projectState,
   projectView,
 } from './stateAggregator'
+import { MAX_CAMERA_OFFSET } from '../../output/equirectRtt'
 
 const DATASET: MirroredDataset = {
   id: 'ds-1',
@@ -49,7 +51,7 @@ describe('initial state', () => {
     const a = initialState()
     const b = initialState()
     expect(a).not.toBe(b)
-    expect(a.view.params.cameraOffset).not.toBe(b.view.params.cameraOffset)
+    expect(a.view.camera).not.toBe(b.view.camera)
     expect(a).toEqual(b)
   })
 
@@ -59,8 +61,10 @@ describe('initial state', () => {
     expect(s.playback).toBeNull()
     expect(s.layers).toEqual([])
     expect(s.view.dayNight).toBe(true)
-    expect(s.view.mode).toBe('sos-equirect')
-    expect(s.view.params.cameraOffset).toEqual(CENTRED_CAMERA)
+    // No mode on the shared view at all — that is the point of the
+    // split. The arm only exists once an output is projected for.
+    expect(s.view).not.toHaveProperty('mode')
+    expect(s.view.camera).toEqual(DEFAULT_OPERATOR_CAMERA)
   })
 })
 
@@ -105,16 +109,11 @@ describe('apply', () => {
   it('compares regardless of key order', () => {
     const agg = new StateAggregator()
     agg.apply({
-      view: {
-        mode: 'sos-equirect' as const,
-        dayNight: true,
-        params: { cameraOffset: { x: 1, y: 2, z: 3 }, split: false },
-      },
+      view: { dayNight: true, camera: { lat: 10, lon: 20, zoom: 3 } },
     })
     const reordered = {
-      params: { split: false, cameraOffset: { z: 3, y: 2, x: 1 } },
+      camera: { zoom: 3, lon: 20, lat: 10 },
       dayNight: true,
-      mode: 'sos-equirect' as const,
     }
     expect(agg.apply({ view: reordered })).toBeNull()
   })
@@ -246,15 +245,26 @@ describe('sequence numbers', () => {
 })
 
 describe('per-output view projection', () => {
+  /**
+   * `lat: 90` is chosen so the derived offset is order-sensitive:
+   * `latLonToDirection` puts latitude on **Y**, so this camera derives
+   * to `(0, f, 0)`. A `projectView` that passed lat and lon the wrong
+   * way round would produce `(0, 0, f)` and fail — which asserting
+   * against `cameraOffsetForCamera(...)` with the same argument order
+   * could never catch.
+   *
+   * `zoom: 1` gives `f = 1 − 1/(1 + 1) = 0.5`, under the clamp.
+   */
   const shared = {
-    mode: 'sos-equirect' as const,
     dayNight: false,
-    params: { cameraOffset: { x: 0.4, y: -0.2, z: 0.1 }, split: false },
+    camera: { lat: 90, lon: 0, zoom: 1 },
   }
 
   it('passes the operator camera through when tracking', () => {
     const v = projectView(shared, { trackCamera: true, split: false }, 'sos-equirect')
-    expect(v.params.cameraOffset).toEqual(shared.params.cameraOffset)
+    expect(v.params.cameraOffset.x).toBeCloseTo(0, 10)
+    expect(v.params.cameraOffset.y).toBeCloseTo(0.5, 10)
+    expect(v.params.cameraOffset.z).toBeCloseTo(0, 10)
     expect(v.dayNight).toBe(false)
   })
 
@@ -267,17 +277,25 @@ describe('per-output view projection', () => {
     expect(
       projectView(shared, { trackCamera: true, split: true }, 'sos-equirect').params.split,
     ).toBe(true)
-    const sharedSplit = { ...shared, params: { ...shared.params, split: true } }
+    // There is nowhere on the shared view for a `split` to come from
+    // any more — it is not a globe fact — so the output's own setting
+    // is the only source by construction.
+    expect(shared).not.toHaveProperty('split')
     expect(
-      projectView(sharedSplit, DEFAULT_VIEW_SETTINGS, 'sos-equirect').params.split,
+      projectView(shared, DEFAULT_VIEW_SETTINGS, 'sos-equirect').params.split,
     ).toBe(false)
   })
 
   it('does not alias the shared offset, so one output cannot mutate another', () => {
-    const v = projectView(shared, { trackCamera: true, split: false }, 'sos-equirect')
-    expect(v.params.cameraOffset).not.toBe(shared.params.cameraOffset)
-    // The params object itself is rebuilt too, not spread from shared.
-    expect(v.params).not.toBe(shared.params)
+    const a = projectView(shared, { trackCamera: true, split: false }, 'sos-equirect')
+    const b = projectView(shared, { trackCamera: true, split: false }, 'sos-equirect')
+    // Each output gets its own object graph. The offset is derived per
+    // projection now rather than copied from a stored one, so two
+    // outputs cannot end up sharing — but that has to stay true if the
+    // derivation is ever memoised.
+    expect(a.params.cameraOffset).not.toBe(b.params.cameraOffset)
+    expect(a.params).not.toBe(b.params)
+    expect(a.params.cameraOffset).toEqual(b.params.cameraOffset)
   })
 
   it('leaves a diff without a view untouched', () => {
@@ -290,10 +308,10 @@ describe('per-output view projection', () => {
   it('projects a diff that does carry a view', () => {
     const diff = { view: shared }
     const projected = projectState(diff, { trackCamera: false, split: true }, 'sos-equirect')
-    expect(projected.view.params.cameraOffset).toEqual(CENTRED_CAMERA)
-    expect(projected.view.params.split).toBe(true)
+    expect(projected.view!.params.cameraOffset).toEqual(CENTRED_CAMERA)
+    expect(projected.view!.params.split).toBe(true)
     // The input is not mutated — two outputs project the same diff.
-    expect(diff.view.params.cameraOffset).toEqual({ x: 0.4, y: -0.2, z: 0.1 })
+    expect(diff.view.camera).toEqual({ lat: 90, lon: 0, zoom: 1 })
   })
 
   it('stamps the arm with the mode the output was given', () => {
@@ -303,7 +321,28 @@ describe('per-output view projection', () => {
     const v = projectView(shared, DEFAULT_VIEW_SETTINGS, 'sos-equirect')
     expect(v.mode).toBe('sos-equirect')
     const projected = projectState({ view: shared }, DEFAULT_VIEW_SETTINGS, 'sos-equirect')
-    expect(projected.view.mode).toBe('sos-equirect')
+    expect(projected.view!.mode).toBe('sos-equirect')
+  })
+
+  it('derives the default camera to a centred, uniform unwrap', () => {
+    // The behavioural continuity the split has to preserve. Before it,
+    // `initialState` stored `CENTRED_CAMERA` literally; now it stores
+    // `zoom: 0` and the identity falls out of the derivation
+    // (`1 − 1/(0 + 1)` is exactly 0). If that ever stops holding, a
+    // freshly-booted output opens on a warped sphere with no dataset
+    // loaded and nothing on screen to explain it.
+    const v = projectView(initialState().view, DEFAULT_VIEW_SETTINGS, 'sos-equirect')
+    expect(v.params.cameraOffset).toEqual(CENTRED_CAMERA)
+  })
+
+  it('keeps the derived camera inside the sphere however far the operator zooms', () => {
+    // `MAX_CAMERA_OFFSET` is why the ray-march needs no miss branch, and
+    // the shared view now holds an *unclamped* operator zoom — so the
+    // clamp has to survive the extra hop. A camera at or past the
+    // surface smears one texel across most of the sphere.
+    const far = { dayNight: true, camera: { lat: 35, lon: -120, zoom: 1e6 } }
+    const o = projectView(far, DEFAULT_VIEW_SETTINGS, 'sos-equirect').params.cameraOffset
+    expect(Math.hypot(o.x, o.y, o.z)).toBeLessThanOrEqual(MAX_CAMERA_OFFSET)
   })
 
   it('throws loudly rather than silently mis-projecting an unknown mode', () => {

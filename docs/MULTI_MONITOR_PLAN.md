@@ -2463,53 +2463,83 @@ working unchanged:
   below — the persisted config holds a path, not a blob.
 
 **`MirroredView` was mode-specific without saying so, and is now a
-union keyed on `OutputMode`.** `cameraOffset` is bounded by
-`MAX_CAMERA_OFFSET` because the camera must stay inside the sphere;
-`split` folds U across an equirectangular frame. Both were flat fields
-beside `dayNight`, which *is* projection-independent, and all three
-went to every output with nothing in the type marking two of them
-conditional.
+union keyed on `OutputMode` — and the shared view is mode-free.**
+`cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the camera
+must stay inside the sphere; `split` folds U across an equirectangular
+frame. Both were flat fields beside `dayNight`, which *is*
+projection-independent, and all three went to every output with nothing
+in the type marking two of them conditional.
 
-The shape now is one arm per mode — `{ mode, dayNight, params }` — where
-`params` is that arm's renderer parameter object. `sos-equirect`'s is
-`MirroredEquirectParams`, declared structurally identical to
-`equirectRtt`'s own `EquirectParams`, which is what
-`outputScene.setParams` already takes; `protocol.test.ts` holds the two
-assignable in both directions. A second mode adds an arm whose `params`
-is *its* renderer's object, and nothing else in the union changes.
+There are now two view types, because the control window and an output
+genuinely hold different things:
+
+| | Holds | Shape |
+|---|---|---|
+| `SharedView` | one globe's facts | `{ dayNight, camera: OperatorCamera }` |
+| `MirroredView` | one output's geometry | `{ mode, dayNight, params }`, one arm per `OutputMode` |
+
+`OperatorCamera` is MapLibre's own lat/lon/zoom, unconverted, and that
+is what makes no geometry privileged: `sos-equirect` turns those three
+numbers into a ray-march origin, a perspective mode would turn the same
+three into an eye position and a field of view, a warped rig would feed
+them to a mesh. Storing `sos-equirect`'s `cameraOffset` as the shared
+value worked and was briefly what shipped, but it made one geometry's
+encoding the thing every other geometry had to derive *through* — and
+that encoding is lossy at the top of its range, since `MAX_CAMERA_OFFSET`
+clamps it, so a zoom past the cap is not recoverable from it at all.
+
+Each arm's payload is `params`, uniformly, because that is what the
+arm's renderer takes. `sos-equirect`'s is `MirroredEquirectParams`,
+declared structurally identical to `equirectRtt`'s own `EquirectParams`
+— what `outputScene.setParams` already accepts — so a narrowed output
+hands `view.params` to the shader with no adapter, and
+`protocol.test.ts` holds the two assignable in both directions.
+
+`GlobeState<V>` and `GlobeStateMessage<S>` are generic over which of
+the two they carry, so `MirroredGlobeState` / `OutputGlobeState` and
+`SharedStateMessage` / `OutputStateMessage` share one structure rather
+than being two hand-written copies that drift on the next added field.
+`MultiOutputManager.broadcast` **is** the boundary: shared in, output
+out.
 
 The discriminant earns itself twice. An output can no longer be handed
-settings it has no meaning for — that is the type's job now rather than
+settings it has no meaning for — the type's job now, rather than
 prose's. And because an output already announces its own mode in
-`OutputReadyEvent`, `view.mode` disagreeing with it is a detectable
-fault: a window that booted as one geometry being driven as another,
-which previously would simply have rendered wrongly.
+`OutputReadyEvent`, a `view.mode` that disagrees is a detectable fault:
+a window that booted as one geometry being driven as another, which
+before would simply have rendered wrongly.
 
-Two compile-time guards tie the union to `OutputMode`, both directions,
-so neither list can gain a member without the other: a mode with no arm
-would be broadcast as some other mode's shape, and an arm with no mode
-could never be selected. A third guard sits in `projectView`'s
-`switch`, whose `default` narrows to `never`. Adding a mode without an
-arm and without a projection case fails at both `protocol.ts` and
-`stateAggregator.ts` — verified by doing exactly that.
+Three compile-time guards, each verified by making the mistake it
+catches. Two `Exclude` constraints tie the union to `OutputMode` in
+both directions — a mode with no arm would ship as some other mode's
+shape, an arm with no mode could never be selected — and `projectView`'s
+`switch` has a `default` that narrows to `never`. Adding a second mode
+fails at `protocol.ts` and `stateAggregator.ts` together.
 
-`projectView` takes the output's mode as an argument rather than
-reading it off the shared view, which is the part that matters for a
-second mode. The control window has one globe and N outputs that need
-not agree on geometry, so the aggregator's single stored view has to be
-canonical in *some* mode; `CANONICAL_VIEW_MODE` names that rather than
-leaving it implicit. It is also the grep target for the one decision
-deliberately left open: whether a second mode promotes the shared
-camera to a mode-independent encoding (the operator's lat/lon/zoom,
-which is what `cameraOffsetForCamera` consumes) or derives from the
-canonical arm. The equirect offset is recoverable either way — `|o|`
-gives the zoom factor, its direction gives lat/lon — so nothing is lost
-by leaving that to the commit with a second consumer to test against.
+`projectView` is the only place the operator's camera becomes a
+geometry's camera, and it takes the output's mode as an argument. The
+shared view has no mode at all now, which is what makes driving an
+output as the wrong geometry impossible rather than merely unlikely.
+The one continuity property worth stating: `DEFAULT_OPERATOR_CAMERA` is
+`zoom: 0`, and `1 − 1/(0 + 1)` is exactly `0`, so a freshly-booted
+output still gets the uniform 1:1 unwrap without that identity being
+written down twice.
 
-Each arm is built whole, field by field, rather than spread from the
-shared view: a field added later then cannot pass through without
-someone deciding whether it is shared or per-output, and the wrong
-answer there is invisible because it looks like the setting working.
+The cost is one import edge from the control side into
+`src/output/equirectRtt`, for `cameraOffsetForCamera`. It is taken
+deliberately: that module is pure TS by construction — no Three, no GL,
+no DOM — and the alternative is extracting the derivation and the
+`MAX_CAMERA_OFFSET` it clamps against into a third module, splitting the
+shader's invariant away from the shader mirror that exists to hold it.
+In practice Rollup gives `equirectRtt` its own chunk, shared by the
+`manager` chunk and the output bundle — one copy, fetched only by
+whoever actually imports it. The web entry chunk is unaffected: it names
+that chunk in its dynamic-import preload map, exactly as it already
+names `manager`, `publisher` and `three.module`, and never fires the
+import. Check the **markers**, not the filenames — `sos-equirect` and
+`uCameraOffset` are both absent from `dist/assets/main-*.js`; a chunk
+name appearing in the preload list is what a lazily-loaded chunk is
+supposed to look like.
 
 `OutputViewSettings` — the operator's per-output toggles — stays flat
 on purpose. Only `split` is equirect-only there (`trackCamera` is
