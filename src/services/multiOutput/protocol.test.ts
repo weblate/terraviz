@@ -20,9 +20,11 @@ import {
   STATE_TICK_MS,
   IPC_STALE_MS,
   IPC_ORPHAN_MS,
+  type MirroredEquirectView,
   type MirroredGlobeState,
   type OutputStateMessage,
 } from './protocol'
+import { IDENTITY_PARAMS, type EquirectParams } from '../../output/equirectRtt'
 
 describe('window labels', () => {
   it('mints 1-based labels matching the capability glob', () => {
@@ -76,7 +78,7 @@ describe('isFullState', () => {
     display: null,
     layers: [],
     simulationDate: null,
-    view: { dayNight: true, cameraOffset: { x: 0, y: 0, z: 0 }, split: false },
+    view: { dayNight: true, equirect: { cameraOffset: { x: 0, y: 0, z: 0 }, split: false } },
   }
 
   it('narrows a snapshot to the complete state', () => {
@@ -113,5 +115,36 @@ describe('agreed timings', () => {
     // the stale threshold must clear several ticks — otherwise one
     // dropped message reads as a degraded link.
     expect(IPC_STALE_MS).toBeGreaterThanOrEqual(STATE_TICK_MS * 3)
+  })
+})
+
+describe('the equirect view is the shader’s own parameter object', () => {
+  /**
+   * Assignable **both ways**, which is the whole property.
+   *
+   * One direction alone is satisfied by a subset: if the wire type
+   * lost `split`, `MirroredEquirectView` would still be assignable to
+   * nothing useful, but `EquirectParams` would remain assignable to a
+   * widened wire type and a one-way check would stay green. Two
+   * declarations mean neither side can quietly gain or drop a field.
+   *
+   * `protocol.ts` cannot import `equirectRtt` to state this itself —
+   * the contract must not depend on one of its consumers, and
+   * `equirectRtt` lives in the output bundle, which the control bundle
+   * does not load. A test imports both freely, so this is where the
+   * promise is kept.
+   */
+  type _WireIsParams = MirroredEquirectView extends EquirectParams ? true : never
+  type _ParamsIsWire = EquirectParams extends MirroredEquirectView ? true : never
+  const _bothWays: [_WireIsParams, _ParamsIsWire] = [true, true]
+
+  it('accepts the shader’s identity params as a wire value', () => {
+    // The types above prove the shapes match; this proves a real value
+    // crosses, so the pairing cannot be satisfied by two types that
+    // agree only because both are structurally empty.
+    const view: MirroredEquirectView = IDENTITY_PARAMS
+    expect(view.split).toBe(false)
+    expect(view.cameraOffset).toEqual({ x: 0, y: 0, z: 0 })
+    expect(_bothWays).toEqual([true, true])
   })
 })

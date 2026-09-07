@@ -2462,17 +2462,33 @@ working unchanged:
 - the mesh stays out of `localStorage`, per the typed-array finding
   below — the persisted config holds a path, not a blob.
 
-**`MirroredView` is already mode-specific without saying so.**
-`cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the camera
-must stay inside the sphere; `split` folds U across an equirectangular
-frame. Both are broadcast to every output and no layer branches on
-mode. With one mode that is simply true. With two it is a perspective
-output receiving a `split` it must silently ignore, and an offset whose
-invariant does not describe its camera. Whoever adds the second mode
-decides whether the view struct becomes per-mode or stays a flat union
-of every mode's settings; `stateAggregator`'s `projectState` is where
-that is enforced, since it is already the one place a value is made
-per-output.
+**`MirroredView` was mode-specific without saying so, and now says
+so.** `cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the
+camera must stay inside the sphere; `split` folds U across an
+equirectangular frame. Both were flat fields beside `dayNight`, which
+*is* projection-independent, and both went to every output with nothing
+in the type marking them conditional. They now sit in
+`MirroredEquirectView`, reached as `view.equirect` — declared
+structurally identical to `equirectRtt`'s own `EquirectParams`, which
+is what `setParams` already takes, so an output hands the bag straight
+to the shader with no adapter and `protocol.test.ts` holds the two
+assignable in both directions.
+
+That is grouping, not discrimination, and the difference is the point:
+a union keyed on `OutputMode` with one arm proves nothing and taxes
+every consumer with a narrow that cannot fail. The second mode makes it
+a union and gives its own settings a sibling of `equirect`;
+`stateAggregator`'s `projectView` is where that branch lands, since it
+is already the one place a value is made per-output. `projectView`
+rebuilds the equirect bag field-by-field rather than spreading the
+shared one, so a field added later cannot pass through un-decided.
+
+`OutputViewSettings` — the operator's per-output toggles — stays flat
+on purpose. Only `split` is equirect-only there (`trackCamera` is
+wanted by a flat mode too), and that type is **persisted**: regrouping
+it is a storage-schema change, and rung 10's version field resets a
+mismatched blob rather than migrating it. One boolean's tidier home is
+not worth every operator's saved outputs.
 
 ### The flat case: N monitors each showing the globe
 

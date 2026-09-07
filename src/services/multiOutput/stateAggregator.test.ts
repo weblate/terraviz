@@ -49,7 +49,7 @@ describe('initial state', () => {
     const a = initialState()
     const b = initialState()
     expect(a).not.toBe(b)
-    expect(a.view.cameraOffset).not.toBe(b.view.cameraOffset)
+    expect(a.view.equirect.cameraOffset).not.toBe(b.view.equirect.cameraOffset)
     expect(a).toEqual(b)
   })
 
@@ -59,7 +59,7 @@ describe('initial state', () => {
     expect(s.playback).toBeNull()
     expect(s.layers).toEqual([])
     expect(s.view.dayNight).toBe(true)
-    expect(s.view.cameraOffset).toEqual(CENTRED_CAMERA)
+    expect(s.view.equirect.cameraOffset).toEqual(CENTRED_CAMERA)
   })
 })
 
@@ -103,8 +103,13 @@ describe('apply', () => {
 
   it('compares regardless of key order', () => {
     const agg = new StateAggregator()
-    agg.apply({ view: { dayNight: true, cameraOffset: { x: 1, y: 2, z: 3 }, split: false } })
-    const reordered = { split: false, cameraOffset: { z: 3, y: 2, x: 1 }, dayNight: true }
+    agg.apply({
+      view: { dayNight: true, equirect: { cameraOffset: { x: 1, y: 2, z: 3 }, split: false } },
+    })
+    const reordered = {
+      equirect: { split: false, cameraOffset: { z: 3, y: 2, x: 1 } },
+      dayNight: true,
+    }
     expect(agg.apply({ view: reordered })).toBeNull()
   })
 
@@ -237,29 +242,31 @@ describe('sequence numbers', () => {
 describe('per-output view projection', () => {
   const shared = {
     dayNight: false,
-    cameraOffset: { x: 0.4, y: -0.2, z: 0.1 },
-    split: false,
+    equirect: { cameraOffset: { x: 0.4, y: -0.2, z: 0.1 }, split: false },
   }
 
   it('passes the operator camera through when tracking', () => {
     const v = projectView(shared, { trackCamera: true, split: false })
-    expect(v.cameraOffset).toEqual(shared.cameraOffset)
+    expect(v.equirect.cameraOffset).toEqual(shared.equirect.cameraOffset)
     expect(v.dayNight).toBe(false)
   })
 
   it('centres the camera when not tracking', () => {
     const v = projectView(shared, { trackCamera: false, split: false })
-    expect(v.cameraOffset).toEqual(CENTRED_CAMERA)
+    expect(v.equirect.cameraOffset).toEqual(CENTRED_CAMERA)
   })
 
   it('takes split from the output, never from the shared view', () => {
-    expect(projectView(shared, { trackCamera: true, split: true }).split).toBe(true)
-    expect(projectView({ ...shared, split: true }, DEFAULT_VIEW_SETTINGS).split).toBe(false)
+    expect(projectView(shared, { trackCamera: true, split: true }).equirect.split).toBe(true)
+    const sharedSplit = { ...shared, equirect: { ...shared.equirect, split: true } }
+    expect(projectView(sharedSplit, DEFAULT_VIEW_SETTINGS).equirect.split).toBe(false)
   })
 
   it('does not alias the shared offset, so one output cannot mutate another', () => {
     const v = projectView(shared, { trackCamera: true, split: false })
-    expect(v.cameraOffset).not.toBe(shared.cameraOffset)
+    expect(v.equirect.cameraOffset).not.toBe(shared.equirect.cameraOffset)
+    // The bag itself is rebuilt too, not spread from the shared one.
+    expect(v.equirect).not.toBe(shared.equirect)
   })
 
   it('leaves a diff without a view untouched', () => {
@@ -272,9 +279,9 @@ describe('per-output view projection', () => {
   it('projects a diff that does carry a view', () => {
     const diff = { view: shared }
     const projected = projectState(diff, { trackCamera: false, split: true })
-    expect(projected.view.cameraOffset).toEqual(CENTRED_CAMERA)
-    expect(projected.view.split).toBe(true)
+    expect(projected.view.equirect.cameraOffset).toEqual(CENTRED_CAMERA)
+    expect(projected.view.equirect.split).toBe(true)
     // The input is not mutated — two outputs project the same diff.
-    expect(diff.view.cameraOffset).toEqual({ x: 0.4, y: -0.2, z: 0.1 })
+    expect(diff.view.equirect.cameraOffset).toEqual({ x: 0.4, y: -0.2, z: 0.1 })
   })
 })

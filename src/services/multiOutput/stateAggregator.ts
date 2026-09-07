@@ -27,9 +27,9 @@
  * others correctly applied. Only a real change advances the sequence.
  *
  * **The view is projected per output, not stored per output.** Both
- * `cameraOffset` and `split` are per-output settings in the plan, but
- * only one of them *originates* per output: `split` is a pure operator
- * choice, while `cameraOffset` is derived once from the operator's
+ * `equirect.cameraOffset` and `equirect.split` are per-output settings
+ * in the plan, but only one of them *originates* per output: `split` is
+ * a pure operator choice, while `cameraOffset` is derived once from the operator's
  * MapLibre camera and then either passed through or zeroed depending on
  * whether that output tracks the camera. Holding one shared view and
  * projecting it at the send boundary (`projectState`) keeps a single
@@ -67,19 +67,34 @@ export function initialState(): MirroredGlobeState {
     simulationDate: null,
     view: {
       dayNight: true,
-      cameraOffset: { ...CENTRED_CAMERA },
-      split: false,
+      equirect: {
+        cameraOffset: { ...CENTRED_CAMERA },
+        split: false,
+      },
     },
   }
 }
 
-/** The per-output half of the view — what the Outputs panel sets on one
- *  output rather than on the globe. */
+/**
+ * The per-output half of the view — what the Outputs panel sets on one
+ * output rather than on the globe.
+ *
+ * Left flat, unlike `MirroredView`, and the asymmetry is deliberate.
+ * `trackCamera` is projection-independent (a flat mode would want a
+ * per-output camera too), so only `split` is equirect-only here — one
+ * field, against a wire type where it was two out of three. And this
+ * shape is **persisted**: `PersistedOutput` mirrors it, so regrouping
+ * it is a storage-schema change, and rung 10's version field resets a
+ * mismatched blob rather than migrating it. Trading every operator's
+ * saved outputs for the tidier home of one boolean is the wrong side
+ * of that deal until a second mode actually needs it.
+ */
 export interface OutputViewSettings {
   /** When false, this output gets `CENTRED_CAMERA` regardless of where
    *  the operator has panned. */
   trackCamera: boolean
-  /** Mirror the area of focus to the antipodal hemisphere. */
+  /** Mirror the area of focus to the antipodal hemisphere.
+   *  `sos-equirect` only — see `MirroredEquirectView`. */
   split: boolean
 }
 
@@ -88,17 +103,33 @@ export const DEFAULT_VIEW_SETTINGS: OutputViewSettings = {
   split: false,
 }
 
-/** Apply one output's settings to the shared view. */
+/**
+ * Apply one output's settings to the shared view.
+ *
+ * The equirect half is rebuilt **whole** rather than spread over the
+ * shared one. Spreading would silently pass through any field a later
+ * commit adds to `MirroredEquirectView` without deciding whether it is
+ * shared or per-output — and the wrong answer there is invisible,
+ * because it looks like the setting simply working. Listing the fields
+ * means a new one fails to compile until someone chooses.
+ *
+ * This is also where a second `OutputMode` branches: the projection
+ * would take the output's mode and emit only that mode's settings,
+ * rather than every mode's. It is not written that way today because
+ * there is one mode, and a `switch` with one arm proves nothing.
+ */
 export function projectView(
   shared: MirroredView,
   settings: OutputViewSettings,
 ): MirroredView {
   return {
     dayNight: shared.dayNight,
-    cameraOffset: settings.trackCamera
-      ? { ...shared.cameraOffset }
-      : { ...CENTRED_CAMERA },
-    split: settings.split,
+    equirect: {
+      cameraOffset: settings.trackCamera
+        ? { ...shared.equirect.cameraOffset }
+        : { ...CENTRED_CAMERA },
+      split: settings.split,
+    },
   }
 }
 

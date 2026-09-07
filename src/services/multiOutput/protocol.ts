@@ -172,8 +172,44 @@ export interface MirroredLayer {
   overlay: DatasetOverlayOptions
 }
 
-export interface MirroredView {
-  dayNight: boolean
+/**
+ * The half of the view that only means anything under `sos-equirect`.
+ *
+ * Both fields are properties of *that projection* rather than of
+ * outputs in general, and grouping them says so in the type instead of
+ * only in prose:
+ *
+ * - `cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the
+ *   ray-march requires a camera strictly **inside** the unit sphere —
+ *   that is why the shader has no miss branch. A projector sitting
+ *   outside the sphere, or an ordinary perspective camera, has no such
+ *   bound, so the constraint describes this projection and not a
+ *   camera in general.
+ * - `split` is `fract(u * 2)` — a fold of the equirectangular U axis.
+ *   A perspective view has no U axis to fold.
+ *
+ * Flattened alongside `dayNight` (which *is* projection-independent),
+ * these were broadcast to every output with nothing in the type to say
+ * they were conditional. With one mode that is merely untidy; with two
+ * it is an output receiving a `split` it has to know to ignore. The
+ * second mode's job is to make `MirroredView` a union keyed on
+ * `OutputMode` and give its own settings a sibling of this field; the
+ * grouping is what makes that a change to one line rather than an
+ * archaeology exercise over a flat bag.
+ *
+ * **Structurally identical to `EquirectParams` in
+ * `src/output/equirectRtt.ts`, deliberately** — that is what the
+ * shader's `setParams` already takes, so an output hands this straight
+ * through with no adapter. `protocol.test.ts` proves the two stay
+ * assignable in both directions; it is declared here rather than
+ * imported because the contract must not depend on one of its
+ * consumers, and because `equirectRtt` lives in the output bundle.
+ *
+ * The `|o| ≤ MAX_CAMERA_OFFSET` bound is enforced once, in
+ * `cameraOffsetForCamera`, where the maths is. Re-checking it here
+ * would be a second enforcer free to disagree with the first.
+ */
+export interface MirroredEquirectView {
   /**
    * Derived from the operator's MapLibre camera, so zooming the control
    * window concentrates pixels around the area of focus on the sphere.
@@ -188,6 +224,14 @@ export interface MirroredView {
   /** Mirror the area of focus to the antipodal hemisphere — matches
    *  existing SOS sphere-split behaviour. Per-output. */
   split: boolean
+}
+
+export interface MirroredView {
+  /** Projection-independent: how the Earth is lit, true of any
+   *  geometry that draws one. Stays at this level for that reason. */
+  dayNight: boolean
+  /** Settings belonging to the `sos-equirect` projection alone. */
+  equirect: MirroredEquirectView
 }
 
 /**
