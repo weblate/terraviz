@@ -5,6 +5,11 @@
 **Last reviewed:** 2026-09-06
 **Standards target:** STAC core 1.1.0; STAC API 1.0.0 only in a later API phase
 
+**Design added:** 2026-09-08 (node-specific metadata, publication boundaries,
+extension ownership, and vocabulary interoperability for
+[issue #428](https://github.com/zyra-project/terraviz/issues/428); not a new
+review of the full census or standards registry).
+
 **Revisit when:** Phase 4 federation ships; a deployed D1 catalog materially
 diverges from the checked-in SOS snapshot; a stable STAC core release supersedes
 1.1.0; or the native-wire versus separate-projection decision changes.
@@ -122,6 +127,7 @@ flowchart LR
 | Snapshot mapping | `cli/lib/snapshot-import.ts` | Normalizes both legacy files into publisher drafts | Import boundary |
 | Publisher input | `DatasetDraftBody` in `functions/api/v1/_lib/validators.ts` | Create, edit, and publish contract | Write-side contract |
 | Durable dataset row | `datasets` in `schema/catalog-schema.sql` | Canonical normalized facts and lifecycle | Primary system of record |
+| Node organization profile | `node_profile` via `functions/api/v1/_lib/node-profile-store.ts` | Operator-authored organization name, mission, about text, regional focus, links, and logo | Stored profile is not automatically public; see the node-profile publication policy below |
 | Decorations | `dataset_tags`, `dataset_categories`, `dataset_keywords`, `dataset_developers`, `dataset_related` | Repeatable classifications, people, and links | Canonical joins |
 | Renditions | `dataset_renditions` | Codec, dimensions, bitrate, MIME type, reference, and digest per rendition | Canonical media variants |
 | Native public wire type | `WireDataset` in `functions/api/v1/_lib/dataset-serializer.ts` | Backward-compatible public serialization | Public native contract, not full storage |
@@ -378,7 +384,7 @@ native grid; they do not change the GeoJSON coordinate system.
 |---|---|---|
 | `node_identity.node_id` | Root Catalog `id` | Stable node identity |
 | `node_identity.display_name` | Root Catalog `title` | Direct |
-| `node_identity.description` | Root Catalog `description` | Supply a non-empty fallback if absent |
+| `node_identity.description` | Root Catalog `description` | Prefer the existing public description; fall back through approved profile prose as specified below |
 | Dataset `id` | Collection `id` input | Prefix the immutable ULID with a stable node namespace for global uniqueness |
 | Immutable revision or frame identity | Item `id` | Use a persisted source identity; do not derive it from a mutable slug |
 | Dataset `slug` | Collection alias URL input | Keep human-readable discovery URLs separate from canonical identity |
@@ -392,6 +398,74 @@ native grid; they do not change the GeoJSON coordinate system.
 | `schema_version` | `terraviz:schema_version` | Native contract version, not `stac_version` |
 | `weight` | `terraviz:weight` only if consumers need it | Editorial ranking, not scientific metadata |
 | Visibility and hidden/retracted state | Route authorization/filtering | Never expose non-public records merely by labeling them private |
+
+### Node profile and publication policy
+
+**Status: proposed design for review; no new public fields are implemented.**
+Node identity and operator-authored organization metadata have different jobs:
+`node_identity` anchors stable IDs and node naming; `node_profile` explains
+the institution and its holdings. Updating the latter must not rename a
+Catalog or change a dataset's origin, license, or scientific coverage.
+
+The current [public node-profile route](../../functions/api/v1/node-profile.ts)
+returns only `profile: { orgName, logoUrl }` (or `null`) plus feature toggles.
+The [profile store](../../functions/api/v1/_lib/node-profile-store.ts) also
+holds mission, about text, regional focus, links, tone, and audit fields, but
+those are read through the authenticated publisher surface. Despite its name,
+`NodeProfilePublic` describes that fuller portal payload, not the anonymous
+endpoint. Do not copy it into a public STAC response.
+
+| Profile source | Proposed STAC destination | Publication and meaning |
+|---|---|---|
+| `org_name` | Collection `providers[].name` for a verified host | Already public as `orgName`; use the node display name if no profile exists. Keep Root Catalog `title` as the node's display name so multiple installations at one organization remain distinct |
+| `mission` | Root Catalog `description` fallback | Only an explicitly approved public value; do not expose it merely because it is stored |
+| `about_md` | Root Catalog `description` fallback; `links[]` with `rel: "about"` to a public about resource | Approved prose only; use a deterministic bounded plain-text summary for the fallback and a sanitized public page for the full text, never the authenticated portal URL |
+| `links_json` | Root Catalog `links[]`; selected Collection provider `url` | Publish only approved entries with safe absolute HTTP(S) URLs. A label is not a relation: explicitly select the organization/about link; use `related` for other contextual links |
+| `logo_ref` | Root Catalog `links[]` with `rel: "icon"` | Resolve to the same publicly usable logo URL as the public route; emit the optional media type only from verified metadata, and omit unresolved references rather than leaking an R2 key |
+| `region_focus` | Approved about prose; optionally a future documented extension field | Organizational interest, not dataset geometry or Collection extent; never geocode it into scientific coverage |
+| `default_tone`, `updated_by` | No public STAC field | Authoring configuration and audit identity remain private |
+| `updated_at` | Internal cache/version dependency | Does not become an Item observation or publication time |
+
+Root Catalogs use `description` and `links`; this design does not put
+`providers` on the root as if it were a core Catalog field. Provider entries
+belong on Collections. The local profile supplies a `host` only when the node
+actually hosts that Collection's data, listed last and at most once. It does
+not imply `producer`, `processor`, or `licensor`. An index-only mirror keeps
+the origin's provider facts instead of replacing them with local branding.
+
+Proposed description precedence, taking the first non-empty approved value:
+the existing public `node_identity.description`, published `mission`, a
+bounded plain-text summary of published `about_md`, then a deterministic
+generic description naming the node and, when available, its public
+organization name. No profile is a supported state, not a publication error.
+
+Before enabling the richer mapping, add an operator-reviewed public profile
+selection with a preview and explicit publish/unpublish action. Prefer a
+published snapshot separate from the authoring row: existing rows start with
+no approval for currently private fields, and editing private draft prose
+must not silently update the published copy. Storage and permission details
+remain a Phase 0 decision. The existing public organization-name/logo behavior
+and native endpoint shape are unchanged unless separately reviewed.
+
+Recommended snapshot behavior is field-level selection followed by atomic
+publication of that selection. Unpublishing selected fields produces a new
+public revision without them; it does not delete the authoring row or restore
+an older snapshot that might disclose a previously withdrawn value. Operators
+explicitly assign link purposes in the preview; no URL-pattern or label-based
+heuristic infers an organization/about relation. These selections and their
+publication permissions require new storage and portal work in Phase 0/1.
+The current profile row does not store a logo MIME type: the resolver must
+provide verified asset metadata or omit the optional link `type`, not guess.
+
+Profile selection happens before serialization. Pass only approved values to
+the STAC builders, revalidate URLs, omit invalid optional links, and sanitize
+any rendered Markdown without executing embedded HTML. About/icon links must
+resolve anonymously before they are advertised. Unpublishing a field must
+remove it from the root, derived provider metadata, and any public about
+resource, and invalidate their independent STAC caches. ETags depend on the
+public profile revision, not private draft changes. Cache deletion alone is
+not sufficient for revocation: define a bounded public-cache lifetime and
+test both CDN and application-cache behavior.
 
 ### Spatial and temporal fields
 
@@ -410,13 +484,13 @@ native grid; they do not change the GeoJSON coordinate system.
 
 | D1 or joined field | STAC destination | Policy |
 |---|---|---|
-| `dataset_keywords` | Core `keywords` | Preferred discovery vocabulary |
-| `dataset_tags` | Core `keywords` | Merge and deduplicate when tags are genuinely descriptive |
-| Faceted categories | `terraviz:categories` | Preserve the facet-to-values structure |
+| `dataset_keywords` | Core `keywords` | Node-local discovery labels, not a controlled cross-node vocabulary |
+| `dataset_tags` | Core `keywords` | Merge and deduplicate within a resource when genuinely descriptive; label equality is not semantic equivalence |
+| Faceted categories | `terraviz:categories` | Preserve the facet-to-values structure and vocabulary provenance; see the node-local vocabulary design below |
 | `organization` | Collection `providers` | Assign a role only when its meaning is known |
 | Data developer | Provider with `producer` role | Use stored developer role and affiliation URL |
 | Visualization developer | Provider with `processor` role | Use when the visualization is a derived product |
-| Local node | Final provider with `host` role | Include at most one host, listed last |
+| Local node | Final provider with `host` role | Use approved profile attribution only for data actually hosted here; see node-profile policy above |
 | `doi` | Scientific Citation `sci:doi` | Normalize DOI, do not include URL prefix in the field |
 | `citation_text` | Scientific Citation `sci:citation` | Direct after review |
 | Related resources | `related`, `derived_from`, or `via` links | Select relation from actual provenance semantics |
@@ -549,6 +623,91 @@ The schema should define allowed scopes, types, required pairings, and examples.
 Access control must remain server-side. A `terraviz:visibility` property is not
 a security boundary and should not be used to expose private metadata through
 the public route.
+
+### Node-owned extensions
+
+**Proposed default:** keep `terraviz:*` project-owned and use an independently
+owned, version-pinned schema for institution-specific fields. A fork must not
+change the meaning of an existing `terraviz:*` field under the same schema
+URL. Propose a shared field upstream when its meaning is useful across nodes;
+an institution-only accession code or exhibition label need not wait for that
+process. Native APIs do not gain an arbitrary property bag as part of this
+proposal.
+
+A node extension registration should record its prefix, stable owner identity,
+absolute HTTPS schema URI and pinned version/digest, applicable resource
+scopes (Catalog, Collection, Item, or Asset), field allowlist, payload limits,
+and public-export approval. Prefixes are short labels, not globally trusted
+identities: the schema URI and owner establish meaning. Reserve `terraviz`
+and adopted standard prefixes. If two schemas claim the same prefix with
+different meanings, do not rename or merge them automatically; reject that
+combination for export and report the collision. Renaming an institution or
+moving its node must not silently change the extension's identity.
+
+| Input case | Proposed public-projection behavior |
+|---|---|
+| Registered, approved field with a locally available validated schema | Emit the value at its declared scope and add its pinned URI to the containing Catalog, Collection, or Item's `stac_extensions`; Asset fields are declared by their parent resource |
+| Unknown prefix or unapproved schema | No blind pass-through; retain source data where authorized, omit it from the projection, and report the omission to the operator |
+| Invalid field, core-field override, or prefix collision | Fail export readiness for the affected resource until corrected; never overwrite core geometry, identity, licensing, or access rules |
+| Omitted field is essential to interpreting the data | Withhold the affected resource rather than publish a misleading stripped version |
+| Peer metadata uses a locally unknown extension | Keep the origin link and original namespace; do not reinterpret it as local data or claim lossless round-trip support |
+
+Schema registration is an operator-controlled validation step, not an
+arbitrary network fetch on each request. Bundle or cache validated schemas and
+their references; restrict remote retrieval, redirects, size, depth, and
+timeouts to prevent SSRF and schema-expansion attacks. Public schema URLs must
+remain retrievable by independent clients, but a later remote outage must not
+make a serializer silently skip validation. The same reviewed schema snapshot
+must validate the emitted resource deterministically.
+
+No node-extension storage, registry, or passthrough support exists yet. The
+prefix convention, owner migration rules, and exact fail/omit policy need
+ratification before Phase 1; these defaults describe the safe boundary, not a
+new federation transport contract.
+
+### Node-local vocabularies
+
+Today `dataset_categories.facet` and its values are free text. The
+[publisher validator](../../functions/api/v1/_lib/validators.ts) bounds shape
+and size but does not enforce a shared facet vocabulary. Keywords likewise
+have string/count constraints, not a controlled list. A shared JSON field
+name such as `terraviz:categories` describes structure, not shared semantics.
+
+**Proposed default:** preserve node-local terms and allow optional curated
+mappings to shared concept identifiers rather than imposing one project-wide
+list retroactively. A NOAA node's `Theme: Oceans` and a museum's
+`Theme: Oceans` may refer to a scientific discipline and an exhibition wing.
+Clients may offer lexical search over both labels but must not merge their
+facets, counts, or Collections on that evidence alone.
+
+Before cross-node facet aggregation, publish a versioned vocabulary descriptor
+with a stable vocabulary URI, owner node identity, revision, facet and term
+IDs, labels/languages, definitions, and optional curator-reviewed mappings to
+external concept URIs. Preserve distinctions such as exact, broader, narrower,
+or merely related mappings. Changing a label should not change its term ID.
+Existing strings without a reviewed mapping remain explicitly unaligned; do
+not infer equivalence from casing, translation, or embedding similarity.
+
+The Root Catalog should link to the public descriptor and its schema; each
+Collection or Item carrying local facets must also identify the applicable
+vocabulary URI/revision so it remains interpretable when detached from the
+Catalog or mirrored elsewhere. The descriptor link relation and companion
+extension fields are proposals requiring a published schema before use; they
+are not STAC core fields. Do not add an unresolvable URI to the current
+examples. Mixed-origin catalogs need per-resource vocabulary references, not
+one local declaration that relabels every imported record.
+
+Core `keywords` can continue to carry useful free-text labels. Keep concept
+URIs and vocabulary provenance separately in a reviewed extension rather than
+pretending a flat keyword list establishes semantic equivalence. For example,
+two nodes may explicitly map different labels to the same ocean-science
+concept; that permits a shared discovery filter, not a merge of dataset
+identities or a transfer of one node's extent/license/provider metadata.
+
+The tradeoff is deliberate: local authoring remains flexible, while reliable
+cross-node filters require curation. Whether to offer an optional project
+starter vocabulary, how mappings are reviewed, and which standards/schema
+carry the descriptor remain open Phase 0 decisions.
 
 ## Representative STAC resources
 
@@ -735,6 +894,14 @@ renditions, and the additional media/checksum fields that `WireDataset` does
 not expose. `StacItemSource` should distinguish a one-asset product, frame,
 workflow publication, or immutable revision.
 
+Extend this sketch with a separate `StacNodeContext` passed to Catalog and
+Collection builders: stable node identity, the approved public profile
+snapshot, validated extension registrations, and applicable vocabulary
+references. Its profile is not a raw `NodeProfileRow` or the portal's
+`NodeProfilePublic`. Dataset-specific custom values and source vocabulary
+provenance belong in the dataset read model. Build these inputs once per
+request/snapshot rather than fetching the node profile for each Item.
+
 Serializer code should be deterministic and environment-independent. Route
 handlers should provide absolute URL resolvers, D1 bindings, and R2/Stream
 configuration, following the existing native serializer pattern.
@@ -792,12 +959,18 @@ The later STAC API phase adds and tests, at minimum:
 5. Inventory non-Earth and presentation-only records and document exclusion
    reasons.
 6. Replace title-based enrichment joins with stable IDs during legacy cleanup.
+7. Ratify public-profile selection/permissions, node-extension ownership and
+  unknown-field handling, and vocabulary declaration/mapping policy (issue
+  #428). Keep unapproved profile fields private until this gate is complete.
 
 ### Phase 1: pure projection
 
 1. Add STAC TypeScript types or a small standards-tested type dependency.
 2. Add a D1 read model containing core rows, decorations, renditions, media
    intrinsics, and checksums.
+    Add the approved node context separately, including any newly designed
+    profile publication, extension registration, and vocabulary storage; do not
+    imply that those mechanisms already exist in the native catalog.
 3. Implement deterministic Catalog, Collection, Item, geometry, temporal, link,
    provider, license, and asset builders.
 4. Publish the Terraviz extension schema and mapping documentation.
@@ -810,6 +983,8 @@ The later STAC API phase adds and tests, at minimum:
 3. Add a machine-readable operator report for excluded records and reasons.
 4. Add route tests for media types, absolute links, pagination, and cache
    invalidation.
+    Include profile publish/unpublish, logo changes, extension registry changes,
+    and vocabulary revisions in STAC ETag dependencies and cache invalidation.
 5. Add link traversal and asset reachability checks in CI or scheduled audit.
 
 ### Phase 3: atomic history
@@ -852,6 +1027,17 @@ origin and identity after both contracts are stable.
 - Static product, sequence frame, workflow revision, tour, and non-Earth
   classification.
 - Deterministic output and ETag input for identical source state.
+- No profile, public name/logo only, and explicitly published prose; test the
+  description fallback order and prove private tone/audit fields never emit.
+- Selected-field withdrawal removes cached prose without deleting drafts;
+  unsafe Markdown and link schemes cannot execute, unresolved logos are
+  omitted, and neither raw `r2:` references nor authenticated URLs emit.
+- Host versus index-only mirror attribution; no local branding replaces the
+  origin's producer, license, or vocabulary.
+- Registered and unknown extensions, prefix collisions, unavailable remote
+  schemas with/without a validated local copy, and essential-field omission.
+- Two nodes with identical facet labels but different meanings; explicit
+  concept mappings allow shared search without merging resource identities.
 
 ### Contract validation
 
@@ -889,6 +1075,9 @@ origin and identity after both contracts are stable.
 | Non-Earth coordinates in WGS 84 fields | Invalid or misleading GeoJSON | Exclude until a Solar System profile is reviewed |
 | Mutable workflow output under one Item ID | Cached history changes meaning | Mint immutable revision Items and link versions |
 | One giant node Collection | Mixed licenses and providers become ambiguous | Use product-level Collections |
+| Publishing the full stored node profile | Private authoring context and audit identity leak | Explicit public snapshot, preview, allowlist, and revocation tests |
+| Node extensions collide or pass through unchecked | Fields change meaning or bypass validation | Owner/schema-qualified registration; reserved prefixes; report unknown fields |
+| Treating local facets or keywords as universal | Misleading cross-node filters and aggregation | Versioned vocabulary provenance and explicit curated concept mappings |
 
 The key design decisions to resolve before implementation are:
 
@@ -903,6 +1092,16 @@ The key design decisions to resolve before implementation are:
    standalone Collections, or curated with domain-specific time semantics?
 7. Is non-Earth support valuable enough to own and validate a Solar System
    profile, or should those records remain native-only?
+8. Which currently private profile values can an operator publish, under which
+   permission, and how is the reviewed snapshot stored, previewed, and revoked?
+9. What node-extension prefix convention and schema-ownership/migration rules
+   should be adopted? Ratify whether unknown prefixes are omitted with a
+   report, which values require withholding a resource, and when a local
+   field should become a shared `terraviz:*` field.
+10. Should facets remain declared node-local vocabularies with optional concept
+    mappings (recommended), or use a controlled project list? Select the
+    descriptor schema/link relation, per-resource vocabulary references,
+    keyword provenance representation, and mapping-review responsibility.
 
 ## Definition of done
 
@@ -914,6 +1113,11 @@ The first STAC release is complete when:
 - every Item has defensible represented temporal metadata;
 - every asset has a retrievable URL, truthful media type, and appropriate role;
 - licenses and providers are represented without overclaiming;
+- node-profile publication boundaries and revocation are tested, including a
+  node with no profile and an index-only mirror;
+- extension ownership and vocabulary decisions are recorded before Phase 1;
+  any emitted custom fields and descriptors validate, unknown-field omissions
+  are visible to operators, and local terms are not silently equated;
 - native API behavior and generated v1 schemas remain backward-compatible;
 - excluded records have explicit, testable reason codes;
 - authorization tests prove non-public metadata and assets do not leak; and
@@ -927,6 +1131,8 @@ The first STAC release is complete when:
 - `src/services/dataService.ts`
 - `functions/api/v1/_lib/catalog-store.ts`
 - `functions/api/v1/_lib/dataset-serializer.ts`
+- `functions/api/v1/_lib/node-profile-store.ts`
+- `functions/api/v1/node-profile.ts`
 - `functions/api/v1/_lib/validators.ts`
 - `functions/api/v1/catalog.ts`
 - `functions/api/v1/datasets/[id]/manifest.ts`
