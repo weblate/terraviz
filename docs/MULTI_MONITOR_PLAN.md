@@ -3450,6 +3450,19 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 29. **Kiosk launch.** Quit. Launch with `--kiosk` (or
     `TERRAVIZ_KIOSK=1` env). Control window is fullscreen +
     decorationless from first paint. Cmd/Ctrl+Q exits cleanly.
+    Then open Tools: the fullscreen button must already read
+    "Exit fullscreen" — that is `queryFullscreen()` seeding the
+    controller from a window Rust made fullscreen before any of
+    the TypeScript ran. **This step is the only thing that
+    exercises `apply_kiosk`.** CI compiles `src-tauri/` on all
+    three desktop platforms and the flag's parsing is
+    unit-tested, but nothing has ever *run* those window calls;
+    a launch is the test, not another reading of the code.
+29a. **A set variable is not a true one.** Launch with
+    `TERRAVIZ_KIOSK=0`. The window must come up ordinary —
+    windowed and decorated. This is the case a presence test
+    would get wrong, and the one a deployment templating a
+    single unit file across several machines actually hits.
 30. **Cursor auto-hide.** With control window fullscreen,
     leave the mouse stationary for 3 s (`CURSOR_IDLE_MS`).
     Cursor disappears — over the panels as well as the globe,

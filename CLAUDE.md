@@ -993,11 +993,12 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > 9's smoke checklist is the first that needs real hardware, and the
 > debug HUD (rung 11) exists to make that checklist answerable: dataset
 > id, signed sync delta, fps, framebuffer, and the renderer string the
-> app cannot choose for itself. Rung 12's Rust half is unverified for a
-> narrower reason — this container has cargo but not the GTK stack
-> `gdk-sys` links against, so nothing under `src-tauri/` has been
-> compiled here; the kiosk flag's *parsing* is unit-tested, its window
-> calls are not.
+> app cannot choose for itself. Rung 12's kiosk flag has a narrower gap:
+> it **compiles** — `desktop.yml` builds `src-tauri/` on macOS, Windows
+> and Ubuntu on every PR, and CodeQL analyses the Rust — and its
+> argument and environment *parsing* is unit-tested, but `apply_kiosk`'s
+> calls into the window API have never run. So `--kiosk` is untested end
+> to end, which is a launch to try rather than code to re-read.
 >
 > Two things bind on work you might do first. The window and webview
 > grants the manager needs **are** now in `default.json`, and
