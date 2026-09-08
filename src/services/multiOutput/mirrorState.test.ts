@@ -4,7 +4,14 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Dataset } from '../../types'
-import { overlayForMirror, panelMirrorState, toMirroredDataset } from './mirrorState'
+import {
+  operatorCameraFrom,
+  overlayForMirror,
+  panelMirrorState,
+  playbackFrom,
+  primaryFrom,
+  toMirroredDataset,
+} from './mirrorState'
 
 /** The common case: a global, prime-meridian, unflipped Earth picture —
  *  the one `overlayOptionsFromDataset` deliberately returns `undefined`
@@ -123,5 +130,130 @@ describe('panelMirrorState', () => {
 
   it('is unsettled mid-teardown, when pixels outlive the row', () => {
     expect(panelMirrorState(null, 'A')).toBe('unsettled')
+  })
+})
+
+describe('operatorCameraFrom', () => {
+  it('passes an ordinary camera through', () => {
+    expect(operatorCameraFrom(45, -120, 3)).toEqual({ lat: 45, lon: -120, zoom: 3 })
+  })
+
+  it('wraps a longitude that has accumulated past a full turn', () => {
+    // MapLibre does not wrap `getCenter().lng`. Drag east around the
+    // globe three times and it reads 900-odd — and
+    // `cameraOffsetForCamera` builds a *direction* from it, so the
+    // output aims somewhere the operator is not, further wrong the
+    // longer they pan.
+    expect(operatorCameraFrom(0, 900, 1).lon).toBeCloseTo(180, 10)
+    expect(operatorCameraFrom(0, -190, 1).lon).toBeCloseTo(170, 10)
+    expect(operatorCameraFrom(0, 190, 1).lon).toBeCloseTo(-170, 10)
+  })
+
+  it('keeps the antimeridian on one side of itself', () => {
+    // −180 and 180 are the same place. Letting it alternate would make
+    // a parked camera re-broadcast every frame, since the aggregator
+    // compares by value.
+    expect(operatorCameraFrom(0, 180, 1).lon).toBe(180)
+    expect(operatorCameraFrom(0, -180, 1).lon).toBe(180)
+  })
+
+  it('clamps latitude to the poles', () => {
+    expect(operatorCameraFrom(120, 0, 1).lat).toBe(90)
+    expect(operatorCameraFrom(-120, 0, 1).lat).toBe(-90)
+  })
+
+  it('floors zoom at the whole globe', () => {
+    // `cameraOffsetForCamera` is `1 − 1/(z+1)`, which goes negative
+    // below zero and inverts the warp — the output would magnify the
+    // hemisphere the operator zoomed *away* from.
+    expect(operatorCameraFrom(0, 0, -2).zoom).toBe(0)
+  })
+
+  it('falls back to the centred default rather than passing NaN through', () => {
+    // A NaN reaches the shader as a NaN offset, every ray misses, and
+    // the output goes black — the one failure the 1 Hz floor exists to
+    // make visible.
+    expect(operatorCameraFrom(Number.NaN, Number.NaN, Number.NaN)).toEqual({
+      lat: 0,
+      lon: 0,
+      zoom: 0,
+    })
+    expect(operatorCameraFrom(0, Number.POSITIVE_INFINITY, 1).lon).toBe(0)
+  })
+})
+
+describe('playbackFrom', () => {
+  const base = {
+    currentTime: 50,
+    duration: 100,
+    paused: false,
+    playbackRate: 1,
+    startTime: '2026-01-01T00:00:00.000Z',
+    endTime: '2026-01-11T00:00:00.000Z',
+  }
+
+  it('places the playhead on the dataset timeline', () => {
+    // Halfway through a ten-day span.
+    expect(playbackFrom(base)?.date).toBe('2026-01-06T00:00:00.000Z')
+  })
+
+  it('carries paused rather than treating it as an absence', () => {
+    // A paused primary still has a position the output must match.
+    // Returning null would leave the output wherever it happened to be.
+    const paused = playbackFrom({ ...base, paused: true })
+    expect(paused?.paused).toBe(true)
+    expect(paused?.date).toBe('2026-01-06T00:00:00.000Z')
+  })
+
+  it('carries the element\'s real rate', () => {
+    // A tour's `frameRate` task sets the primary's rate alone. An
+    // output assuming 1 against 0.167x runs ~6x fast for the whole
+    // tour — terraviz#229 in a second window.
+    expect(playbackFrom({ ...base, playbackRate: 0.167 })?.playbackRate).toBeCloseTo(0.167, 5)
+  })
+
+  it.each([
+    ['a zero rate', 0],
+    ['a negative rate', -1],
+    ['a NaN rate', Number.NaN],
+  ])('substitutes 1 for %s', (_label, playbackRate) => {
+    // A stopped clock wearing a rate. The output divides by it.
+    expect(playbackFrom({ ...base, playbackRate })?.playbackRate).toBe(1)
+  })
+
+  it.each([
+    ['no time axis', { startTime: null, endTime: null }],
+    ['only a start', { endTime: null }],
+    ['an unparseable bound', { endTime: 'sometime' }],
+    ['a zero-length span', { endTime: base.startTime }],
+    ['a reversed span', { startTime: base.endTime, endTime: base.startTime }],
+    ['no duration yet', { duration: 0 }],
+    ['a NaN duration', { duration: Number.NaN }],
+    ['a NaN playhead', { currentTime: Number.NaN }],
+  ])('returns null for %s', (_label, over) => {
+    // Null means "no instant can be computed", and `outputSync`'s
+    // not-ready gate then leaves the output where it is rather than
+    // seeking to a guess. A zero-length span would divide by zero; a
+    // reversed one runs the output's clock backwards.
+    expect(playbackFrom({ ...base, ...over })).toBeNull()
+  })
+})
+
+describe('primaryFrom', () => {
+  it('reports the media length and the real-world span it covers', () => {
+    expect(primaryFrom(100, '2026-01-01T00:00:00Z', '2026-01-11T00:00:00Z')).toEqual({
+      duration: 100,
+      rangeMs: 10 * 24 * 60 * 60 * 1000,
+    })
+  })
+
+  it('returns null for a dataset with no time axis', () => {
+    expect(primaryFrom(100, null, null)).toBeNull()
+  })
+
+  it('returns null before the duration firms up', () => {
+    // HLS reports 0 until enough segments have buffered. Publishing it
+    // would make `outputSync` place every instant at the start.
+    expect(primaryFrom(0, '2026-01-01T00:00:00Z', '2026-01-11T00:00:00Z')).toBeNull()
   })
 })

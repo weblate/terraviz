@@ -110,7 +110,11 @@ import type { VrDatasetTexture } from './services/vrScene'
 import { overlayOptionsFromDataset } from './services/datasetOverlayOptions'
 import { publishGlobeState } from './services/multiOutput/globeStateEvents'
 import {
+  operatorCameraFrom,
   panelMirrorState,
+  playbackFrom,
+  primaryFrom,
+  sharedViewFrom,
   toMirroredDataset,
 } from './services/multiOutput/mirrorState'
 import {
@@ -487,6 +491,10 @@ class InteractiveSphere {
         controlPanels: () => this.viewports.getPanelCount(),
       })
       initOutputUI({ manager: () => this.multiOutput?.ready ?? Promise.resolve(null) })
+      // Outputs follow the primary globe's camera (§3, rung 7). After
+      // `startMultiOutput` so the subscription that forwards this is
+      // already installed, and before the first dataset load below.
+      this.bindOperatorCamera()
       // Window chrome (§3.6). Built before the Tools menu because the
       // menu reads the fullscreen state while it builds its markup —
       // the same reason `startMultiOutput` runs first, and why the
@@ -1320,6 +1328,10 @@ class InteractiveSphere {
       // integrates duration-imprecision error into visible drift).
       () => {
         this.correctSiblingDrift()
+        // Beside the drift correction, never inside it: that method
+        // returns early while the primary is paused, and a paused
+        // primary is exactly the state an output must be told about.
+        this.publishPlaybackMirror()
         // Any time notice describes a settled frame; once the playhead
         // is moving again it describes nothing. correctSiblingDrift has
         // already returned above unless the primary is playing.
@@ -2322,7 +2334,12 @@ class InteractiveSphere {
     // Genuinely empty — the panel is back to the default Earth, and an
     // output should follow it there.
     if (!panel || settled === 'empty') {
-      publishGlobeState({ dataset: null })
+      // The playhead goes with it. `publishPlaybackMirror` would
+      // eventually say the same thing, but only while the playback loop
+      // is running — it is stopped on unload, so without this an output
+      // keeps the departed dataset's instant and `outputSync` steers a
+      // clip that is no longer on screen.
+      publishGlobeState({ dataset: null, playback: null, primary: null })
       return
     }
 
@@ -3033,6 +3050,10 @@ class InteractiveSphere {
     // Rewire video sync to the new primary's video (if any)
     this.detachPrimaryVideoSync()
     stopPlaybackLoop(this.playback)
+    // And the outputs' camera: a listener left on the demoted panel's
+    // map would keep driving them from a globe the operator is no
+    // longer using.
+    this.bindOperatorCamera()
 
     // Update the shared appState + info panel. Promoting a different
     // panel clears any picker override so the info panel follows the
@@ -3309,6 +3330,87 @@ class InteractiveSphere {
    * drift — ~2.83 years per second of video on the Climate Futures
    * tour). The threshold-gated seek is the closed loop that bounds it.
    */
+  /**
+   * Detach the camera listener from whichever map it was on.
+   *
+   * Held as a field rather than re-derived, because the primary map is
+   * replaced on promotion and a listener left on the old one keeps
+   * publishing a camera nobody is driving — the outputs would follow a
+   * panel the operator demoted.
+   */
+  private unbindOperatorCamera: (() => void) | null = null
+
+  /**
+   * Publish the primary's camera to any outputs (§3, rung 7).
+   *
+   * MapLibre's `move` fires once per rendered frame during a drag,
+   * which is the rate step 15's "≤30 ms lag" asks for and the reason
+   * this is not additionally throttled. It costs nothing when the globe
+   * is still: `publishGlobeState` hands the patch to the aggregator,
+   * which drops a value structurally identical to the one it holds, so
+   * a parked camera puts nothing on the wire.
+   *
+   * Bound here rather than in `initialize` so promotion rebinds it —
+   * `onViewportPrimaryChange` calls this again with the new primary.
+   */
+  private bindOperatorCamera(): void {
+    this.unbindOperatorCamera?.()
+    this.unbindOperatorCamera = null
+
+    const map = this.viewports.getPrimary()?.getMap()
+    if (!map) return
+
+    const publish = () => {
+      const center = map.getCenter()
+      publishGlobeState({
+        view: sharedViewFrom(operatorCameraFrom(center.lat, center.lng, map.getZoom())),
+      })
+    }
+    map.on('move', publish)
+    this.unbindOperatorCamera = () => map.off('move', publish)
+    // Once immediately: a promotion changes the camera without moving
+    // it, and an output would otherwise keep the demoted panel's view
+    // until the operator next touched the globe.
+    publish()
+  }
+
+  /**
+   * Publish the primary's playhead to any outputs (§3, rung 7).
+   *
+   * Called from the same `onTick` as `correctSiblingDrift`, but
+   * deliberately *not* from inside it: that method returns early while
+   * the primary is paused, and a paused primary is exactly the state an
+   * output most needs told about — it has a position to hold, and
+   * without this it would sit wherever its own element happened to
+   * stop.
+   *
+   * `primary` is published alongside because `outputSync` gates on
+   * both. It changes only on a dataset load, and the aggregator drops
+   * the repeats, so sending it per frame costs one structural compare.
+   */
+  private publishPlaybackMirror(): void {
+    const panel = this.panelStates[this.viewports.getPrimaryIndex()]
+    const video = panel?.hlsService?.getVideo?.() ?? null
+    const dataset = panel?.dataset
+
+    if (!video || !dataset) {
+      publishGlobeState({ playback: null, primary: null })
+      return
+    }
+
+    publishGlobeState({
+      playback: playbackFrom({
+        currentTime: video.currentTime,
+        duration: video.duration,
+        paused: video.paused,
+        playbackRate: video.playbackRate,
+        startTime: dataset.startTime,
+        endTime: dataset.endTime,
+      }),
+      primary: primaryFrom(video.duration, dataset.startTime, dataset.endTime),
+    })
+  }
+
   private correctSiblingDrift(): void {
     if (!this.primaryVideoSyncActive) return
 
@@ -4127,6 +4229,8 @@ class InteractiveSphere {
     closeOutputUI()
     this.multiOutput?.stop()
     this.multiOutput = null
+    this.unbindOperatorCamera?.()
+    this.unbindOperatorCamera = null
     this.fullscreen?.dispose()
     this.fullscreen = null
     this.idleCursor?.dispose()
