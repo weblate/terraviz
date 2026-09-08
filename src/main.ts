@@ -117,6 +117,14 @@ import {
   startMultiOutput,
   type MultiOutputBootHandle,
 } from './services/multiOutput/bootMultiOutput'
+import {
+  createFullscreenController,
+  createIdleCursor,
+  resolveChromeHost,
+  restoreOnLaunch,
+  type FullscreenController,
+  type IdleCursor,
+} from './services/windowChrome'
 import { resolveFrameQuery } from './utils/frames'
 import { initTourAuthoring } from './ui/tourAuthoring'
 import { bootstrapI18n } from './i18n/bootstrap'
@@ -355,6 +363,13 @@ class InteractiveSphere {
   private multiOutput: MultiOutputBootHandle | null = null
 
   /**
+   * Fullscreen + decorations for this window (§3.6). Held so the Tools
+   * menu can read the state and `dispose()` can detach the F11 handler.
+   */
+  private fullscreen: FullscreenController | null = null
+  private idleCursor: IdleCursor | null = null
+
+  /**
    * Convenience getter returning the primary viewport's renderer.
    * Most call sites operate on a single "the renderer" for the
    * primary panel; per-slot operations go through `this.viewports`
@@ -472,6 +487,11 @@ class InteractiveSphere {
         controlPanels: () => this.viewports.getPanelCount(),
       })
       initOutputUI({ manager: () => this.multiOutput?.ready ?? Promise.resolve(null) })
+      // Window chrome (§3.6). Built before the Tools menu because the
+      // menu reads the fullscreen state while it builds its markup —
+      // the same reason `startMultiOutput` runs first, and why the
+      // desktop host defers its Tauri import rather than being awaited.
+      this.initWindowChrome()
       initToolsMenu(this.viewports, {
         onSetLayout: (layout) => this.viewports.setLayout(layout),
         onOpenBrowse: () => this.openBrowsePanel(),
@@ -487,6 +507,7 @@ class InteractiveSphere {
         onToggleLegend: (visible) => this.setLegendVisible(visible),
         announce: (msg) => this.announce(msg),
         getCurrentDataset: () => this.appState.currentDataset ?? null,
+        fullscreen: this.fullscreen ?? undefined,
       })
       // Catalog ↔ sphere tab control — only becomes visible when
       // `?catalog=true` is in the URL (see the show/hide calls in
@@ -4068,12 +4089,48 @@ class InteractiveSphere {
   }
 
   /** Clean up all resources: video streams, textures, and every viewport renderer. */
+  /**
+   * Fullscreen, F11 and the idle cursor for the control window (§3.6).
+   *
+   * All of this exists because a title bar leaks into the signal: the
+   * common installation captures a monitor over HDMI, so the window's
+   * own chrome arrives on the sphere with the picture.
+   *
+   * The persisted state is restored **only on desktop**, and that is
+   * not a tidiness rule — `requestFullscreen` needs a user gesture, so
+   * restoring on the web throws on every launch and changes nothing.
+   * `restoreOnLaunch` holds both halves of that test.
+   */
+  private initWindowChrome(): void {
+    const fullscreen = createFullscreenController({
+      host: resolveChromeHost(),
+      persist: true,
+    })
+    const idleCursor = createIdleCursor()
+    // Only while fullscreen: hiding the pointer of a windowed app the
+    // operator is still driving would be a bug, not a feature.
+    fullscreen.onChange(on => idleCursor.setActive(on))
+    this.fullscreen = fullscreen
+    this.idleCursor = idleCursor
+
+    if (restoreOnLaunch()) {
+      void fullscreen.set(true).catch(err => {
+        // Costs the restored state, never the boot that was applying it.
+        logger.warn('[Main] could not restore fullscreen:', err)
+      })
+    }
+  }
+
   dispose(): void {
     // Before the handle goes: the panel holds a document-level keydown
     // listener, and it reads through `this.multiOutput`.
     closeOutputUI()
     this.multiOutput?.stop()
     this.multiOutput = null
+    this.fullscreen?.dispose()
+    this.fullscreen = null
+    this.idleCursor?.dispose()
+    this.idleCursor = null
     this.teardownAllPanelResources()
     this.viewports.dispose()
     this.panelStates = []

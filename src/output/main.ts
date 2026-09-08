@@ -37,6 +37,7 @@ import {
   type OutputLayerInput,
 } from './outputScene'
 import type { SyncOutcome } from './outputSync'
+import { createFullscreenController, resolveChromeHost } from '../services/windowChrome'
 import type { OutputRenderConfig } from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
 
@@ -98,6 +99,16 @@ async function boot(): Promise<void> {
   }))
 
   if (isDesktop()) {
+    // F11 as the escape hatch (§3.6 mechanism 4). An output is spawned
+    // fullscreen and decorationless, which is right for a capture
+    // surface and leaves an operator during calibration with a window
+    // they cannot grab, move or close — so `initial: true`, because a
+    // controller that assumed windowed would make the first press a
+    // no-op. Nothing is persisted: an output has no fullscreen
+    // *preference*, it is fullscreen by construction, and a title bar
+    // borrowed for a minute must not come back on the next launch.
+    createFullscreenController({ host: resolveChromeHost(), initial: true })
+
     try {
       const link = await connectOutputLink(await createTauriLinkHost())
 
