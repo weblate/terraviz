@@ -944,12 +944,14 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > [`docs/MULTI_MONITOR_PLAN.md`](docs/MULTI_MONITOR_PLAN.md); the
 > delivery ladder there is the map of what exists.
 >
-> **Rungs 1-11 have landed, and so has the link between them** — the
+> **Rungs 1-12 have landed, and so has the link between them** — the
 > protocol, the equirect RTT pass, the output bundle and its layer
 > stack, both capability files, the manager and state aggregator, the
 > publish seam, the boot wiring, the Tools → Outputs panel,
-> persistence, and rung 11's three controls (render-config channel and
-> debug HUD, framebuffer picker, decoder budget). The ladder never assigned the output's *receive* side —
+> persistence, rung 11's three controls (render-config channel and
+> debug HUD, framebuffer picker, decoder budget), and rung 12's window
+> chrome (fullscreen paired with decorations, F11 on every window, the
+> idle cursor, and the `--kiosk` launch flag). The ladder never assigned the output's *receive* side —
 > rungs 3-4 say "no IPC" and 5-15 never wire it — so until
 > `outputLink` / `datasetMirror` / `outputSync` landed, every broadcast
 > the manager made went to nobody: no output emitted `output_ready`,
@@ -968,7 +970,9 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > add an output on a chosen monitor, toggle its camera tracking and
 > sphere split, pick its framebuffer resolution, put a debug HUD on it,
 > set the machine's decoder budget, remove it, and have the set come
-> back next launch.
+> back next launch — and bring the whole app up fullscreen and
+> decorationless, by toggle, by F11, or straight from a `.desktop`
+> autostart entry.
 >
 > Boot still does not call `manager.start()`. Two things do, both only
 > once there is an output to talk to: `outputUI` on the operator's first
@@ -977,20 +981,23 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > enabled outputs still opens no IPC link and enumerates no monitor —
 > the property to preserve, and why neither call sits in boot.
 >
-> What rungs 9-11 deliberately leave for later, so don't read their
+> What rungs 9-12 deliberately leave for later, so don't read their
 > absence as oversight: per-output **rename** (unassigned — the persisted
 > schema has no name field and `OutputRecord` no name, so it is a
 > schema change, not a UI one), enforcing the decoder budget at
 > **layout change** as well as at spawn (a control window growing from
 > 1 globe to 4 while outputs are up can still cross it; that needs
 > `viewportManager` to consult the manager, which is cross-cutting and
-> its own commit), the fullscreen and kiosk surfaces (12), health
-> badges and noticing an output the operator closed by hand (13),
-> calibration (14). **Nothing here has run on a second monitor** — rung
+> its own commit), health badges and noticing an output the operator
+> closed by hand (13), calibration (14). **Nothing here has run on a second monitor** — rung
 > 9's smoke checklist is the first that needs real hardware, and the
 > debug HUD (rung 11) exists to make that checklist answerable: dataset
 > id, signed sync delta, fps, framebuffer, and the renderer string the
-> app cannot choose for itself.
+> app cannot choose for itself. Rung 12's Rust half is unverified for a
+> narrower reason — this container has cargo but not the GTK stack
+> `gdk-sys` links against, so nothing under `src-tauri/` has been
+> compiled here; the kiosk flag's *parsing* is unit-tested, its window
+> calls are not.
 >
 > Two things bind on work you might do first. The window and webview
 > grants the manager needs **are** now in `default.json`, and
