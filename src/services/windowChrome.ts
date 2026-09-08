@@ -80,6 +80,19 @@ export interface WindowChromeHost {
   /** What the platform currently reports, or `null` when it will not
    *  say — the controller then trusts its own last write. */
   isFullscreen(): boolean | null
+  /**
+   * Ask the platform once, asynchronously, at construction.
+   *
+   * Exists because the window can already be fullscreen before any of
+   * this code runs: the `--kiosk` flag applies it in Rust `setup()`,
+   * and a window manager can do it unasked. Without this the Tools
+   * button would offer "Enter fullscreen" over a kiosk window and the
+   * first press would be a no-op — the same class of bug as reading
+   * `document.fullscreenElement` on desktop.
+   *
+   * Optional: the DOM host answers synchronously and needs none.
+   */
+  queryFullscreen?(): Promise<boolean | null>
 }
 
 /** The same desktop gate `bootMultiOutput` and the output entry apply. */
@@ -257,6 +270,15 @@ export function createFullscreenController(
   }
   target?.addEventListener('fullscreenchange', onPlatformChange)
 
+  // Fire-and-forget: nothing downstream may wait on it, and a platform
+  // that refuses simply leaves the held value alone.
+  void host
+    .queryFullscreen?.()
+    .then(reported => {
+      if (reported !== null && reported !== undefined) announce(reported)
+    })
+    .catch(err => logger.warn('[windowChrome] could not read the window state:', err))
+
   const onKeyDown = (ev: Event): void => {
     if (!isFullscreenHotkey(ev as KeyboardEvent)) return
     // Claimed only once we know we are acting on it, so a modified or
@@ -312,6 +334,7 @@ export function createDesktopChromeHost(): WindowChromeHost {
   type TauriWindow = {
     setFullscreen(next: boolean): Promise<void>
     setDecorations(shown: boolean): Promise<void>
+    isFullscreen(): Promise<boolean>
   }
   let pending: Promise<TauriWindow | null> | null = null
   const self = (): Promise<TauriWindow | null> =>
@@ -336,10 +359,15 @@ export function createDesktopChromeHost(): WindowChromeHost {
       if (win) await win.setDecorations(shown)
     },
     // Tauri answers this asynchronously, and a synchronous reader
-    // cannot await. `null` means "trust your own last write", which is
-    // correct here: nothing else on the desktop path changes the state
-    // behind this controller's back.
+    // cannot await — so the synchronous answer is "trust your own last
+    // write" and the real one arrives through `queryFullscreen` below.
     isFullscreen: () => null,
+    async queryFullscreen() {
+      const win = await self()
+      // `core:window:allow-is-fullscreen` is granted to `main` and to
+      // `output-*`. A refusal costs the seeded state, not the feature.
+      return win ? await win.isFullscreen() : dom.isFullscreen()
+    },
   }
 }
 
