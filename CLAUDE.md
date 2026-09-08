@@ -982,7 +982,11 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > the property to preserve, and why neither call sits in boot.
 >
 > What rungs 9-12 deliberately leave for later, so don't read their
-> absence as oversight: per-output **rename** (unassigned — the persisted
+> absence as oversight: the **Earth decoration** the equirect path can
+> carry (rung 12c — terminator, night lights, clouds; specified in the
+> plan's §"What the equirect path does to the Earth decoration" and
+> unbuilt, which is why an output currently shows base diffuse alone),
+> per-output **rename** (unassigned — the persisted
 > schema has no name field and `OutputRecord` no name, so it is a
 > schema change, not a UI one), enforcing the decoder budget at
 > **layout change** as well as at spawn (a control window growing from

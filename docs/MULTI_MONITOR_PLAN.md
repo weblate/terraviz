@@ -569,6 +569,16 @@ be subtly wrong on a subset of the catalog.
 
 ### What the equirect path does to the Earth decoration
 
+> **Asked for, at the first hardware session (2026-09):** "at some
+> point I would want the Earth as realistic as possible." The outputs
+> were showing base diffuse and nothing else, which is what rung 12c
+> exists to fix. This section is the answer to *how* realistic is
+> coherent: the table below sorts every effect by what it depends on,
+> and the split is not a matter of effort. Three more cross and are
+> worth building; four cannot cross at all, because they are properties
+> of *looking at* a sphere from outside and nobody looks at an LED
+> sphere from outside.
+
 Constraint 3 has a consequence the rest of this plan was written
 without. If the equirect pass ray-marches an analytic sphere and
 samples layer textures at the hit point, then **the fragment
@@ -2293,6 +2303,7 @@ without rolling the whole feature back.
 | 11c | `multi-output: machine-scoped decoder budget` | **Landed.** `PersistedOutputConfig.concurrentDecoderBudget` (machine-scoped, `null` = "nobody has measured this machine, ask it"), `manager.decoderBudget()` / `setDecoderBudget()` / `decoderLoad()`, the refusal inside `spawn()` — so a restore is held to the same rule as an Add — and the panel's number field, "N of M video decoders in use" readout, and disabled Add with a message naming what to close. The count is **windows that can hold a decoder**, not decoders currently decoding; see the revised "Counted" row above for why, since it departs from what this section originally said. The control window's contribution reaches the manager through an injected `controlPanels()` — `main.ts` owns both `viewportManager` and `bootMultiOutput`, and neither of those should learn what the other is. Unset falls back to `maxVideoPanels()` rather than storing it, so an unpinned budget keeps tracking the machine. **Still not enforced at layout change** (plan: "at both spawn time and layout change") — a control window that grows from 1 globe to 4 while outputs are up can still cross the budget. That needs `viewportManager` to consult the manager, which is a cross-cutting change and its own commit. | Yes (additive) |
 | 12a | `multi-output: window chrome — fullscreen, decorations, F11, idle cursor` | **Landed.** `src/services/windowChrome.ts` (shared by both windows), the F11 handler, the idle-cursor rule in `base.css`, and the upgrade of the Tools bar's existing fullscreen button. Two findings worth recording. First, §3.6 mechanism 2 was **already half-built**: a fullscreen button has shipped since §3.3, driving `document.requestFullscreen` directly — which is the whole answer in a browser and half of it in a packaged app, since it fullscreens the *webview* while leaving the native title bar and border in the captured signal. The button was upgraded rather than joined by a second one. Second, that same button read its label off `document.fullscreenElement`, which stays **null** when the native window goes fullscreen — so on desktop it would have offered "Enter fullscreen" over a window already in it, and F11 changes the state without `fullscreenchange` firing at all; the controller is now what it reads. Fullscreen and decorations are one operation because `setFullscreen(true)` alone leaves the title bar on some window managers and removes it on others, and decorations follow rather than lead so a failed fullscreen cannot strand an operator with an unmovable undecorated window. The desktop host is built **synchronously** and imports Tauri on first use, because the Tools menu reads the state while laying out its markup. F11 on an output passes `initial: true` and persists nothing — an output is fullscreen by construction and a title bar borrowed for calibration must not come back next launch. | Yes (additive) |
 | 12b | `multi-output: kiosk launch flag` | **Landed.** `--kiosk` and `TERRAVIZ_KIOSK=1` parsed in `src-tauri/src/lib.rs` (`main.rs` was already the 12-line shim this section predicted), applied in `setup()` behind `#[cfg(desktop)]`. "Before first paint" is **best-effort**, not guaranteed: `setup()` is the earliest point an `AppHandle` exists, and the static alternative in `tauri.conf.json` cannot be conditional on a flag. `TERRAVIZ_KIOSK=0` and an empty value mean *off* — a deployment templating one unit file across several machines sets the variable explicitly to disable kiosk, so the value is matched against an allowlist rather than tested for presence. The flag beats a falsy environment, since an operator adding it to one launch is deciding now while the environment is the installation's default. Decorations drop only after fullscreen succeeds, and every failure is logged and swallowed. One thing this rung had to add on the **TypeScript** side: the kiosk flag makes the native window fullscreen without the JS controller knowing, so `WindowChromeHost` gained an async `queryFullscreen()` seeded once at construction — without it the Tools button offers "Enter fullscreen" over a kiosk window and the first press is a no-op. That needs `core:window:allow-is-fullscreen`, added to `default.json` (`output.json` already had it). | Yes (additive) |
+| 12c | `multi-output: the Earth decoration the equirect path can carry` | The three effects §"What the equirect path does to the Earth decoration" says **cross** — day/night terminator, night lights, clouds — wired into `layerStack`'s fragment shader. Currently specified and unbuilt, which is why the first hardware session saw a flat diffuse Earth and asked for more. Not a research question: the terminator is `dot(hit, uSunDir)` (the ray-march's hit point on the unit sphere *is* the normal), night lights are a second sampler gated by it, clouds are one more layer in a composite that already unrolls slots. The sun direction comes from `getSunPosition` in `src/utils/time.ts`, which the control globe already uses, so the two cannot disagree about where the sun is. **The four that do not cross stay out** — specular, atmosphere shells, ground shadow, sun sprite are not deferred, they are incoherent on this surface, and baking one in paints a fixed glare spot or limb ring onto a physical sphere in a place correct from exactly one vantage point. That is a rendering artifact that reads as a data feature, which is worse than its absence. So "as realistic as possible" on a sphere **is** diffuse + night lights + clouds + terminator; this rung is the whole of it. | Yes (additive) |
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window crash. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". | Yes (additive) |
 | 15 | `multi-output: operator runbook` | `docs/MULTI_MONITOR_OPERATIONS.md` — the deployment half this plan has so far deferred, and which a spike showed is not optional. Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
@@ -2444,6 +2455,28 @@ snap-**down** rule exists precisely for a caller that passes hardware's
 own number, and that caller has never existed.
 
 ### Geometry is a per-output configuration, not an enum value
+
+> **Confirmed by the first hardware session (three monitors,
+> 2026-09).** The operator who owns the deployment named the
+> four-projector SOS system as a real target, not a hypothetical: each
+> projector takes a *slice* of the sphere, so its framebuffer is not
+> 2:1 and its content is not an equirectangular frame. That is the case
+> this section was written against — "a warp mesh measured against four
+> projectors in one room" — so nothing below changes. What changes is
+> its status: the mode-plus-geometry-reference shape is now load-bearing
+> for a named deployment rather than insurance against one.
+>
+> Two things follow for whoever builds it. **The framebuffer ladder is
+> `sos-equirect`'s, not the app's.** `FRAMEBUFFER_WIDTHS` keeps height
+> at exactly half the width because an equirectangular frame that is not
+> 2:1 is not equirectangular; a slice mode brings its own rungs, matched
+> to a projector's native resolution, rather than widening these (see
+> §"Not every monitor is 2:1" and smoke step 24a). **And the four
+> projectors are four outputs, not one.** Each needs its own geometry
+> payload — position on the sphere, lens warp, edge-blend zones — which
+> is per-output configuration the manager already spawns and persists
+> per output; what does not exist is the payload's schema or the
+> calibration UI that produces it. Rung 14 is where that starts.
 
 `OutputMode` being a one-value union makes "widen the enum" look like
 the whole extension story. For the flat case below, it is. For
