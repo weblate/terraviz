@@ -109,6 +109,19 @@ const CLOUD_ALPHA_GAMMA = 1.8
 const CLOUD_NIGHT_ALPHA_BOOST = 2.5
 
 /**
+ * The cloud zoom-fade anchors, in operator zoom levels.
+ * `earthTileLayer`'s, unchanged: full cover at or below the first,
+ * none at or above the second.
+ *
+ * The cloud asset is one global texture, so magnifying a patch of it
+ * magnifies its blur — past a point it is a fuzzy grey wash sitting
+ * over basemap detail that is genuinely sharper underneath, which is
+ * why the control globe dissolves it on the way in.
+ */
+const CLOUD_FADE_START_ZOOM = 3
+const CLOUD_FADE_END_ZOOM = 6
+
+/**
  * How far past the geometric terminator the night side reaches full
  * darkness, in units of `dot(normal, sunDir)`. Twilight, in effect.
  *
@@ -143,14 +156,68 @@ export function nightFactor(ndotL: number, dayNight: boolean): number {
   return 1 - t * t * (3 - 2 * t)
 }
 
+/**
+ * The operator zoom this fragment is showing, from its ray length.
+ *
+ * The projection's zoom is a warp, so "how zoomed in is this?" has a
+ * different answer at every pixel — which is the whole point of doing
+ * the cloud fade here rather than as one uniform: on the control globe
+ * the whole viewport is at one zoom, while on an output the focus is
+ * magnified and the antipode is compressed *in the same frame*, and a
+ * single fade would either keep the wash over the magnified part or
+ * strip clouds off the three-quarters of the sphere that never zoomed.
+ *
+ * `t` is the ray-march's own hit distance, already computed. The camera
+ * sits at `|o| = f` from the centre, so `t` runs from `1 - f` looking
+ * at the focus to `1 + f` looking at the antipode, and the linear
+ * magnification relative to a centred camera is `1 / t`.
+ *
+ * The conversion back to a zoom level is `cameraOffsetForCamera`'s own
+ * mapping inverted — `f = 1 - 1/(z + 1)`, so `1 - f = 1/(z + 1)` and
+ * `z = 1/t - 1`. That makes this **exact at the focus**: the centre of
+ * the operator's area of interest reports the operator's actual zoom,
+ * so feeding it through the control globe's unmodified curve below
+ * makes the two surfaces agree there by construction rather than by a
+ * matched pair of hand-tuned numbers.
+ *
+ * Two deliberate imprecisions. The warp is anisotropic — the true
+ * linear scale is `sqrt(cos θ) / t`, where `cos θ` is the ray's
+ * incidence on the surface — and this ignores the `cos θ`, which costs
+ * at most ~27% of a magnification factor mid-frame and nothing at
+ * either pole of the warp. And `MAX_CAMERA_OFFSET` caps `f` at 0.85,
+ * so the largest local zoom any output can report is `1/0.15 - 1`,
+ * about 5.67: past that the operator keeps zooming and the output does
+ * not. Clouds therefore bottom out at ~11% of their alpha rather than
+ * at zero, which is not a shortfall in the fade — it is the control
+ * globe's own value at zoom 5.67, which is the zoom the capped output
+ * is in fact showing.
+ */
+export function localZoomAt(rayLength: number): number {
+  if (!(rayLength > 0)) return 0
+  return Math.max(0, 1 / rayLength - 1)
+}
+
+/**
+ * Cloud coverage multiplier for a local zoom, 1 (full) to 0 (gone).
+ *
+ * `earthTileLayer`'s curve, unmodified — the same reason the four
+ * decoration scalars above are its and not this module's.
+ */
+export function cloudZoomFade(localZoom: number): number {
+  const span = CLOUD_FADE_END_ZOOM - CLOUD_FADE_START_ZOOM
+  return 1 - Math.max(0, Math.min(1, (localZoom - CLOUD_FADE_START_ZOOM) / span))
+}
+
 /** One decorated sample of the Earth's surface. `cloudLuma` is the raw
  *  luminance of the cloud asset at this point — the curve that turns it
  *  into coverage lives here rather than in whoever loaded it, so the
- *  gamma and the opacity stay one calibration. */
+ *  gamma and the opacity stay one calibration. `cloudFade` is
+ *  `cloudZoomFade`'s output for this fragment. */
 export interface EarthDecoration {
   base: { r: number; g: number; b: number }
   lights: { r: number; g: number; b: number }
   cloudLuma: number
+  cloudFade: number
   nightFactor: number
 }
 
@@ -171,8 +238,14 @@ export function decorateEarth(d: EarthDecoration): { r: number; g: number; b: nu
     b: d.base.b * brightness + d.lights.b * n * NIGHT_LIGHT_STRENGTH,
   }
   const cloudAlpha = Math.pow(Math.max(0, d.cloudLuma), CLOUD_ALPHA_GAMMA) * CLOUD_OPACITY
+  // The zoom fade multiplies the *boosted* alpha, which is where
+  // `earthTileLayer` applies it — after the night mix, not before it.
+  // Folding it into `cloudAlpha` instead would let the night boost
+  // partly undo the fade, so a zoomed-in night side would keep cover a
+  // zoomed-in day side had lost.
   const alpha =
-    cloudAlpha + (Math.min(cloudAlpha * CLOUD_NIGHT_ALPHA_BOOST, 1) - cloudAlpha) * n
+    (cloudAlpha + (Math.min(cloudAlpha * CLOUD_NIGHT_ALPHA_BOOST, 1) - cloudAlpha) * n) *
+    d.cloudFade
   // Day clouds are white, night clouds black — the same mix the raster
   // path uses, so a cloud reads as cover rather than as a light source.
   const cloud = 1 - n
@@ -214,12 +287,24 @@ float earthNightFactor(vec3 hit, vec3 sunDir, int dayNight) {
   return 1.0 - smoothstep(-${TERMINATOR_SOFTNESS.toFixed(1)}, 0.0, dot(hit, sunDir));
 }
 
-vec3 decorateEarth(vec3 base, vec3 lights, float cloudLuma, float night) {
+// Per-fragment, because the projection's zoom is a warp: the focus and
+// the antipode are at different magnifications in the same frame. See
+// \`localZoomAt\` / \`cloudZoomFade\`.
+float earthCloudZoomFade(float rayLength) {
+  float localZoom = max(1.0 / max(rayLength, 1e-4) - 1.0, 0.0);
+  return 1.0 - clamp(
+    (localZoom - ${CLOUD_FADE_START_ZOOM.toFixed(1)})
+      / ${(CLOUD_FADE_END_ZOOM - CLOUD_FADE_START_ZOOM).toFixed(1)},
+    0.0, 1.0);
+}
+
+vec3 decorateEarth(vec3 base, vec3 lights, float cloudLuma, float night, float cloudFade) {
   vec3 colour = base * mix(1.0, ${NIGHT_DARKENING.toFixed(4)}, night);
   colour += lights * night * ${NIGHT_LIGHT_STRENGTH.toFixed(2)};
   float cloudAlpha = pow(max(cloudLuma, 0.0), ${CLOUD_ALPHA_GAMMA.toFixed(2)})
     * ${CLOUD_OPACITY.toFixed(2)};
-  float alpha = mix(cloudAlpha, min(cloudAlpha * ${CLOUD_NIGHT_ALPHA_BOOST.toFixed(2)}, 1.0), night);
+  float alpha = mix(cloudAlpha, min(cloudAlpha * ${CLOUD_NIGHT_ALPHA_BOOST.toFixed(2)}, 1.0), night)
+    * cloudFade;
   return mix(colour, mix(vec3(1.0), vec3(0.0), night), alpha);
 }
 `.trim()
@@ -456,7 +541,13 @@ export function buildOutputFragmentShader(layerCount: number): string {
     `  float cloudLuma = ${D.hasCloud} == 1`,
     `    ? dot(texture2D(${D.cloudMap}, sphereUv).rgb, vec3(0.299, 0.587, 0.114))`,
     '    : 0.0;',
-    '  colour = decorateEarth(colour, nightLights, cloudLuma, night);',
+    // `t` is the ray-march's hit distance, so the fade is per fragment:
+    // clouds dissolve where the projection magnifies and stay where it
+    // does not, which is the same "vanish on the way in" the control
+    // globe does — just applied to a frame that holds several zooms at
+    // once.
+    '  float cloudFade = earthCloudZoomFade(t);',
+    '  colour = decorateEarth(colour, nightLights, cloudLuma, night, cloudFade);',
     // Emitted only when something samples them, so a zero-layer shader
     // does not declare two unread floats.
     ...(count > 0

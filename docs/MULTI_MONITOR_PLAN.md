@@ -633,6 +633,81 @@ the oceans, and — once the night-side alpha boost multiplied it —
 clamped the night to solid black. Take the raw asset and bring the
 whole curve, or take neither.
 
+**One effect crosses, but not as a uniform: the cloud zoom fade.**
+The control globe dissolves its clouds on the way in — full cover
+at zoom 3, none at zoom 6 — because the cloud asset is a single
+global texture and magnifying a patch of it magnifies its blur,
+leaving a fuzzy grey wash over basemap detail that is genuinely
+sharper underneath. Asked for at the second hardware session
+(2026-09): *"clouds should only vanish in the zoomed portion. In
+other words based on camera altitude."*
+
+The qualifier is the whole design. On the control globe the
+viewport is at one zoom, so the fade is one scalar. On an output
+the zoom **is** the warp: the focus is magnified and the antipode
+compressed *in the same frame*, and there is no single number that
+is right for both. A uniform copied across would either keep the
+wash over the magnified part it exists to clear, or strip clouds
+off the three-quarters of the sphere that never zoomed at all.
+
+So it is per fragment, and the quantity is already on hand. The
+ray-march computes a hit distance `t` for every pixel; with the
+camera at `|o| = f` that runs from `1 − f` at the focus to `1 + f`
+at the antipode, and the linear magnification relative to a centred
+camera is `1 / t`. Inverting `cameraOffsetForCamera`'s own mapping
+(`f = 1 − 1/(z+1)`) turns that into a zoom level:
+
+```
+localZoom = 1/t − 1
+```
+
+**Exact at the focus** — the centre of the operator's area of
+interest reports the operator's actual zoom — so feeding it through
+`earthTileLayer`'s *unmodified* curve makes the two surfaces agree
+there by construction, rather than by a second pair of hand-tuned
+anchors. Two imprecisions are deliberate and worth stating rather
+than discovering: the warp is anisotropic (the true linear scale is
+`√(cos θ)/t`, and dropping `cos θ` costs at most ~27% of a
+magnification factor mid-frame, nothing at either pole), and
+`MAX_CAMERA_OFFSET = 0.85` caps the reachable local zoom at ~5.67,
+so clouds bottom out at ~11% of their alpha instead of at zero.
+That residual is **agreement, not a shortfall**: 11% is what the
+control globe has left at zoom 5.67, which is the zoom a capped
+output is in fact showing. Rescaling the curve to end at the cap
+is the tempting fix, and it would put a second cloud calibration in
+the repo — the trap immediately above, in a new place.
+
+**Verified on a real GL implementation (2026-09-09).** The decoration
+GLSL is a hand transcription of tested TypeScript, which is the
+weakest guard in this module — a transcription error compiles fine and
+fails only on a GPU. It has now been rendered: `output.html`, and a
+throwaway harness driving `outputScene.setParams`, run headless in
+Chromium over ANGLE/SwiftShader, and both the terminator and the fade
+were measured back out of the pixels.
+
+| Check | Method | Result |
+|---|---|---|
+| Terminator position | render at four frozen UTC instants, divide by the same frame with `dayNight` off to cancel albedo, least-squares fit the subsolar point | fitted longitude within **1.5°** of `getSunPosition`'s at 00/06/12/18 UTC, tracking −15°/h in the correct direction |
+| Terminator frame | 06:00 and 18:00 specifically | fitted **+91°** and **−91°**; the borrowed-vector bug mirrors longitude, so it would read −90 and +90 here — and would agree at 00:00/12:00, which is why it hid at those two hours |
+| Cloud zoom fade | flat cloud field, alpha recovered from a paired render with clouds off, compared against the ray length's own prediction | worst deviation **0.0020** over the frame at zoom 0 and zoom 5 — 8-bit quantisation |
+
+**One real gap this turned up: the ocean.** The output's base diffuse
+is `photorealEarth`'s `earth_diffuse_*.jpg`, whose water is
+`rgb(2, 5, 20)` — very nearly black, because that stack paints ocean
+colour with the specular and atmosphere passes this surface cannot
+carry. The control globe's base is *not* that texture at all: it is
+GIBS `BlueMarble_NextGeneration` raster tiles, which carry their own
+blue water. So a day-side ocean that reads blue on the control globe
+reads black on an output, which is what "the main application window
+is much more blue" was reporting. It is not scattering, and it will
+not be fixed by adding any effect from the table above. The fix is a
+choice about the base texture — a bathymetry-coloured diffuse, an
+ocean tint applied where the diffuse is water, or sampling the same
+GIBS product the control globe does — and is deliberately left open
+here rather than picked in passing, because it changes a committed
+18.5 MB asset set or adds a network dependency to a window that is
+meant to work air-gapped.
+
 The four that do not cross are not blocked; they are
 **incoherent on this surface**. An equirectangular unwrap shows
 every point of the sphere at once, so it has no limb and no
