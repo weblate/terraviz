@@ -174,8 +174,34 @@ export interface MirroredPrimary {
  * and it is what the read-back verification layer compares against.
  */
 export interface MirroredPlayback {
-  /** ISO 8601. The real-world instant the primary is showing. */
-  date: string
+  /**
+   * ISO 8601 — the real-world instant the primary is showing — or
+   * `null` for a dataset with **no time axis**.
+   *
+   * Nullable rather than absent, and the whole record published rather
+   * than withheld, because a dataset without `startTime`/`endTime` still
+   * has transport state an output must mirror: whether it is running,
+   * and how fast. Withholding the record was the shipped behaviour, and
+   * it left every such dataset frozen on its first decoded frame —
+   * `syncVideoToState`'s only `play()` sits past the gate that rejected
+   * a null playback. On a 24-hour animation that reads as a *longitude*
+   * error rather than a time one, because the terminator and any
+   * burnt-in clock are then half a day out from the operator's globe.
+   * That is how it was first reported from hardware.
+   */
+  date: string | null
+  /**
+   * Position within the clip, 0-1.
+   *
+   * The one position measure that survives having no time axis, and the
+   * reason a raw `currentTime` still does not cross: a ratio is
+   * comparable across renditions, and `hlsService` resolves a rendition
+   * per instance, so an output's element is not required to be the same
+   * encode as the primary's. With a time axis this is redundant with
+   * `date` and unread; without one it is the only thing keeping two
+   * copies of a looping animation together.
+   */
+  positionRatio: number
   paused: boolean
   /**
    * The primary's **current** rate. Never assume `1`.

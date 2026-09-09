@@ -3395,6 +3395,22 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 12. Let the video play for 60 s. Open the output's debug
     overlay (commit 11) — sync delta should remain ≤ 200 ms
     p95 with no visible drift on the LED-sphere mock.
+12a. **A dataset with no time axis.** Load one of the SOS
+    looping animations — Air Traffic is the canonical case:
+    global video, no `startTime`/`endTime`, a 24-hour loop
+    with the clock and the terminator burnt into the frames.
+    It has to be its own step because it takes its own
+    steering path (`outputSync`'s `syncByRatio`): there is no
+    real-world instant to place, so the output is steered on
+    its position *within the clip*. Press play — the output
+    must start, and the burnt-in clock must read the same
+    number the control globe's does. A frozen output here is
+    the bug this step exists to catch, and its symptom is
+    deceptive: frame zero of a 24-hour animation is a world
+    lit twelve hours away from the operator's, which reads as
+    a **projection** error rather than a playback one. It was
+    first reported from hardware as "the outputs are 180° off
+    in longitude".
 
 **CONUS-bbox image dataset (Open Question 7):**
 

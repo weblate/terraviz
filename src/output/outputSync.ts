@@ -81,9 +81,11 @@ export interface SyncInputs {
 }
 
 export type SyncKind =
-  /** No video, or its metadata has not arrived. Nothing to steer yet. */
+  /** No video, no playback state, or metadata that has not arrived.
+   *  Nothing to steer yet. */
   | 'not-ready'
-  /** The dataset has no time axis, so a date cannot be placed on it. */
+  /** The dataset has no time axis, so the clip is steered on its own
+   *  position rather than on a real-world instant. Still playing. */
   | 'no-range'
   /** The control window is paused; the output holds the same frame. */
   | 'paused'
@@ -134,7 +136,7 @@ function instant(iso: string | null | undefined): Date | null {
  */
 export function syncVideoToState(video: SyncTarget | null, state: SyncInputs): SyncOutcome {
   const { dataset, primary, playback } = state
-  if (!video || !playback || !primary) return NOT_STEERING('not-ready')
+  if (!video || !playback) return NOT_STEERING('not-ready')
 
   // Both gates are the plan's, and both matter: an element below
   // `HAVE_METADATA` has no meaningful `currentTime` to read or write,
@@ -145,11 +147,14 @@ export function syncVideoToState(video: SyncTarget | null, state: SyncInputs): S
   const date = instant(playback.date)
   const sibStart = instant(dataset?.startTime)
   const sibEnd = instant(dataset?.endTime)
-  if (!date) return NOT_STEERING('not-ready')
-  // A dataset with no time axis cannot place a date. Leave the playhead
-  // alone rather than seeking to a number derived from nothing; a
-  // looping animation keeps looping, which is the right answer for one.
-  if (!sibStart || !sibEnd) return NOT_STEERING('no-range')
+  // No real-world clock on either side of the correction — a dataset
+  // with no time axis, or a span that will not parse. Steer on the
+  // clip's own position rather than standing down. An earlier version
+  // returned here without touching the element, reasoning that "a
+  // looping animation keeps looping" — but nothing had ever started it,
+  // so every such dataset held its first decoded frame for the life of
+  // the window while the control globe played.
+  if (!date || !primary || !sibStart || !sibEnd) return syncByRatio(video, playback)
 
   const { position, targetTime, rate, shouldSeek } = computeSiblingSyncCorrection({
     date,
@@ -182,4 +187,42 @@ export function syncVideoToState(video: SyncTarget | null, state: SyncInputs): S
   video.playbackRate = rate
   if (shouldSeek) video.currentTime = targetTime
   return { kind: 'playing', driftS, seeked: shouldSeek }
+}
+
+/**
+ * Steer a clip that has no time axis, on its own position.
+ *
+ * `positionRatio` rather than a raw `currentTime` because the two
+ * elements are not required to be the same rendition — `hlsService`
+ * resolves one per instance — and a ratio survives that where a value
+ * in seconds does not.
+ *
+ * No rate trim, unlike the dated law above. There the primary's mapping
+ * to real time can move under the output (a scrub, a tour's `frameRate`
+ * task), so the correction has to keep converging. Here both elements
+ * run the same clip at the same mirrored rate, so one seek leaves a
+ * constant offset rather than a growing one, and a trim would be a
+ * second control law with no independent clock to measure against.
+ */
+function syncByRatio(video: SyncTarget, playback: MirroredPlayback): SyncOutcome {
+  const ratio = Number.isFinite(playback.positionRatio)
+    ? Math.max(0, Math.min(1, playback.positionRatio))
+    : 0
+  const targetTime = ratio * video.duration
+  const driftS = video.currentTime - targetTime
+  const seeked = Math.abs(driftS) > SIBLING_HARD_SEEK_THRESHOLD_S
+
+  if (playback.paused) {
+    if (!video.paused) video.pause()
+    if (seeked) video.currentTime = targetTime
+    return { kind: 'paused', driftS, seeked }
+  }
+
+  video.playbackRate = playback.playbackRate
+  if (seeked) video.currentTime = targetTime
+  // After the seek, never before: `play()` on an element sitting at its
+  // end rewinds to zero, which would silently undo the seek this call
+  // just made and restart the loop instead of joining the primary.
+  if (video.paused) video.play()
+  return { kind: 'no-range', driftS, seeked }
 }

@@ -201,32 +201,34 @@ export interface PrimaryPlaybackInput {
 }
 
 /**
- * Where the primary's playhead is, as a real-world instant.
+ * Where the primary's playhead is.
  *
- * `null` whenever the instant cannot be *computed*, which is not the
- * same as "the video is not playing": a paused primary still has a
- * position an output must match, so `paused` is carried rather than
- * treated as an absence. What makes it null is a missing time axis, a
- * duration that has not firmed up yet, or a span that will not parse —
- * in each case the honest answer is "no instant", and `outputSync`'s
- * `not-ready` gate leaves the output where it is rather than seeking to
- * a guess.
+ * `null` only when there is no playhead to describe at all — no media,
+ * or a duration or position that has not firmed up. **A missing time
+ * axis is not that case.** A dataset without `startTime`/`endTime` has
+ * no instant, but it still has a position in its clip, a rate, and a
+ * play/pause state, and an output told none of those has no reason to
+ * ever call `play()`. It shipped that way and left every SOS looping
+ * animation — Air Traffic among them — frozen on its first decoded
+ * frame on every output while the control globe played.
+ *
+ * So the absence is expressed as `date: null` inside a published
+ * record rather than as a withheld record, and `positionRatio` carries
+ * the position that survives having no clock.
  *
  * The date comes from `videoTimeToDate`, the same function the control
  * window's own time label and sibling sync use. A second derivation
  * here could disagree with the one the operator is reading.
  */
 export function playbackFrom(input: PrimaryPlaybackInput): MirroredPlayback | null {
-  const span = datasetSpan(input.startTime, input.endTime)
-  if (!span) return null
   if (!Number.isFinite(input.duration) || input.duration <= 0) return null
   if (!Number.isFinite(input.currentTime)) return null
 
-  const date = videoTimeToDate(input.currentTime, input.duration, span.start, span.end)
-  if (Number.isNaN(date.getTime())) return null
-
-  return {
-    date: date.toISOString(),
+  const base = {
+    // Clamped rather than trusted: `currentTime` can sit a hair past
+    // `duration` on an ended element, and the output multiplies this by
+    // its own duration to get a seek target.
+    positionRatio: Math.max(0, Math.min(1, input.currentTime / input.duration)),
     paused: input.paused,
     // A zero or negative rate is a stopped clock wearing a rate. The
     // output would divide by it; 1 is the value every other consumer
@@ -234,6 +236,16 @@ export function playbackFrom(input: PrimaryPlaybackInput): MirroredPlayback | nu
     playbackRate:
       Number.isFinite(input.playbackRate) && input.playbackRate > 0 ? input.playbackRate : 1,
   }
+
+  const span = datasetSpan(input.startTime, input.endTime)
+  if (!span) return { ...base, date: null }
+
+  const date = videoTimeToDate(input.currentTime, input.duration, span.start, span.end)
+  // A span that parses but still yields no instant. The position path
+  // is the honest fallback, not a reason to publish nothing.
+  if (Number.isNaN(date.getTime())) return { ...base, date: null }
+
+  return { ...base, date: date.toISOString() }
 }
 
 /**

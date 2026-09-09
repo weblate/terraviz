@@ -279,7 +279,7 @@ describe('sync', () => {
     const out = mirror.sync({
       dataset: mirror.currentDataset(),
       primary: { duration: 10, rangeMs: 1000 },
-      playback: { date: '2026-01-01T00:00:00.000Z', paused: false, playbackRate: 1 },
+      playback: { date: '2026-01-01T00:00:00.000Z', positionRatio: 0.5, paused: false, playbackRate: 1 },
     })
 
     expect(out.kind).toBe('not-ready')

@@ -183,7 +183,7 @@ describe('apply', () => {
 
   it('detects a null → value transition and back', () => {
     const agg = new StateAggregator()
-    expect(agg.apply({ playback: { date: '2026-01-01T00:00:00Z', paused: false, playbackRate: 1 } })).not.toBeNull()
+    expect(agg.apply({ playback: { date: '2026-01-01T00:00:00Z', positionRatio: 0.5, paused: false, playbackRate: 1 } })).not.toBeNull()
     expect(agg.apply({ playback: null })).not.toBeNull()
     expect(agg.apply({ playback: null })).toBeNull()
   })

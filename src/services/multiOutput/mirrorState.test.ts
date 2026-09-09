@@ -221,20 +221,47 @@ describe('playbackFrom', () => {
     expect(playbackFrom({ ...base, playbackRate })?.playbackRate).toBe(1)
   })
 
+  it('reports the position in the clip alongside the instant', () => {
+    expect(playbackFrom(base)?.positionRatio).toBeCloseTo(0.5, 6)
+  })
+
+  it.each([
+    ['past the end on an ended element', { currentTime: 100.04 }, 1],
+    ['a negative playhead', { currentTime: -0.001 }, 0],
+  ])('clamps the ratio for %s', (_label, over, expected) => {
+    // The output multiplies this by its own duration to get a seek
+    // target, and `currentTime` can sit a hair past `duration`.
+    expect(playbackFrom({ ...base, ...over })?.positionRatio).toBe(expected)
+  })
+
   it.each([
     ['no time axis', { startTime: null, endTime: null }],
     ['only a start', { endTime: null }],
     ['an unparseable bound', { endTime: 'sometime' }],
     ['a zero-length span', { endTime: base.startTime }],
     ['a reversed span', { startTime: base.endTime, endTime: base.startTime }],
+  ])('publishes a dateless record for %s', (_label, over) => {
+    // The regression this replaced: these all returned null, so nothing
+    // about the primary's transport reached the output — and
+    // `syncVideoToState`'s only `play()` sits past the gate that
+    // rejects a null playback. Every SOS looping animation held its
+    // first decoded frame on every output for the life of the window.
+    const out = playbackFrom({ ...base, ...over })
+
+    expect(out).not.toBeNull()
+    expect(out?.date).toBeNull()
+    expect(out?.paused).toBe(false)
+    expect(out?.positionRatio).toBeCloseTo(0.5, 6)
+  })
+
+  it.each([
     ['no duration yet', { duration: 0 }],
     ['a NaN duration', { duration: Number.NaN }],
     ['a NaN playhead', { currentTime: Number.NaN }],
   ])('returns null for %s', (_label, over) => {
-    // Null means "no instant can be computed", and `outputSync`'s
-    // not-ready gate then leaves the output where it is rather than
-    // seeking to a guess. A zero-length span would divide by zero; a
-    // reversed one runs the output's clock backwards.
+    // These are the absences with genuinely nothing to describe: no
+    // instant *and* no position in a clip. A missing time axis is not
+    // one of them — see above.
     expect(playbackFrom({ ...base, ...over })).toBeNull()
   })
 })
