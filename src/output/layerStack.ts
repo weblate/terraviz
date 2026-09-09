@@ -109,14 +109,29 @@ const CLOUD_ALPHA_GAMMA = 1.8
 const CLOUD_NIGHT_ALPHA_BOOST = 2.5
 
 /**
+ * How far past the geometric terminator the night side reaches full
+ * darkness, in units of `dot(normal, sunDir)`. Twilight, in effect.
+ *
+ * Named rather than inlined because both the TS mirror and the GLSL
+ * have to use the same edge, and the two write it with opposite signs.
+ */
+const TERMINATOR_SOFTNESS = 0.2
+
+/**
  * How much of the sphere is in night, 0 (full day) to 1.
  *
- * `smoothstep`'s edges are deliberately reversed — `(0.0, -0.2)`, not
- * `(-0.2, 0.0)` — because that is the expression `earthTileLayer` and
- * `photorealEarth` both ship, and the polynomial is symmetric about
- * its midpoint, so the forward form with a `1.0 -` is the same curve
- * written differently. Mirroring the shipped one means there is
- * nothing to prove equal.
+ * Written as `1 - smoothstep(-S, 0, NdotL)` with the edges in
+ * **ascending** order. `earthTileLayer` and `photorealEarth` both ship
+ * the reversed form, `smoothstep(0, -S, NdotL)`, and the first draft
+ * here mirrored them on the reasoning that copying a shipped
+ * expression leaves nothing to prove equal. But GLSL leaves
+ * `smoothstep` **undefined** when `edge0 >= edge1`: every driver this
+ * repo has met computes the general formula and gets the right answer,
+ * which is exactly why the reversed form survives in shaders that were
+ * tested on hardware — and this one has not been. The polynomial is
+ * symmetric about its midpoint, so the two are the same curve; taking
+ * the defined one costs nothing and removes undefined behaviour from
+ * the one shader nobody here can run. A test pins them equal.
  *
  * `dayNight` off returns 0, which is the whole gate: it collapses the
  * darkening to a no-op multiply, the night lights to nothing, and the
@@ -124,8 +139,8 @@ const CLOUD_NIGHT_ALPHA_BOOST = 2.5
  */
 export function nightFactor(ndotL: number, dayNight: boolean): number {
   if (!dayNight) return 0
-  const t = Math.max(0, Math.min(1, (ndotL - 0) / (-0.2 - 0)))
-  return t * t * (3 - 2 * t)
+  const t = Math.max(0, Math.min(1, (ndotL + TERMINATOR_SOFTNESS) / TERMINATOR_SOFTNESS))
+  return 1 - t * t * (3 - 2 * t)
 }
 
 /** One decorated sample of the Earth's surface. `cloudLuma` is the raw
@@ -193,9 +208,10 @@ export const DECORATION_UNIFORMS = {
 export const EARTH_DECORATION_GLSL = `
 float earthNightFactor(vec3 hit, vec3 sunDir, int dayNight) {
   if (dayNight == 0) return 0.0;
-  // Reversed edges on purpose — the form earthTileLayer and
-  // photorealEarth both ship. See \`nightFactor\`'s docstring.
-  return smoothstep(0.0, -0.2, dot(hit, sunDir));
+  // Ascending edges, unlike the older shaders' reversed form: GLSL
+  // leaves smoothstep undefined for edge0 >= edge1. Same curve — the
+  // polynomial is symmetric — but defined. See \`nightFactor\`.
+  return 1.0 - smoothstep(-${TERMINATOR_SOFTNESS.toFixed(1)}, 0.0, dot(hit, sunDir));
 }
 
 vec3 decorateEarth(vec3 base, vec3 lights, float cloudLuma, float night) {

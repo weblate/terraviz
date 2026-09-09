@@ -147,7 +147,13 @@ export function outputInitialState(mode: OutputMode = OUTPUT_MODE): OutputGlobeS
   }
 }
 
-const STATE_KEYS: readonly StateKey[] = [
+/**
+ * Every key an output applies, exported so a consumer can ask for "all
+ * of it" — which is what applying the state held at subscribe time
+ * needs, and what keeps a key added to the schema from being applied
+ * on diffs but skipped on the initial pass.
+ */
+export const STATE_KEYS: readonly StateKey[] = [
   'dataset',
   'primary',
   'playback',

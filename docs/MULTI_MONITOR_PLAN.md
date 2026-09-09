@@ -571,14 +571,17 @@ be subtly wrong on a subset of the catalog.
 
 > **Asked for, at the first hardware session (2026-09):** "at some
 > point I would want the Earth as realistic as possible." The outputs
-> were showing base diffuse and nothing else. Rung 12c has since built
-> the three effects this section says cross; the four it rules out are
-> ruled out permanently, not pending — see the table. This section is the answer to *how* realistic is
-> coherent: the table below sorts every effect by what it depends on,
-> and the split is not a matter of effort. Three more cross and are
-> worth building; four cannot cross at all, because they are properties
-> of *looking at* a sphere from outside and nobody looks at an LED
-> sphere from outside.
+> were showing base diffuse and nothing else.
+>
+> This section is the answer to *how* realistic is coherent: the table
+> below sorts every effect by what it depends on, and the split is not
+> a matter of effort. Three more cross the boundary; four cannot cross
+> at all, because they are properties of *looking at* a sphere from
+> outside and nobody looks at an LED sphere from outside.
+>
+> **Rung 12c has since built all three that cross.** The four that do
+> not are ruled out permanently rather than deferred — the table says
+> why, and it is a statement about the surface, not about the backlog.
 
 Constraint 3 has a consequence the rest of this plan was written
 without. If the equirect pass ray-marches an analytic sphere and

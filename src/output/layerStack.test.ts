@@ -221,17 +221,20 @@ describe('nightFactor', () => {
     expect(samples[samples.length - 1]).toBe(1)
   })
 
-  it('matches the forward-edge form of the same curve', () => {
-    // The shipped expression reverses smoothstep's edges. The
-    // polynomial is symmetric about its midpoint, so `1 - smoothstep(
-    // -0.2, 0, x)` is the identical curve — worth pinning, because it
-    // is the reason mirroring the reversed form proves nothing new.
-    const forward = (x: number): number => {
-      const t = Math.max(0, Math.min(1, (x + 0.2) / 0.2))
-      return 1 - t * t * (3 - 2 * t)
+  it('matches the reversed-edge form the older shaders ship', () => {
+    // `earthTileLayer` and `photorealEarth` both write
+    // `smoothstep(0, -0.2, NdotL)`, which GLSL leaves **undefined**
+    // for edge0 >= edge1 — it survives there because it was tested on
+    // hardware, and this shader has not been. The polynomial is
+    // symmetric about its midpoint, so the ascending form shipped here
+    // is the identical curve. This is the proof of that, and therefore
+    // the reason taking the defined one changes nothing but the risk.
+    const reversed = (x: number): number => {
+      const t = Math.max(0, Math.min(1, (x - 0) / (-0.2 - 0)))
+      return t * t * (3 - 2 * t)
     }
     for (const x of [0.5, 0, -0.05, -0.13, -0.2, -0.5]) {
-      expect(nightFactor(x, true)).toBeCloseTo(forward(x), 10)
+      expect(nightFactor(x, true)).toBeCloseTo(reversed(x), 10)
     }
   })
 
@@ -344,6 +347,15 @@ describe('EARTH_DECORATION_GLSL', () => {
 
   it('reads the hit point as the normal, with no separate normal input', () => {
     expect(EARTH_DECORATION_GLSL).toContain('dot(hit, sunDir)')
+  })
+
+  it('orders smoothstep\'s edges, because the reverse is undefined', () => {
+    // GLSL: "results are undefined if edge0 >= edge1". Shipping the
+    // reversed form in a shader nobody here can run is undefined
+    // behaviour that happens to work on the drivers someone else
+    // tested — not a property this output can rely on.
+    expect(EARTH_DECORATION_GLSL).toContain('1.0 - smoothstep(-0.2, 0.0,')
+    expect(EARTH_DECORATION_GLSL).not.toContain('smoothstep(0.0, -')
   })
 })
 
