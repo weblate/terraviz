@@ -3358,14 +3358,18 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 7. Click Add Output → pick the secondary → Confirm. The output
    window appears within ~1 s, fullscreen on the secondary,
    black until ready. No title bar, no menu bar, no cursor.
-7a. **Aspect.** On a 16:9 secondary the frame is letterboxed —
-    a 2:1 image with equal black bands top and bottom, ~5.6%
-    of the height each. Confirm that is what the display
-    shows, and photograph it. This is the first hardware
-    contact with the frame/monitor mismatch in "Not every
-    monitor is 2:1"; whether the bands are correct depends on
-    what the downstream device expects, so record the
-    behaviour rather than judging it here. Bands of *unequal*
+7a. **Aspect.** On a secondary that is not 2:1 the frame is
+    letterboxed — a 2:1 image with equal black bands top and
+    bottom, each `(1 - aspect / 2) / 2` of the height, where
+    `aspect` is the *monitor's* own width over height. That is
+    ~5.6% on 16:9 and ~10% on 16:10, so it is not a constant
+    and the number to check against is the one that formula
+    gives for the panel in front of you. Confirm that is what
+    the display shows, and photograph it. This is the first
+    hardware contact with the frame/monitor mismatch in "Not
+    every monitor is 2:1"; whether the bands are correct
+    depends on what the downstream device expects, so record
+    the behaviour rather than judging it here. Bands of *unequal*
     height, or a full-height image, is a bug — the first says
     the window is not where the manager put it, the second
     that something is stretching the projection.
@@ -3399,6 +3403,20 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     the control globe and on the output sphere align to ≤1 px
     at 4K — verify by visual side-by-side using the test
     fixture from commit 2.
+13a. **Read it with camera tracking off.** A domain wider than
+    CONUS substitutes fine, and is the harder test rather than
+    the easier one — it reaches the latitudes where an
+    equirect's row spacing is most stretched. But *any* bbox
+    check has to be judged with the output's "Track operator
+    camera" toggle off, which hands that output `CENTRED_CAMERA`
+    and makes the unwrap the identity. There a column is
+    longitude linearly (`lon = (x / W) * 360 - 180`) and a bbox
+    error is a rigid shift with a number on it. Under a tracked
+    camera the offset warp magnifies one hemisphere and
+    compresses the antipode, so the same error is many pixels
+    near the centre of focus and almost none at the edges —
+    enough to catch gross misplacement, never enough to support
+    the ≤1 px claim above.
 
 **Multi-layer:**
 
