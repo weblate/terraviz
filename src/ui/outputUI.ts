@@ -50,6 +50,7 @@ import type {
   OutputMonitor,
   OutputRecord,
 } from '../services/multiOutput/manager'
+import type { OutputRenderConfig } from '../services/multiOutput/protocol'
 import type { OutputViewSettings } from '../services/multiOutput/stateAggregator'
 
 /**
@@ -69,6 +70,25 @@ export interface OutputPanelManager {
   addOutput(options: AddOutputOptions): Promise<OutputRecord>
   removeOutput(label: string): Promise<void>
   setOutputView(label: string, view: Partial<OutputViewSettings>): Promise<void>
+  setOutputRenderConfig(label: string, render: Partial<OutputRenderConfig>): Promise<void>
+  /** Windows that can hold a video decoder, against the machine's
+   *  budget — see `buildDecoderBudget`. */
+  decoderLoad(): { used: number; budget: number }
+  /** Pin the budget, or `null` to go back to what the machine reports. */
+  setDecoderBudget(budget: number | null): void
+  /**
+   * The framebuffer rungs this build offers.
+   *
+   * Read through the manager rather than imported from `protocol.ts`,
+   * and that is not a preference: every `multiOutput/` import in this
+   * module is type-only because `main.ts` imports the panel eagerly,
+   * so a runtime one puts the IPC contract — `sos-equirect` and all —
+   * into the web entry graph, which is the regression `c8df3380`
+   * removed and the grep in that commit polices. The manager is
+   * already the panel's only window onto the subsystem; asking it what
+   * it supports fits that exactly.
+   */
+  framebufferWidths(): readonly number[]
   isRestoreOnLaunch(): boolean
   setRestoreOnLaunch(enabled: boolean): void
 }
@@ -378,7 +398,84 @@ function buildAdder(
 
   row.append(label, select, addBtn)
   section.appendChild(row)
+
+  const { used, budget } = mgr.decoderLoad()
+  // The manager refuses this too, and would throw. Disabling here is
+  // the affordance rather than the invariant: an operator should see
+  // that the machine is full and what to do about it, not click and be
+  // told.
+  if (used >= budget) {
+    addBtn.disabled = true
+    section.appendChild(message(t('outputs.decoders.spent'), 'output-warning'))
+  }
+  section.appendChild(buildDecoderBudget(mgr, body, used, budget))
   return section
+}
+
+/**
+ * The machine's decoder budget (rung 11c, plan §"Cross-window decoder
+ * budget").
+ *
+ * It sits under Add rather than on an output because it is a property
+ * of the **machine**, not of any window: one GPU and one media stack
+ * are shared by everything on the box, and the whole reason the field
+ * exists is that `maxVideoPanels()` answers per window and so cannot
+ * see the others.
+ *
+ * The count is windows that can hold a decoder, not decoders currently
+ * decoding — outputs mirror the primary, so every one of them flips
+ * from free to costing a decoder the moment a video is loaded, and a
+ * dataset load is not a place a refusal can happen. Counting windows
+ * puts the refusal on Add, where there is a control to disable.
+ *
+ * Repainting the whole panel on change is right here, unlike the
+ * per-output toggles: this number gates the Add button and the warning
+ * above it, so the section's own state is what changed.
+ */
+function buildDecoderBudget(
+  mgr: OutputPanelManager,
+  body: HTMLElement,
+  used: number,
+  budget: number,
+): HTMLElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'output-section'
+
+  const field = document.createElement('label')
+  field.className = 'output-field'
+
+  const label = document.createElement('span')
+  label.className = 'output-field-label'
+  label.textContent = t('outputs.decoders.label')
+
+  const input = document.createElement('input')
+  input.type = 'number'
+  input.className = 'output-field-number'
+  input.min = '1'
+  input.value = String(budget)
+
+  input.addEventListener('change', () => {
+    const next = Number(input.value)
+    // Anything unusable clears the pin rather than storing it, and the
+    // manager answers with what the machine reports — so an operator
+    // who empties the box gets the default back instead of a broken
+    // installation. `setDecoderBudget` applies the same rule; asking
+    // for `null` here is what makes "empty means unset" explicit.
+    mgr.setDecoderBudget(Number.isFinite(next) && next >= 1 ? next : null)
+    // Repaint: this number gates the Add button and the warning above
+    // it, so the section it lives in is what changed. Unlike the
+    // per-output toggles, which change only themselves and would spend
+    // a monitor enumeration per click for nothing.
+    void refresh(body)
+  })
+
+  field.append(label, input)
+  wrap.append(
+    field,
+    message(t('outputs.decoders.used', { used, budget }), 'output-note'),
+    message(t('outputs.decoders.hint'), 'output-note'),
+  )
+  return wrap
 }
 
 async function add(
@@ -485,36 +582,134 @@ function buildRow(
   item.appendChild(head)
 
   item.appendChild(
-    buildToggle(
-      mgr,
-      record,
-      'trackCamera',
-      t('outputs.item.trackCamera'),
-      record.view.trackCamera,
+    buildToggle(t('outputs.item.trackCamera'), record.view.trackCamera, next =>
+      mgr.setOutputView(record.label, { trackCamera: next }),
     ),
   )
   item.appendChild(
-    buildToggle(mgr, record, 'split', t('outputs.item.split'), record.view.split),
+    buildToggle(t('outputs.item.split'), record.view.split, next =>
+      mgr.setOutputView(record.label, { split: next }),
+    ),
   )
+  item.appendChild(
+    // A different channel from the two above — window configuration
+    // rather than a projection of globe state — but the same control,
+    // because to the operator it is the same kind of switch. The label
+    // says the HUD is drawn *on the output* rather than here, since
+    // that is the part someone about to run a show needs to know.
+    buildToggle(t('outputs.item.debugOverlay'), record.render.debugOverlay, next =>
+      mgr.setOutputRenderConfig(record.label, { debugOverlay: next }),
+    ),
+  )
+  item.appendChild(buildFramebufferPicker(mgr, record))
   return item
 }
 
 /**
- * One per-output view toggle.
+ * The per-output framebuffer picker (rung 11b).
  *
- * Deliberately does **not** refresh the panel on change. `setOutputView`
- * pushes the new view to that output immediately and mutates the record
- * in place, so the checkbox already agrees with the manager; a refresh
+ * **This is not the monitor's resolution**, and the panel says so by
+ * placement: the head line above already carries the display's own
+ * pixel count, so "3840×2160 · SOS equirectangular" over
+ * "Framebuffer: 4096×2048" makes the distinction without a sentence
+ * explaining it. Calling the control "Resolution" would erase exactly
+ * the difference the plan's "the frame and the monitor are two
+ * rectangles" section exists to keep — an output is fullscreen on its
+ * monitor whatever this says, and a rung below the monitor's own count
+ * scales *up* rather than shrinking into a corner.
+ *
+ * The whole ladder is offered rather than only the rungs at or below
+ * the monitor: 1024 is the "preview an LED sphere on a desk monitor"
+ * workflow and 8192 is a sphere fed by a 1080p preview window, so
+ * filtering by the monitor would remove the two cases the picker is
+ * most for.
+ */
+function buildFramebufferPicker(
+  mgr: OutputPanelManager,
+  record: OutputRecord,
+): HTMLElement {
+  const label = document.createElement('label')
+  label.className = 'output-field'
+
+  const text = document.createElement('span')
+  text.className = 'output-field-label'
+  text.textContent = t('outputs.item.framebuffer')
+
+  const select = document.createElement('select')
+  select.className = 'output-field-select'
+  for (const width of mgr.framebufferWidths()) {
+    const option = document.createElement('option')
+    option.value = String(width)
+    // Half, always: an equirectangular frame that is not 2:1 is not
+    // equirectangular, so the height is shown rather than chosen.
+    option.textContent = t('outputs.item.framebufferOption', {
+      width,
+      height: width / 2,
+    })
+    select.appendChild(option)
+  }
+  // Assigning and reading back is how the DOM answers "is this one of
+  // my options": an unmatched value leaves `select.value` empty. That
+  // should be unreachable — the parse only accepts a rung and this
+  // control only offers them — but a blank select reads as a broken
+  // panel, so a width from somewhere else is *shown* rather than
+  // rounded to a neighbour the output is not running at.
+  select.value = String(record.render.framebufferWidth)
+  if (!select.value) {
+    const own = document.createElement('option')
+    own.value = String(record.render.framebufferWidth)
+    own.textContent = t('outputs.item.framebufferOption', {
+      width: record.render.framebufferWidth,
+      height: record.render.framebufferWidth / 2,
+    })
+    select.prepend(own)
+    select.value = own.value
+  }
+
+  let applied = select.value
+  select.addEventListener('change', () => {
+    const next = select.value
+    select.disabled = true
+    void mgr
+      .setOutputRenderConfig(record.label, { framebufferWidth: Number(next) })
+      .then(() => {
+        applied = next
+      })
+      .catch(err => {
+        // Same posture as the toggles: a control that reports a state
+        // the output is not in is worse than one that visibly refuses.
+        logger.warn('[outputUI] framebuffer change failed:', err)
+        select.value = applied
+      })
+      .finally(() => {
+        select.disabled = false
+      })
+  })
+
+  label.append(text, select)
+  return label
+}
+
+/**
+ * One per-output checkbox.
+ *
+ * Takes the commit as a callback rather than a settings key, because
+ * the three switches on a row now write through two different manager
+ * methods onto two different channels — and the part worth having once
+ * is not the field name, it is everything below: disable while in
+ * flight, put the box back on failure, and do not refresh.
+ *
+ * Deliberately does **not** refresh the panel on change. The manager
+ * pushes the new value to that output immediately and mutates the
+ * record in place, so the checkbox already agrees with it; a refresh
  * would spend a monitor enumeration on every click. On failure the box
  * is put back, because a control that reports a state the output is not
  * in is worse than one that visibly refuses.
  */
 function buildToggle(
-  mgr: OutputPanelManager,
-  record: OutputRecord,
-  key: keyof OutputViewSettings,
   labelText: string,
   initial: boolean,
+  commit: (next: boolean) => Promise<void>,
 ): HTMLElement {
   const label = document.createElement('label')
   label.className = 'output-toggle'
@@ -526,10 +721,9 @@ function buildToggle(
   box.addEventListener('change', () => {
     const next = box.checked
     box.disabled = true
-    void mgr
-      .setOutputView(record.label, { [key]: next })
+    void commit(next)
       .catch(err => {
-        logger.warn('[outputUI] view change failed:', err)
+        logger.warn('[outputUI] setting change failed:', err)
         box.checked = !next
       })
       .finally(() => {

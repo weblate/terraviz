@@ -45,6 +45,7 @@
 import {
   SIBLING_HARD_SEEK_THRESHOLD_S,
   SIBLING_MIN_READY_STATE,
+  SYNC_MAX_RATE_TRIM,
   computeSiblingSyncCorrection,
 } from '../utils/time'
 import type {
@@ -67,6 +68,11 @@ export interface SyncTarget {
   readonly readyState: number
   readonly duration: number
   readonly paused: boolean
+  /** True while a `currentTime` write is still being served. Steering a
+   *  seeking element measures the *target* against a frame that has not
+   *  been decoded yet, so the error reads as a fresh desync and earns
+   *  another seek — the tightest turn of the loop below. */
+  readonly seeking: boolean
   currentTime: number
   playbackRate: number
   play(): void
@@ -81,9 +87,13 @@ export interface SyncInputs {
 }
 
 export type SyncKind =
-  /** No video, or its metadata has not arrived. Nothing to steer yet. */
+  /** No video, no playback state, or metadata that has not arrived.
+   *  Nothing to steer yet. */
   | 'not-ready'
-  /** The dataset has no time axis, so a date cannot be placed on it. */
+  /** A seek this layer asked for is still being served. Left alone. */
+  | 'seeking'
+  /** The dataset has no time axis, so the clip is steered on its own
+   *  position rather than on a real-world instant. Still playing. */
   | 'no-range'
   /** The control window is paused; the output holds the same frame. */
   | 'paused'
@@ -125,31 +135,90 @@ function instant(iso: string | null | undefined): Date | null {
 }
 
 /**
+ * How long after a hard seek this layer stops reaching for another.
+ *
+ * A seek is not instant. The element stalls, the decoder refills, and
+ * the primary keeps playing throughout — so the moment a seek lands, the
+ * output is behind again by however long the seek took. If that is more
+ * than the hard-seek threshold, the correction *manufactures* the error
+ * it is correcting: seek, stall, measure a fresh desync, seek again,
+ * once per rAF. The debug HUD caught it in the field reading a steady
+ * `sync -166 ms` against a 150 ms threshold, with the picture visibly
+ * choppy — and choppy only sometimes, because an output that happens to
+ * start inside the threshold trims and stays smooth, while one that ever
+ * falls outside can never get back in.
+ *
+ * This is an **output** problem rather than a sibling-panel one, which
+ * is why the constant lives here and the threshold is still imported
+ * unchanged: two globes in one window share a process and a clock, and
+ * the 150 ms was measured against that. An output is a second window, a
+ * second decoder, and an IPC hop.
+ */
+export const OUTPUT_SEEK_SETTLE_MS = 1000
+
+/**
+ * The error bound that still earns a seek inside the settle window.
+ *
+ * Derived rather than picked: the trim closes at most
+ * `SYNC_MAX_RATE_TRIM` seconds of error per second of playback, so
+ * within one settle window it can absorb exactly that much on top of
+ * what the threshold already tolerates. An error above this cannot be
+ * trimmed away in the time we are asking the trim to work, so a seek is
+ * the only tool left and suppressing it would strand the output.
+ */
+const SETTLING_SEEK_THRESHOLD_S =
+  SIBLING_HARD_SEEK_THRESHOLD_S + SYNC_MAX_RATE_TRIM * (OUTPUT_SEEK_SETTLE_MS / 1000)
+
+/**
  * Steer one output's video toward the primary's real-world instant.
  *
  * Call it on every playback diff and once per rAF while playing. It is
  * idempotent in the steady state: with the drift inside the hard-seek
  * threshold it only trims the rate, which is what keeps a sphere from
  * flickering (terraviz#229).
+ *
+ * `sinceLastSeekMs` is how long ago *this* layer last issued a seek, and
+ * it raises the threshold rather than vetoing the seek outright — the
+ * control law already takes the threshold as a parameter, so raising it
+ * makes the law choose its own trim and hand back the trimmed rate. A
+ * veto would have to invent that rate, and a second derivation of it is
+ * the thing this module exists not to have. Defaults to "no seek in
+ * living memory", which is the unsuppressed behaviour.
  */
-export function syncVideoToState(video: SyncTarget | null, state: SyncInputs): SyncOutcome {
+export function syncVideoToState(
+  video: SyncTarget | null,
+  state: SyncInputs,
+  sinceLastSeekMs: number = Number.POSITIVE_INFINITY,
+): SyncOutcome {
   const { dataset, primary, playback } = state
-  if (!video || !playback || !primary) return NOT_STEERING('not-ready')
+  if (!video || !playback) return NOT_STEERING('not-ready')
 
   // Both gates are the plan's, and both matter: an element below
   // `HAVE_METADATA` has no meaningful `currentTime` to read or write,
   // and a zero/NaN duration makes every ratio below degenerate.
   if (video.readyState < SIBLING_MIN_READY_STATE) return NOT_STEERING('not-ready')
   if (!(video.duration > 0)) return NOT_STEERING('not-ready')
+  // Mid-seek: `currentTime` already reads the target while the frame on
+  // the glass is the old one, so any error computed here is fiction.
+  if (video.seeking) return NOT_STEERING('seeking')
+
+  const hardSeekThresholdS =
+    sinceLastSeekMs < OUTPUT_SEEK_SETTLE_MS
+      ? SETTLING_SEEK_THRESHOLD_S
+      : SIBLING_HARD_SEEK_THRESHOLD_S
 
   const date = instant(playback.date)
   const sibStart = instant(dataset?.startTime)
   const sibEnd = instant(dataset?.endTime)
-  if (!date) return NOT_STEERING('not-ready')
-  // A dataset with no time axis cannot place a date. Leave the playhead
-  // alone rather than seeking to a number derived from nothing; a
-  // looping animation keeps looping, which is the right answer for one.
-  if (!sibStart || !sibEnd) return NOT_STEERING('no-range')
+  // No real-world clock on either side of the correction — a dataset
+  // with no time axis, or a span that will not parse. Steer on the
+  // clip's own position rather than standing down. An earlier version
+  // returned here without touching the element, reasoning that "a
+  // looping animation keeps looping" — but nothing had ever started it,
+  // so every such dataset held its first decoded frame for the life of
+  // the window while the control globe played.
+  if (!date || !primary || !sibStart || !sibEnd)
+    return syncByRatio(video, playback, hardSeekThresholdS)
 
   const { position, targetTime, rate, shouldSeek } = computeSiblingSyncCorrection({
     date,
@@ -159,7 +228,7 @@ export function syncVideoToState(video: SyncTarget | null, state: SyncInputs): S
     sibEnd,
     primaryDuration: primary.duration,
     primaryRangeMs: primary.rangeMs,
-    hardSeekThresholdS: SIBLING_HARD_SEEK_THRESHOLD_S,
+    hardSeekThresholdS,
     // Never assume 1: a tour's `frameRate` task sets the primary's rate
     // alone, so an output that assumed 1 against a 0.167× primary runs
     // ~6× fast, hard-seeks back, and repeats for the whole tour.
@@ -182,4 +251,73 @@ export function syncVideoToState(video: SyncTarget | null, state: SyncInputs): S
   video.playbackRate = rate
   if (shouldSeek) video.currentTime = targetTime
   return { kind: 'playing', driftS, seeked: shouldSeek }
+}
+
+/**
+ * Steer a clip that has no time axis, on its own position.
+ *
+ * `positionRatio` rather than a raw `currentTime` because the two
+ * elements are not required to be the same rendition — `hlsService`
+ * resolves one per instance — and a ratio survives that where a value
+ * in seconds does not.
+ *
+ * No rate trim, unlike the dated law above. There the primary's mapping
+ * to real time can move under the output (a scrub, a tour's `frameRate`
+ * task), so the correction has to keep converging. Here both elements
+ * run the same clip at the same mirrored rate, so one seek leaves a
+ * constant offset rather than a growing one, and a trim would be a
+ * second control law with no independent clock to measure against.
+ */
+function syncByRatio(
+  video: SyncTarget,
+  playback: MirroredPlayback,
+  hardSeekThresholdS: number,
+): SyncOutcome {
+  const ratio = Number.isFinite(playback.positionRatio)
+    ? Math.max(0, Math.min(1, playback.positionRatio))
+    : 0
+  const targetTime = ratio * video.duration
+  const driftS = video.currentTime - targetTime
+  const seeked = Math.abs(driftS) > hardSeekThresholdS
+
+  if (playback.paused) {
+    if (!video.paused) video.pause()
+    if (seeked) video.currentTime = targetTime
+    return { kind: 'paused', driftS, seeked }
+  }
+
+  video.playbackRate = playback.playbackRate
+  if (seeked) video.currentTime = targetTime
+  // After the seek, never before: `play()` on an element sitting at its
+  // end rewinds to zero, which would silently undo the seek this call
+  // just made and restart the loop instead of joining the primary.
+  if (video.paused) video.play()
+  return { kind: 'no-range', driftS, seeked }
+}
+
+/**
+ * The stateful half: remembers when it last seeked.
+ *
+ * `syncVideoToState` stays pure — every wrong answer this module can
+ * give is reachable from an object literal, which is the split
+ * `playbackSettle` and `voiceVad` use and the reason this file has no
+ * DOM in it. All the controller adds is the one fact a pure function
+ * cannot hold across calls, and it reads the clock through an injected
+ * `nowMs` so the settle window is testable without waiting one out.
+ */
+export interface PlayheadSync {
+  sync(video: SyncTarget | null, state: SyncInputs): SyncOutcome
+}
+
+export function createPlayheadSync(nowMs: () => number = () => performance.now()): PlayheadSync {
+  let lastSeekAtMs = Number.NEGATIVE_INFINITY
+
+  return {
+    sync(video, state) {
+      const now = nowMs()
+      const outcome = syncVideoToState(video, state, now - lastSeekAtMs)
+      if (outcome.seeked) lastSeekAtMs = now
+      return outcome
+    },
+  }
 }

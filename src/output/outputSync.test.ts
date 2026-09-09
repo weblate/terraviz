@@ -13,7 +13,13 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { syncVideoToState, type SyncInputs, type SyncTarget } from './outputSync'
+import {
+  OUTPUT_SEEK_SETTLE_MS,
+  createPlayheadSync,
+  syncVideoToState,
+  type SyncInputs,
+  type SyncTarget,
+} from './outputSync'
 import { SIBLING_HARD_SEEK_THRESHOLD_S, SIBLING_MIN_READY_STATE } from '../utils/time'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 
@@ -45,7 +51,7 @@ function inputs(over: Partial<SyncInputs> = {}): SyncInputs {
   return {
     dataset: dataset(),
     primary: { duration: DURATION, rangeMs: RANGE_MS },
-    playback: { date: dateAt(50), paused: false, playbackRate: 1 },
+    playback: { date: dateAt(50), positionRatio: 0.5, paused: false, playbackRate: 1 },
     ...over,
   }
 }
@@ -55,6 +61,7 @@ function target(over: Partial<SyncTarget> = {}): SyncTarget & { played: number; 
     readyState: 4,
     duration: DURATION,
     paused: false,
+    seeking: false,
     currentTime: 50,
     playbackRate: 1,
     played: 0,
@@ -100,9 +107,10 @@ describe('gates — when there is nothing to steer', () => {
     }
   })
 
-  it('does nothing without playback or primary state', () => {
+  it('does nothing without playback state', () => {
+    // The one absence with genuinely nothing to mirror: no position, no
+    // rate, not even play or pause.
     expect(syncVideoToState(target(), inputs({ playback: null })).kind).toBe('not-ready')
-    expect(syncVideoToState(target(), inputs({ primary: null })).kind).toBe('not-ready')
   })
 
   it('refuses an instant that will not parse rather than seeking to NaN', () => {
@@ -111,27 +119,125 @@ describe('gates — when there is nothing to steer', () => {
     // throws or silently does nothing depending on the browser.
     const video = target()
 
-    const out = syncVideoToState(video, inputs({
-      playback: { date: 'not-a-date', paused: false, playbackRate: 1 },
-    }))
+    const out = syncVideoToState(
+      video,
+      inputs({
+        playback: { date: 'not-a-date', positionRatio: 0.5, paused: false, playbackRate: 1 },
+      }),
+    )
 
-    expect(out.kind).toBe('not-ready')
+    // It falls through to the position path, which is a real steer —
+    // but never a NaN one.
+    expect(out.kind).toBe('no-range')
     expect(video.currentTime).toBe(50)
   })
+})
 
-  it('leaves a dataset with no time axis alone', () => {
-    // A looping animation has no date to be placed at. Seeking it to a
-    // number derived from nothing is worse than letting it loop.
-    const video = target()
+describe("no time axis — steering on the clip's own position", () => {
+  /** A looping animation: media, but no span to place a date in. */
+  function looping(over: Partial<SyncInputs> = {}): SyncInputs {
+    return inputs({
+      dataset: dataset({ startTime: null, endTime: null }),
+      primary: null,
+      playback: { date: null, positionRatio: 0.5, paused: false, playbackRate: 1 },
+      ...over,
+    })
+  }
+
+  it('starts a clip the output has never played', () => {
+    // The bug this path exists to close. An output decodes frame zero
+    // on load and then waits for something to call `play()`; the only
+    // call sat past a gate that rejected a dateless playback, so every
+    // SOS looping animation — Air Traffic among them — held its first
+    // frame on every output for the life of the window. On a 24-hour
+    // animation that reads as a *longitude* error, because the
+    // terminator and the burnt-in clock end up half a day out.
+    const video = target({ paused: true, currentTime: 0 })
+
+    const out = syncVideoToState(video, looping())
+
+    expect(out.kind).toBe('no-range')
+    expect(video.played).toBe(1)
+    expect(video.paused).toBe(false)
+  })
+
+  it("seeks to the primary's position in the clip when it is far off", () => {
+    const video = target({ currentTime: 10 })
+
+    const out = syncVideoToState(video, looping())
+
+    // Half of a 100 s clip.
+    expect(video.currentTime).toBe(50)
+    expect(out.seeked).toBe(true)
+    expect(out.driftS).toBeCloseTo(-40, 6)
+  })
+
+  it('leaves the playhead alone inside the hard-seek threshold', () => {
+    // The rule the dated path follows, for the same reason: a seek per
+    // frame is a visible stutter on a sphere in front of an audience.
+    const video = target({ currentTime: 50 + SIBLING_HARD_SEEK_THRESHOLD_S / 2 })
+
+    const out = syncVideoToState(video, looping())
+
+    expect(out.seeked).toBe(false)
+    expect(video.currentTime).toBe(50 + SIBLING_HARD_SEEK_THRESHOLD_S / 2)
+  })
+
+  it('mirrors a paused primary rather than running on', () => {
+    const video = target({ currentTime: 50 })
 
     const out = syncVideoToState(
       video,
-      inputs({ dataset: dataset({ startTime: null, endTime: null }) }),
+      looping({ playback: { date: null, positionRatio: 0.5, paused: true, playbackRate: 1 } }),
     )
 
-    expect(out.kind).toBe('no-range')
-    expect(video.currentTime).toBe(50)
-    expect(video.playbackRate).toBe(1)
+    expect(out.kind).toBe('paused')
+    expect(video.paused).toBe(true)
+    expect(video.played).toBe(0)
+  })
+
+  it("mirrors the primary's rate rather than assuming 1", () => {
+    // terraviz#229 in the dateless path: a tour's `frameRate` task sets
+    // the primary's rate alone, and an output running 1x against a
+    // 0.167x primary is six times too fast for the whole tour.
+    const video = target({ currentTime: 50 })
+
+    syncVideoToState(
+      video,
+      looping({ playback: { date: null, positionRatio: 0.5, paused: false, playbackRate: 0.167 } }),
+    )
+
+    expect(video.playbackRate).toBe(0.167)
+  })
+
+  it('seeks before it plays, so an ended clip is not rewound', () => {
+    // `play()` on an element sitting at its end rewinds to zero. Called
+    // before the seek it silently undoes it, and the output restarts
+    // the loop every frame instead of joining the primary.
+    const seenAtPlay: number[] = []
+    const video = target({ paused: true, currentTime: DURATION })
+    const inner = video.play.bind(video)
+    video.play = () => {
+      seenAtPlay.push(video.currentTime)
+      inner()
+    }
+
+    syncVideoToState(video, looping())
+
+    expect(seenAtPlay).toEqual([50])
+  })
+
+  it('treats a non-finite ratio as the start rather than seeking to NaN', () => {
+    const video = target({ currentTime: 50 })
+
+    syncVideoToState(
+      video,
+      looping({
+        playback: { date: null, positionRatio: Number.NaN, paused: false, playbackRate: 1 },
+      }),
+    )
+
+    expect(video.currentTime).toBe(0)
   })
 })
 
@@ -176,7 +282,7 @@ describe('steering', () => {
 
     const out = syncVideoToState(
       video,
-      inputs({ playback: { date: dateAt(50), paused: true, playbackRate: 1 } }),
+      inputs({ playback: { date: dateAt(50), positionRatio: 0.5, paused: true, playbackRate: 1 } }),
     )
 
     expect(out.kind).toBe('paused')
@@ -189,7 +295,7 @@ describe('steering', () => {
 
     syncVideoToState(
       video,
-      inputs({ playback: { date: dateAt(50), paused: true, playbackRate: 1 } }),
+      inputs({ playback: { date: dateAt(50), positionRatio: 0.5, paused: true, playbackRate: 1 } }),
     )
 
     expect(video.paused_).toBe(1)
@@ -202,7 +308,7 @@ describe('steering', () => {
 
     const out = syncVideoToState(
       video,
-      inputs({ playback: { date: before, paused: false, playbackRate: 1 } }),
+      inputs({ playback: { date: before, positionRatio: 0, paused: false, playbackRate: 1 } }),
     )
 
     expect(out.kind).toBe('out-of-range')
@@ -219,7 +325,7 @@ describe('steering', () => {
       const video = target({ currentTime: 50 })
       syncVideoToState(
         video,
-        inputs({ playback: { date: dateAt(50), paused: false, playbackRate: primaryPlaybackRate } }),
+        inputs({ playback: { date: dateAt(50), positionRatio: 0.5, paused: false, playbackRate: primaryPlaybackRate } }),
       )
       return video.playbackRate
     }
@@ -242,7 +348,7 @@ describe('steering', () => {
 
     syncVideoToState(
       video,
-      inputs({ playback: { date: dateAt(50), paused: true, playbackRate: 1 } }),
+      inputs({ playback: { date: dateAt(50), positionRatio: 0.5, paused: true, playbackRate: 1 } }),
     )
 
     expect(video.paused_).toBe(0)
@@ -267,5 +373,102 @@ describe('the reported drift', () => {
 
     expect(out.seeked).toBe(true)
     expect(out.driftS).toBeCloseTo(-40, 6)
+  })
+})
+
+describe('seek settling — not chasing a target the seek itself moved', () => {
+  /** Behind by 166 ms: what the debug HUD read in the field. */
+  const BEHIND_S = 0.166
+
+  it('leaves a seeking element alone', () => {
+    // Mid-seek, `currentTime` already reads the target while the frame
+    // on the glass is the old one. Any error computed here is fiction,
+    // and acting on it is the tightest turn of the loop.
+    const video = target({ seeking: true, currentTime: 10 })
+
+    const out = syncVideoToState(video, inputs())
+
+    expect(out.kind).toBe('seeking')
+    expect(video.currentTime).toBe(10)
+    expect(video.played).toBe(0)
+  })
+
+  it('seeks a drift past the threshold when nothing has seeked recently', () => {
+    const video = target({ currentTime: 50 - BEHIND_S })
+
+    const out = syncVideoToState(video, inputs())
+
+    expect(out.seeked).toBe(true)
+    expect(out.driftS).toBeCloseTo(-BEHIND_S, 6)
+  })
+
+  it('trims the same drift instead, inside the settle window', () => {
+    // The field bug. A seek is not instant: the element stalls, the
+    // decoder refills, and the primary plays on throughout, so the
+    // moment a seek lands the output is behind again by however long
+    // the seek took. Seeking that is a loop that manufactures the error
+    // it corrects — once per rAF, which is what "very choppy" was.
+    const video = target({ currentTime: 50 - BEHIND_S })
+
+    const out = syncVideoToState(video, inputs(), OUTPUT_SEEK_SETTLE_MS / 2)
+
+    expect(out.seeked).toBe(false)
+    expect(video.currentTime).toBe(50 - BEHIND_S)
+    // Behind, so it runs faster and closes the gap smoothly instead.
+    expect(video.playbackRate).toBeGreaterThan(1)
+  })
+
+  it('still seeks an error the trim could not close in that window', () => {
+    // A scrub, not a settling seek. Suppressing this one would strand
+    // the output seconds out with a control that visibly does nothing.
+    const video = target({ currentTime: 10 })
+
+    const out = syncVideoToState(video, inputs(), 0)
+
+    expect(out.seeked).toBe(true)
+    expect(video.currentTime).toBeCloseTo(50, 6)
+  })
+
+  it('reopens the window once the settle time has passed', () => {
+    const video = target({ currentTime: 50 - BEHIND_S })
+
+    expect(syncVideoToState(video, inputs(), OUTPUT_SEEK_SETTLE_MS).seeked).toBe(true)
+  })
+})
+
+describe('createPlayheadSync', () => {
+  const BEHIND_S = 0.166
+
+  function at(times: number[]): { sync: ReturnType<typeof createPlayheadSync>['sync'] } {
+    let i = 0
+    return createPlayheadSync(() => times[Math.min(i++, times.length - 1)] ?? 0)
+  }
+
+  it('suppresses the second seek and allows one after the window', () => {
+    const controller = at([0, 10, 20, OUTPUT_SEEK_SETTLE_MS + 1])
+    const video = target({ currentTime: 50 - BEHIND_S })
+    const state = inputs()
+
+    // Seeks, and lands where it was asked to.
+    expect(controller.sync(video, state).seeked).toBe(true)
+    // Two frames later the primary has moved on and the element is
+    // behind again — the loop's next turn, now refused.
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(false)
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(false)
+    // Past the window, one more correction is allowed.
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(true)
+  })
+
+  it('does not start the window on a call that did not seek', () => {
+    // Stamping every call would suppress the *first* seek after a quiet
+    // period, which is the one that matters.
+    const controller = at([0, 10])
+    const aligned = target({ currentTime: 50 })
+
+    expect(controller.sync(aligned, inputs()).seeked).toBe(false)
+    expect(controller.sync(target({ currentTime: 10 }), inputs()).seeked).toBe(true)
   })
 })

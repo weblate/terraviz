@@ -36,8 +36,13 @@
  */
 
 import { logger } from '../../utils/logger'
-import type { OutputMode } from './protocol'
-import type { OutputMonitor } from './manager'
+import {
+  DEFAULT_FRAMEBUFFER_WIDTH,
+  FRAMEBUFFER_WIDTHS,
+  type OutputMode,
+  type OutputRenderConfig,
+} from './protocol'
+import type { OutputMonitor, OutputRecord } from './manager'
 import type { OutputViewSettings } from './stateAggregator'
 
 export const OUTPUT_CONFIG_STORAGE_KEY = 'sos-multi-output-config'
@@ -81,6 +86,24 @@ export interface PersistedOutput {
   mode: OutputMode
   trackOperatorCamera: boolean
   split: boolean
+  /**
+   * This output's render settings (rung 11).
+   *
+   * Both are the operator's explicit choice, so both come back — the
+   * same rule every other field here follows. `debugOverlay` is the one
+   * worth pausing on, because a HUD that survives a relaunch could in
+   * principle greet an audience: it is persisted anyway, because it is
+   * *self-announcing* (it is drawn on the sphere, so it cannot be
+   * silently on) and because an operator diagnosing a fault across
+   * relaunches is exactly who this rung is for. The alternative — one
+   * setting that quietly does not come back — is a worse surprise.
+   *
+   * Added **without** a version bump: both are read with a default when
+   * absent, so a config written before rung 11 restores unchanged.
+   * Bumping would have reset every operator's outputs to buy nothing.
+   */
+  framebufferWidth: number
+  debugOverlay: boolean
 }
 
 export interface PersistedOutputConfig {
@@ -90,10 +113,48 @@ export interface PersistedOutputConfig {
    *  opens no IPC link — the plan's "an install that never enabled
    *  outputs pays nothing". */
   autoRestoreOnLaunch: boolean
+  /**
+   * How many concurrent video decoders this machine is trusted with
+   * (plan §"Cross-window decoder budget"), or `null` for "the operator
+   * has not said".
+   *
+   * **Machine-scoped, not per-output**, because the constraint is: one
+   * GPU and one media stack are shared by every window on the box, and
+   * the whole reason this field exists is that `maxVideoPanels()`
+   * answers per *window* and so cannot see the others.
+   *
+   * `null` rather than a stored default, so an unset budget keeps
+   * tracking what the machine reports instead of freezing whatever it
+   * reported the first time the panel was opened. A spike measured 16
+   * outputs at 8192×4096 running at full rate on a 4090 laptop, and the
+   * same code has to not crash an Intel-iGPU NUC — the value is a
+   * property of the deployment, and the only honest default is to ask
+   * the machine until someone who has measured it says otherwise.
+   */
+  concurrentDecoderBudget: number | null
 }
 
 export function defaultOutputConfig(): PersistedOutputConfig {
-  return { version: OUTPUT_CONFIG_VERSION, outputs: [], autoRestoreOnLaunch: false }
+  return {
+    version: OUTPUT_CONFIG_VERSION,
+    outputs: [],
+    autoRestoreOnLaunch: false,
+    concurrentDecoderBudget: null,
+  }
+}
+
+/**
+ * A stored budget, or `null` for anything that is not a usable one.
+ *
+ * Whole and at least 1: a budget of 0 refuses every output *and* every
+ * control panel, which reads as a broken app rather than as a setting,
+ * and a fractional one makes `used < budget` depend on where the
+ * rounding happens.
+ */
+export function parseDecoderBudget(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  const whole = Math.floor(value)
+  return whole >= 1 ? whole : null
 }
 
 /** The slice of `localStorage` this module uses. Injectable so a test
@@ -161,6 +222,10 @@ export function parseOutputConfig(raw: string | null): PersistedOutputConfig {
     version: OUTPUT_CONFIG_VERSION,
     outputs,
     autoRestoreOnLaunch: parsed.autoRestoreOnLaunch === true,
+    // Absent in a config written before rung 11c, and `null` there
+    // means the same thing it means today: nobody has measured this
+    // machine, so ask it. No version bump needed for that reason.
+    concurrentDecoderBudget: parseDecoderBudget(parsed.concurrentDecoderBudget),
   }
 }
 
@@ -184,7 +249,25 @@ function parseOutput(entry: unknown): PersistedOutput | null {
     mode,
     trackOperatorCamera: entry.trackOperatorCamera !== false,
     split: entry.split === true,
+    // Defaulted rather than required: an entry written before rung 11
+    // has neither key, and dropping it would cost an operator their
+    // outputs on the launch after an update.
+    //
+    // Only a real rung is accepted. The scene snaps anything else, so a
+    // stray number would not break an output — but it would leave the
+    // panel's picker showing a value it cannot offer while the window
+    // ran at a different one, and the operator with no way to tell.
+    // Narrowing it here means every later reader has a rung.
+    framebufferWidth: isFramebufferWidth(entry.framebufferWidth)
+      ? entry.framebufferWidth
+      : DEFAULT_FRAMEBUFFER_WIDTH,
+    debugOverlay: entry.debugOverlay === true,
   }
+}
+
+/** Whether a stored value names a framebuffer rung this build offers. */
+function isFramebufferWidth(value: unknown): value is number {
+  return (FRAMEBUFFER_WIDTHS as readonly number[]).includes(value as number)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,13 +308,19 @@ export function createOutputConfigStore(
   }
 }
 
-/** Project a live output into its persisted form. */
+/**
+ * Project a live output into its persisted form.
+ *
+ * Takes the record itself rather than its fields spread across
+ * positional parameters — `Pick` ties this to the manager's own shape,
+ * so a renamed field fails here instead of silently persisting
+ * `undefined`. The dependency is type-only, and the manager already
+ * flows the other way at runtime.
+ */
 export function toPersistedOutput(
-  label: string,
-  monitor: OutputMonitor,
-  mode: OutputMode,
-  view: OutputViewSettings,
+  output: Pick<OutputRecord, 'label' | 'monitor' | 'mode' | 'view' | 'render'>,
 ): PersistedOutput {
+  const { label, monitor, mode, view, render } = output
   return {
     label,
     monitorName: monitor.name,
@@ -242,7 +331,14 @@ export function toPersistedOutput(
     mode,
     trackOperatorCamera: view.trackCamera,
     split: view.split,
+    framebufferWidth: render.framebufferWidth,
+    debugOverlay: render.debugOverlay,
   }
+}
+
+/** The render settings a restored output comes back with. */
+export function renderConfigFrom(output: PersistedOutput): OutputRenderConfig {
+  return { framebufferWidth: output.framebufferWidth, debugOverlay: output.debugOverlay }
 }
 
 /**

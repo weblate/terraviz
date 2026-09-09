@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { until } from '../test-utils'
 import type { OutputMonitor, OutputRecord } from '../services/multiOutput/manager'
 import {
+  defaultRenderConfig,
+  type OutputRenderConfig,
+} from '../services/multiOutput/protocol'
+import {
   closeOutputUI,
   initOutputUI,
   monitorKey,
@@ -29,6 +33,7 @@ function record(label: string, on: OutputMonitor): OutputRecord {
     label,
     mode: 'sos-equirect',
     view: { trackCamera: true, split: false },
+    render: defaultRenderConfig(),
     monitor: on,
     ready: false,
     lastEvent: null,
@@ -46,6 +51,7 @@ function record(label: string, on: OutputMonitor): OutputRecord {
 function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
   const records: OutputRecord[] = []
   let restoreOnLaunch = false
+  let decoderBudget: number | null = null
   const mgr = {
     start: vi.fn(async () => {}),
     listMonitors: vi.fn(async () => monitors),
@@ -64,6 +70,17 @@ function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
     setOutputView: vi.fn(async (label: string, view: Record<string, boolean>) => {
       const rec = records.find(r => r.label === label)
       if (rec) Object.assign(rec.view, view)
+    }),
+    setOutputRenderConfig: vi.fn(
+      async (label: string, render: Partial<OutputRenderConfig>) => {
+        const rec = records.find(r => r.label === label)
+        if (rec) Object.assign(rec.render, render)
+      },
+    ),
+    framebufferWidths: vi.fn((): readonly number[] => [1024, 2048, 4096, 8192]),
+    decoderLoad: vi.fn(() => ({ used: 1 + records.length, budget: decoderBudget ?? 8 })),
+    setDecoderBudget: vi.fn((budget: number | null) => {
+      decoderBudget = budget
     }),
     isRestoreOnLaunch: vi.fn(() => restoreOnLaunch),
     setRestoreOnLaunch: vi.fn((enabled: boolean) => {
@@ -236,6 +253,208 @@ describe('the Outputs panel', () => {
     await until(() => $('.output-item') === null, 'the row to go')
     expect(raw.removeOutput).toHaveBeenCalledWith('output-1')
     expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(false)
+  })
+
+  it('shows what is spending the machine\'s decoder budget', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.decoderLoad.mockReturnValue({ used: 3, budget: 4 })
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    // Windows that can hold a decoder, across the control window and
+    // every output — the cross-window count `maxVideoPanels()` cannot
+    // see, which is the whole reason the field exists.
+    expect(document.body.textContent).toContain('3 of 4 video decoders in use')
+    expect($<HTMLInputElement>('.output-field-number')!.value).toBe('4')
+  })
+
+  it('refuses to offer Add when the budget is spent, and says what to close', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.decoderLoad.mockReturnValue({ used: 4, budget: 4 })
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    // The manager refuses this too and would throw; disabling here is
+    // the affordance, so an operator sees the machine is full rather
+    // than clicking and being told.
+    expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(true)
+    expect(document.body.textContent).toContain('No decoders left')
+  })
+
+  it('pins the budget and repaints against the new one', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.decoderLoad.mockReturnValue({ used: 4, budget: 4 })
+    mount(mgr)
+    await until(painted, 'the panel body')
+    expect($<HTMLButtonElement>('.output-add-btn')!.disabled).toBe(true)
+
+    raw.decoderLoad.mockReturnValue({ used: 4, budget: 16 })
+    const input = $<HTMLInputElement>('.output-field-number')!
+    input.value = '16'
+    input.dispatchEvent(new Event('change'))
+
+    await until(
+      () => $<HTMLButtonElement>('.output-add-btn')?.disabled === false,
+      'the Add button to come back',
+    )
+    expect(raw.setDecoderBudget).toHaveBeenCalledWith(16)
+    // The number gates the button and the warning above it, so unlike
+    // the per-output toggles this one does repaint.
+    expect(document.body.textContent).not.toContain('No decoders left')
+  })
+
+  it('clears the pin rather than storing an unusable budget', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    const input = $<HTMLInputElement>('.output-field-number')!
+    input.value = ''
+    input.dispatchEvent(new Event('change'))
+
+    // An emptied box means "I have not measured this machine", and the
+    // manager answers with what the machine reports — never 0, which
+    // would refuse every output and every globe panel.
+    await until(() => raw.setDecoderBudget.mock.calls.length === 1, 'the budget write')
+    expect(raw.setDecoderBudget).toHaveBeenCalledWith(null)
+  })
+
+  it('pushes the debug overlay on its own channel, not as a view change', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    // Scoped to the row: the launch opt-in wears the same class, and an
+    // unscoped index would silently start meaning a different control
+    // the next time a section moves.
+    const boxes = $$('.output-item .output-toggle-box') as HTMLInputElement[]
+    // Three switches on a row now, and the HUD is the third.
+    expect(boxes).toHaveLength(3)
+    const overlay = boxes[2]
+    expect(overlay.checked).toBe(false)
+
+    overlay.checked = true
+    overlay.dispatchEvent(new Event('change'))
+
+    await until(() => raw.setOutputRenderConfig.mock.calls.length === 1, 'the config push')
+    expect(raw.setOutputRenderConfig).toHaveBeenCalledWith('output-1', {
+      debugOverlay: true,
+    })
+    // Window configuration, not globe state: routing this through
+    // `setOutputView` would put a checkbox inside the sequence the
+    // aggregator diffs.
+    expect(raw.setOutputView).not.toHaveBeenCalled()
+  })
+
+  it('puts the debug checkbox back when the output refuses it', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.setOutputRenderConfig.mockRejectedValue(new Error('output is gone'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const overlay = ($$('.output-item .output-toggle-box') as HTMLInputElement[])[2]
+    overlay.checked = true
+    overlay.dispatchEvent(new Event('change'))
+
+    await until(() => overlay.disabled === false, 'the in-flight guard to clear')
+    // A control that claims a state the output is not in is worse than
+    // one that visibly refuses.
+    expect(overlay.checked).toBe(false)
+  })
+
+  it('offers the rungs the manager reports, not a list of its own', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.framebufferWidths.mockReturnValue([2048, 4096])
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    // Read through the manager because `outputUI` may not import
+    // `multiOutput/` at runtime — a hard-coded ladder here would be a
+    // second copy free to disagree with the one the output snaps to.
+    expect([...select.options].map(o => o.value)).toEqual(['2048', '4096'])
+    expect([...select.options].map(o => o.textContent)).toEqual([
+      '2048×1024',
+      '4096×2048',
+    ])
+  })
+
+  it('starts on the resolution the output is actually running', async () => {
+    const { mgr, records } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    expect($<HTMLSelectElement>('.output-field-select')!.value).toBe(
+      String(records[0].render.framebufferWidth),
+    )
+  })
+
+  it('pushes a resolution change on the config channel', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    select.value = '8192'
+    select.dispatchEvent(new Event('change'))
+
+    await until(() => raw.setOutputRenderConfig.mock.calls.length === 1, 'the config push')
+    // A number, not the select's string: `setSize` would take '8192'
+    // and produce a buffer of NaN by NaN.
+    expect(raw.setOutputRenderConfig).toHaveBeenCalledWith('output-1', {
+      framebufferWidth: 8192,
+    })
+  })
+
+  it('puts the picker back on the running resolution when the change fails', async () => {
+    const { mgr, raw } = fakeManager()
+    raw.setOutputRenderConfig.mockRejectedValue(new Error('out of GPU memory'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    const before = select.value
+    select.value = '8192'
+    select.dispatchEvent(new Event('change'))
+
+    await until(() => select.disabled === false, 'the in-flight guard to clear')
+    // An 8K allocation is exactly the change that can be refused, and a
+    // picker left claiming 8192 would send an operator hunting a
+    // performance problem on a buffer that never existed.
+    expect(select.value).toBe(before)
+  })
+
+  it('shows a width off the ladder rather than a blank select', async () => {
+    const { mgr, records } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => $('.output-item') !== null, 'the new output row')
+    // A record from somewhere the parse did not narrow.
+    records[0].render.framebufferWidth = 3000
+    closeOutputUI()
+    openOutputUI()
+    await until(() => $('.output-item') !== null, 'the repainted row')
+
+    const select = $<HTMLSelectElement>('.output-field-select')!
+    // Not rounded to a neighbour the output is not running, and not
+    // blank — a blank select reads as a broken panel.
+    expect(select.value).toBe('3000')
+    expect(select.options[0].textContent).toBe('3000×1500')
   })
 
   it('pushes a view toggle straight to that output', async () => {

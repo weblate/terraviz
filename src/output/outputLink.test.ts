@@ -17,6 +17,7 @@ import {
   OUTPUT_MODE,
   connectOutputLink,
   createOutputStateStore,
+  isRenderConfig,
   isStateMessage,
   outputInitialState,
   type OutputLinkHost,
@@ -24,7 +25,9 @@ import {
 import { IDENTITY_PARAMS } from './equirectRtt'
 import {
   OUTPUT_EVENT,
+  OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
+  defaultRenderConfig,
   type MirroredDataset,
   type OutputGlobeState,
   type OutputStateMessage,
@@ -237,41 +240,56 @@ describe('isStateMessage', () => {
 function fakeHost(): OutputLinkHost & {
   emit: ReturnType<typeof vi.fn>
   deliver: (payload: unknown) => void
+  deliverConfig: (payload: unknown) => void
   listenedBefore: () => boolean
 } {
-  let handler: ((payload: unknown) => void) | null = null
+  // Keyed by event: the link listens on two channels now, and a fake
+  // that kept one handler would silently route state to the config
+  // listener — which is exactly the bug the two channels exist to make
+  // impossible, hidden inside the test harness.
+  const handlers = new Map<string, (payload: unknown) => void>()
   let emitted = false
-  let listenedFirst = false
+  // Any listen at all after the emit, not just the last one: the
+  // question is whether *every* channel was live before the manager was
+  // told to start talking, and a flag overwritten per call answers a
+  // weaker one.
+  let listenedLate = false
   const emit = vi.fn(async () => {
     emitted = true
   })
   return {
     label: 'output-3',
     monitorName: async () => '\\\\.\\DISPLAY2',
-    listen: async (_event, h) => {
-      handler = h
-      listenedFirst = !emitted
+    listen: async (event, h) => {
+      handlers.set(event, h)
+      if (emitted) listenedLate = true
       return () => {
-        handler = null
+        handlers.delete(event)
       }
     },
     emit,
-    deliver: payload => handler?.(payload),
-    listenedBefore: () => listenedFirst,
+    deliver: payload => handlers.get(OUTPUT_STATE_EVENT)?.(payload),
+    deliverConfig: payload => handlers.get(OUTPUT_RENDER_CONFIG_EVENT)?.(payload),
+    listenedBefore: () => handlers.size > 0 && !listenedLate,
   }
 }
 
 describe('connectOutputLink', () => {
-  it('installs the listener before announcing the window', async () => {
+  it('installs both listeners before announcing the window', async () => {
     const host = fakeHost()
+    const listen = vi.spyOn(host, 'listen')
 
     await connectOutputLink(host)
 
-    // The manager replies to `output_ready` with the first full
-    // snapshot immediately. Announcing first races the listener against
-    // that reply, and the output sits on the idle Earth until the next
-    // heartbeat a second later.
+    // The manager replies to `output_ready` with this window's render
+    // config and the first full snapshot immediately. Announcing first
+    // races the listeners against that reply: the output would sit on
+    // the idle Earth until the next heartbeat a second later, and would
+    // lose its resolution until the operator next changed it.
     expect(host.listenedBefore()).toBe(true)
+    expect(listen.mock.calls.map(c => c[0]).sort()).toEqual(
+      [OUTPUT_RENDER_CONFIG_EVENT, OUTPUT_STATE_EVENT].sort(),
+    )
   })
 
   it('announces itself with its label, monitor and mode', async () => {
@@ -371,5 +389,135 @@ describe('connectOutputLink', () => {
     const link = await connectOutputLink(fakeHost())
     await link.stop()
     await expect(link.stop()).resolves.toBeUndefined()
+  })
+})
+
+describe('isRenderConfig', () => {
+  it('accepts a well-formed config', () => {
+    expect(isRenderConfig({ framebufferWidth: 8192, debugOverlay: true })).toBe(true)
+  })
+
+  it.each([
+    ['null', null],
+    ['a string', 'output_render_config'],
+    ['a missing width', { debugOverlay: false }],
+    ['a missing flag', { framebufferWidth: 4096 }],
+    ['a non-numeric width', { framebufferWidth: '4096', debugOverlay: false }],
+    ['a NaN width', { framebufferWidth: Number.NaN, debugOverlay: false }],
+    ['a non-boolean flag', { framebufferWidth: 4096, debugOverlay: 1 }],
+  ])('rejects %s', (_label, payload) => {
+    // Same posture as `isStateMessage`: fail closed, cost one dropped
+    // message. The scene clamps an unusable *number* up to its lowest
+    // rung, so nothing here reaches `setSize` as a zero — what this
+    // rejects is a payload that is not a config at all, which would
+    // otherwise overwrite a real one with garbage and be reported to
+    // every listener as the operator's choice.
+    expect(isRenderConfig(payload)).toBe(false)
+  })
+})
+
+describe('the render-config channel', () => {
+  it('starts at the contract default rather than at nothing', async () => {
+    const link = await connectOutputLink(fakeHost())
+
+    // A window that rendered at no resolution until a config arrived
+    // would be black for the length of the handshake.
+    expect(link.renderConfig()).toEqual(defaultRenderConfig())
+  })
+
+  it('holds what the manager sent and tells its listeners', async () => {
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    const seen = vi.fn()
+    link.onRenderConfig(seen)
+
+    host.deliverConfig({ framebufferWidth: 8192, debugOverlay: true })
+
+    expect(link.renderConfig()).toEqual({ framebufferWidth: 8192, debugOverlay: true })
+    expect(seen).toHaveBeenCalledWith({ framebufferWidth: 8192, debugOverlay: true })
+  })
+
+  it('delivers every config, including one that changed nothing', async () => {
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    const seen = vi.fn()
+    link.onRenderConfig(seen)
+
+    host.deliverConfig({ framebufferWidth: 8192, debugOverlay: false })
+    host.deliverConfig({ framebufferWidth: 8192, debugOverlay: false })
+
+    // Unlike state, which is diffed because a heartbeat restates it
+    // every second. Nothing repeats on this channel unasked, so a
+    // second message means the operator did something twice, and the
+    // consumer's own setters are the idempotent ones.
+    expect(seen).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the config it holds when a malformed one arrives', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    host.deliverConfig({ framebufferWidth: 8192, debugOverlay: true })
+
+    host.deliverConfig({ framebufferWidth: 'wide' })
+
+    // Dropping the bad message is right; letting it blank the settings
+    // would drop an 8K installation to a default nobody chose.
+    expect(link.renderConfig()).toEqual({ framebufferWidth: 8192, debugOverlay: true })
+  })
+
+  it('does not route state onto the config channel', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    const seen = vi.fn()
+    link.onRenderConfig(seen)
+
+    host.deliver(diff(1, { dataset: dataset('SST') }))
+
+    expect(seen).not.toHaveBeenCalled()
+    // The positive anchor: the state channel did take it.
+    expect(link.state().dataset?.id).toBe('SST')
+  })
+
+  it('isolates a config listener that throws', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    const good = vi.fn()
+    link.onRenderConfig(() => {
+      throw new Error('framebuffer reallocation failed')
+    })
+    link.onRenderConfig(good)
+
+    expect(() =>
+      host.deliverConfig({ framebufferWidth: 1024, debugOverlay: false }),
+    ).not.toThrow()
+    expect(good).toHaveBeenCalledTimes(1)
+  })
+
+  it('detaches the config listener on stop too', async () => {
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    const seen = vi.fn()
+    link.onRenderConfig(seen)
+
+    await link.stop()
+    host.deliverConfig({ framebufferWidth: 1024, debugOverlay: true })
+
+    expect(seen).not.toHaveBeenCalled()
+  })
+
+  it('unsubscribes one listener without touching the others', async () => {
+    const host = fakeHost()
+    const link = await connectOutputLink(host)
+    const stays = vi.fn()
+    const off = link.onRenderConfig(vi.fn())
+    link.onRenderConfig(stays)
+
+    off()
+    host.deliverConfig({ framebufferWidth: 1024, debugOverlay: false })
+
+    expect(stays).toHaveBeenCalledTimes(1)
   })
 })

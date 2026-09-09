@@ -22,9 +22,12 @@
  *   `SIBLING_HARD_SEEK_THRESHOLD_S` and `SIBLING_SEEK_EPS_S` are tuned
  *   values in `src/utils/time.ts` with measurements behind them. The
  *   output imports them from there. A copy is a copy that drifts.
- * - **The decoder budget.** `DEFAULT_CONCURRENT_DECODERS` belongs with
- *   the code that counts decoders (`src/output/datasetMirror.ts`), not
- *   with the wire format.
+ * - **The decoder budget.** It belongs with the code that counts
+ *   decoders, not with the wire format. That turned out to be the
+ *   *manager* rather than `datasetMirror` — the count is cross-window
+ *   and an output can only see itself — so it landed as
+ *   `PersistedOutputConfig.concurrentDecoderBudget` in
+ *   `outputPersistence.ts`, machine-scoped and operator-settable.
  * - **`PersistedOutputConfig`.** That is the manager's on-disk shape,
  *   not something an output ever receives. It lands with persistence.
  */
@@ -171,8 +174,34 @@ export interface MirroredPrimary {
  * and it is what the read-back verification layer compares against.
  */
 export interface MirroredPlayback {
-  /** ISO 8601. The real-world instant the primary is showing. */
-  date: string
+  /**
+   * ISO 8601 — the real-world instant the primary is showing — or
+   * `null` for a dataset with **no time axis**.
+   *
+   * Nullable rather than absent, and the whole record published rather
+   * than withheld, because a dataset without `startTime`/`endTime` still
+   * has transport state an output must mirror: whether it is running,
+   * and how fast. Withholding the record was the shipped behaviour, and
+   * it left every such dataset frozen on its first decoded frame —
+   * `syncVideoToState`'s only `play()` sits past the gate that rejected
+   * a null playback. On a 24-hour animation that reads as a *longitude*
+   * error rather than a time one, because the terminator and any
+   * burnt-in clock are then half a day out from the operator's globe.
+   * That is how it was first reported from hardware.
+   */
+  date: string | null
+  /**
+   * Position within the clip, 0-1.
+   *
+   * The one position measure that survives having no time axis, and the
+   * reason a raw `currentTime` still does not cross: a ratio is
+   * comparable across renditions, and `hlsService` resolves a rendition
+   * per instance, so an output's element is not required to be the same
+   * encode as the primary's. With a time axis this is redundant with
+   * `date` and unread; without one it is the only thing keeping two
+   * copies of a looping animation together.
+   */
+  positionRatio: number
   paused: boolean
   /**
    * The primary's **current** rate. Never assume `1`.
@@ -389,6 +418,84 @@ export type MirroredGlobeState = GlobeState<SharedView>
 /** What one output receives, after `projectView` has resolved the
  *  shared camera into that output's own geometry. */
 export type OutputGlobeState = GlobeState<MirroredView>
+
+// --- Output window configuration ---
+
+/**
+ * Framebuffer widths the resolution picker offers, and the one place
+ * both ends agree on them.
+ *
+ * Here rather than in `outputScene` because **both ends need the
+ * list**: the Outputs panel offers it, the output snaps a requested
+ * width to it. `outputUI` cannot import the output bundle — it is
+ * pulled eagerly by `main.ts`, so a value import from `src/output/`
+ * would drag the scene and its Three seams into the web entry chunk —
+ * and a second copy in the panel is a copy that drifts from the rungs
+ * the renderer actually supports.
+ *
+ * Heights are always half: an equirectangular frame that is not 2:1 is
+ * not equirectangular. That is a property of *this projection*, not of
+ * outputs in general — a second `OutputMode` brings its own ladder
+ * rather than widening this one (plan §"Geometry is a per-output
+ * configuration").
+ */
+export const FRAMEBUFFER_WIDTHS = [1024, 2048, 4096, 8192] as const
+
+export type FramebufferWidth = (typeof FRAMEBUFFER_WIDTHS)[number]
+
+/** What an output renders at by default. The middle of the ladder:
+ *  8192 costs 128 MiB a window and 1024 is a preview rung. */
+export const DEFAULT_FRAMEBUFFER_WIDTH: FramebufferWidth = 4096
+
+/** Event name for manager → output window configuration. */
+export const OUTPUT_RENDER_CONFIG_EVENT = 'output_render_config'
+
+/**
+ * How one output window should render, as opposed to *what* it should
+ * render.
+ *
+ * A separate channel from `OUTPUT_STATE_EVENT`, deliberately. Globe
+ * state and window configuration change for different reasons, on
+ * different schedules, and land on different things: state drives the
+ * shader's uniforms and the decoder, config drives the renderer's
+ * framebuffer and a DOM overlay. Folding these into `GlobeState` would
+ * put a window setting inside the structure the aggregator diffs and
+ * sequences — paying coalescing and `seq` for values that are
+ * last-write-wins by nature, and making a per-output setting part of a
+ * type whose whole point is that it describes one globe.
+ *
+ * No `seq`, for that reason: there is no ordering hazard in a setting
+ * whose latest value is the only one that matters, and inventing one
+ * would imply a guarantee this channel does not need.
+ */
+export interface OutputRenderConfig {
+  /** Snapped to `FRAMEBUFFER_WIDTHS` by the output; height is derived. */
+  framebufferWidth: number
+  /** Whether to draw the debug HUD over the projection. */
+  debugOverlay: boolean
+}
+
+/**
+ * What an output renders at before anyone has said otherwise.
+ *
+ * The one function in this module, and it earns the exception: both
+ * ends need these defaults — the manager to seed a new output's record,
+ * the output to have something to render with while the handshake is in
+ * flight — and two copies of a two-field literal is exactly the drift a
+ * shared contract exists to prevent. It builds a fresh object rather
+ * than exporting a shared one, because a module-scoped default that a
+ * caller mutates in place is a default that silently changes for
+ * everyone (the aliasing `outputInitialState` guards against with
+ * `IDENTITY_PARAMS`).
+ *
+ * It matters that the default is not "nothing": an output that rendered
+ * at no resolution until a config arrived would show a black window for
+ * the length of the handshake, and black on an output is the one thing
+ * indistinguishable from a real failure.
+ */
+export function defaultRenderConfig(): OutputRenderConfig {
+  return { framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH, debugOverlay: false }
+}
 
 // --- Manager → output ---
 

@@ -80,6 +80,17 @@ export interface MultiOutputBootOptions {
    *  importer, so overriding this is what makes the whole path testable
    *  without a packaged desktop build. */
   createHost?: () => Promise<MultiOutputHost>
+  /**
+   * How many panels the control window is holding, for the decoder
+   * budget (plan §"Cross-window decoder budget").
+   *
+   * Passed through rather than read here, and the indirection earns
+   * itself: the manager must not know what a viewport is, and
+   * `viewportManager` must not know what an output is. `main.ts` owns
+   * both and is the only place the two legitimately meet — which is
+   * exactly the seam this module already exists to be.
+   */
+  controlPanels?: () => number
 }
 
 export interface MultiOutputBootHandle {
@@ -192,7 +203,7 @@ export function startMultiOutput(
       const host = await (options.createHost ?? mod.createTauriHost)()
       // Checked after *both* awaits: stop() can land during either.
       if (stopped) return null
-      manager = new mod.MultiOutputManager(host)
+      manager = new mod.MultiOutputManager(host, { controlPanels: options.controlPanels })
       // Drained in publication order: `applyState` folds into the
       // aggregator synchronously before its first await, so a loop of
       // un-awaited calls still applies them in order.

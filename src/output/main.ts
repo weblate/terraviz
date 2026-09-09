@@ -28,6 +28,7 @@
 
 import './output.css'
 import { createDatasetMirror } from './datasetMirror'
+import { OVERLAY_REFRESH_MS, createDebugOverlay, createFpsMeter } from './debugOverlay'
 import { connectOutputLink, createTauriLinkHost } from './outputLink'
 import {
   contentKindFor,
@@ -35,6 +36,9 @@ import {
   shouldRenderFrame,
   type OutputLayerInput,
 } from './outputScene'
+import type { SyncOutcome } from './outputSync'
+import { createFullscreenController, resolveChromeHost } from '../services/windowChrome'
+import type { OutputRenderConfig } from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
 
 /** The same gate `bootMultiOutput` applies on the control side. */
@@ -63,7 +67,48 @@ async function boot(): Promise<void> {
   // canvas is indistinguishable from a failed boot on a projector.
   let dirty = true
 
+  const fpsMeter = createFpsMeter()
+  let fps = 0
+  let lastFpsSample = 0
+  /** The last correction `outputSync` computed, reported by the HUD
+   *  rather than recomputed there — see `SyncOutcome.driftS`. */
+  let lastSync: SyncOutcome | null = null
+  /** Queried once and remembered. The string is fixed for the life of
+   *  the GL context, and `undefined` — not `null` — is the "not asked
+   *  yet" marker, so a driver that *refuses* the query is not re-asked
+   *  twice a second for the life of the installation. */
+  let gpu: string | null | undefined
+  const gpuName = (): string | null => {
+    if (gpu === undefined) gpu = scene.rendererName()
+    return gpu
+  }
+
+  // Mounted unconditionally and hidden. It costs one no-op timer
+  // callback twice a second — `refresh` returns before reading anything
+  // while hidden — and in exchange the toggle is instant, which is what
+  // an operator standing at the sphere is actually doing with it.
+  const overlay = createDebugOverlay(() => ({
+    // The mirror, not the link: what this window decoded, not what the
+    // control window last said. During a load those differ, and the
+    // useful answer is what is on the glass.
+    datasetId: mirror.currentDataset()?.id ?? null,
+    driftS: lastSync?.driftS ?? null,
+    fps,
+    gpu: gpuName(),
+    framebuffer: scene.size,
+  }))
+
   if (isDesktop()) {
+    // F11 as the escape hatch (§3.6 mechanism 4). An output is spawned
+    // fullscreen and decorationless, which is right for a capture
+    // surface and leaves an operator during calibration with a window
+    // they cannot grab, move or close — so `initial: true`, because a
+    // controller that assumed windowed would make the first press a
+    // no-op. Nothing is persisted: an output has no fullscreen
+    // *preference*, it is fullscreen by construction, and a title bar
+    // borrowed for a minute must not come back on the next launch.
+    createFullscreenController({ host: resolveChromeHost(), initial: true })
+
     try {
       const link = await connectOutputLink(await createTauriLinkHost())
 
@@ -114,11 +159,31 @@ async function boot(): Promise<void> {
         dirty = true
       })
 
+      /**
+       * Window configuration, which travels on its own channel.
+       *
+       * Applied idempotently, because both callers can deliver the same
+       * value: `setFramebufferWidth` no-ops on an unchanged snapped
+       * size, and `setVisible` on an unchanged flag costs one repaint.
+       */
+      const applyConfig = (config: OutputRenderConfig): void => {
+        scene.setFramebufferWidth(config.framebufferWidth)
+        overlay.setVisible(config.debugOverlay)
+        dirty = true
+      }
+      link.onRenderConfig(applyConfig)
+      // Not merely defensive: the manager answers `output_ready` with a
+      // config, and that reply can land while `connectOutputLink` is
+      // still awaiting its own emit — before this listener exists. The
+      // link holds what arrived, so reading it once here is what stops a
+      // config being silently dropped in that window.
+      applyConfig(link.renderConfig())
+
       // Steered here rather than inside the listener: see the header.
       const steer = (): void => {
         const state = link.state()
         const before = mirror.current()?.video?.currentTime
-        mirror.sync({
+        lastSync = mirror.sync({
           dataset: state.dataset,
           primary: state.primary,
           playback: state.playback,
@@ -148,8 +213,22 @@ async function boot(): Promise<void> {
     const kind = contentKindFor(mirror.current())
     if (shouldRenderFrame({ kind, sinceLastFrameMs: now - lastFrame, dirty })) {
       scene.render()
+      // Counted on drawn frames, not on rAF callbacks: the question the
+      // HUD answers is whether this output is painting, and for static
+      // content the honest answer is the 1 Hz floor rather than the
+      // display's refresh rate.
+      fpsMeter.tick(now)
       lastFrame = now
       dirty = false
+    }
+    // Sampled from the rAF loop rather than from the HUD's reader, so
+    // the window stays ~500 ms even while the output is drawing at 1 Hz
+    // — and so the reader stays pure, since `sample()` resets the
+    // window and a hidden HUD would otherwise hand its first reading an
+    // average over however long it was hidden.
+    if (now - lastFpsSample >= OVERLAY_REFRESH_MS) {
+      fps = fpsMeter.sample(now)
+      lastFpsSample = now
     }
     requestAnimationFrame(tick)
   }
