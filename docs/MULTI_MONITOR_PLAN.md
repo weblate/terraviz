@@ -606,6 +606,30 @@ not a porting question at all.
 | Ground shadow | a scene to cast onto | **Meaningless.** |
 | Sun sprite | a billboard in world space | **Meaningless.** |
 
+**Two traps this path sets, both sprung on the first build.**
+
+*The sun's frame, not its source.* `photorealEarth`'s
+`sunDirectionFromLatLng` builds its vector for the globe **mesh**,
+and negates Z relative to `equirectRtt`'s `latLonToDirection`.
+Borrowing that handle's `sunDir` therefore mirrors the sun in
+longitude and lights the opposite hemisphere — the Americas went
+dark while the control globe had them in daylight. Sharing
+`getSunPosition` does not fix it and never could; what matters is
+that the sun and the camera are derived through the *same*
+lat/lon-to-direction function, which makes the frames agree by
+construction rather than by coincidence.
+
+*One module's calibration, end to end.* The cloud asset is shared
+but the curve that turns it into coverage is not.
+`earthTileLayer` computes alpha in-shader with a gamma of **1.8**,
+which suppresses haze; `photorealEarth` bakes it onto a canvas at
+**0.55**, which lifts haze, because it is feeding a lit shell seen
+from outside. Splicing that texture into the other's opacity turned
+a light haze into a ~30% white wash over the whole day side, greyed
+the oceans, and — once the night-side alpha boost multiplied it —
+clamped the night to solid black. Take the raw asset and bring the
+whole curve, or take neither.
+
 The four that do not cross are not blocked; they are
 **incoherent on this surface**. An equirectangular unwrap shows
 every point of the sphere at once, so it has no limb and no

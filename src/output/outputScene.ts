@@ -68,8 +68,12 @@ import {
   EQUIRECT_UNIFORMS,
   EQUIRECT_ASPECT,
   IDENTITY_PARAMS,
+  latLonToDirection,
   type EquirectParams,
 } from './equirectRtt'
+import { getSunPosition } from '../utils/time'
+import { getCloudTextureUrl } from '../utils/deviceCapability'
+import { logger } from '../utils/logger'
 import {
   DECORATION_UNIFORMS,
   MAX_OUTPUT_LAYERS,
@@ -183,6 +187,27 @@ export interface OutputSceneDeps {
    *  chunk is shared and the page stays light until it renders. */
   loadThree?: () => Promise<ThreeModule>
   createEarth?: typeof import('../services/photorealEarth').createPhotorealEarth
+  /**
+   * The cloud asset, as a raw decoded image.
+   *
+   * Its own seam rather than a branch of `createEarth`, because this
+   * module wants the source luminance and that module hands out alpha
+   * baked at a gamma tuned for a different surface. Resolving `null`
+   * means "no clouds", which is a correct Earth rather than a failure.
+   */
+  loadCloudImage?: () => Promise<TexImageSource | null>
+}
+
+/** Decodes the shared cloud asset. `crossOrigin` because the CDN copy
+ *  is another origin and a tainted image cannot be uploaded. */
+function defaultLoadCloudImage(): Promise<TexImageSource | null> {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => resolve(null)
+    img.src = getCloudTextureUrl()
+  })
 }
 
 export interface OutputSceneOptions {
@@ -396,13 +421,12 @@ export async function createOutputScene(
   const earth = createEarth(THREE_, {
     includeLighting: false,
     includeAtmosphere: false,
-    // On for the *texture*, not the mesh. Rung 12c composites clouds
-    // itself, and this flag is what starts the fetch that produces
-    // `cloudTexture`; the shell it also builds is inert because
-    // nothing here ever calls `addTo`, so it costs one small geometry
-    // and no draw. Re-fetching the asset on this side instead would
-    // duplicate the loader and its luminance-to-alpha preprocessing.
-    includeClouds: true,
+    // Off, and the clouds are loaded here instead — see
+    // `loadCloudImage`. This module needs the *raw* asset: that
+    // loader bakes luminance to alpha at a gamma tuned for a lit shell
+    // seen from outside, and splicing it into this composite's opacity
+    // washed the whole day side grey.
+    includeClouds: false,
     includeSun: false,
     includeShadow: false,
   })
@@ -424,10 +448,15 @@ export async function createOutputScene(
       ),
     },
     [EQUIRECT_UNIFORMS.split]: { value: (options.params ?? IDENTITY_PARAMS).split },
-    // Copied from `earth.sunDir` on every draw rather than owned here,
-    // so the output and the control globe cannot disagree about where
-    // the sun is — they read one `getSunPosition`.
-    [DECORATION_UNIFORMS.sunDir]: { value: new THREE_.Vector3().copy(earth.sunDir) },
+    // Derived here through `latLonToDirection`, **not** copied from
+    // `earth.sunDir`. Sharing `getSunPosition` is not enough: that
+    // handle's vector is built for the globe *mesh*'s frame, which
+    // negates Z relative to this one, so borrowing it put the sun at
+    // the mirrored longitude and lit the wrong hemisphere. Running the
+    // subsolar point through the same function `cameraOffsetForCamera`
+    // uses puts the sun and the camera in one frame by construction,
+    // which is the property that actually matters.
+    [DECORATION_UNIFORMS.sunDir]: { value: new THREE_.Vector3(1, 0, 0) },
     [DECORATION_UNIFORMS.dayNight]: { value: 1 },
     // Bound to the base Earth until the real maps land, never to
     // `null`, for the reason the sphere sampler is: an unbound sampler
@@ -437,12 +466,11 @@ export async function createOutputScene(
     [DECORATION_UNIFORMS.lightsMap]: { value: earth.baseEarthTexture },
     [DECORATION_UNIFORMS.hasLights]: { value: earth.nightLightsTexture ? 1 : 0 },
     [DECORATION_UNIFORMS.cloudMap]: { value: earth.baseEarthTexture },
-    [DECORATION_UNIFORMS.hasCloud]: { value: earth.cloudTexture ? 1 : 0 },
+    [DECORATION_UNIFORMS.hasCloud]: { value: 0 },
   }
   if (earth.nightLightsTexture) {
     uniforms[DECORATION_UNIFORMS.lightsMap].value = earth.nightLightsTexture
   }
-  if (earth.cloudTexture) uniforms[DECORATION_UNIFORMS.cloudMap].value = earth.cloudTexture
 
   /**
    * Rebuilt whenever the slot *count* changes, and only then.
@@ -479,6 +507,10 @@ export async function createOutputScene(
   // un-flagged upgrade would not reach the sphere for up to a second,
   // which on a projector reads as a resolution pop.
   let textureUpgraded = false
+  /** Set once the async cloud fetch lands, so `dispose` can free it and
+   *  a teardown mid-fetch can drop it. */
+  let cloudTexture: (TextureLike & { needsUpdate: boolean }) | null = null
+  let disposed = false
   const unsubscribeDiffuse = earth.onBaseDiffuseChange(tex => {
     uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = tex
     textureUpgraded = true
@@ -491,11 +523,24 @@ export async function createOutputScene(
     uniforms[DECORATION_UNIFORMS.hasLights].value = 1
     textureUpgraded = true
   })
-  const unsubscribeCloud = earth.onCloudChange(tex => {
-    uniforms[DECORATION_UNIFORMS.cloudMap].value = tex
-    uniforms[DECORATION_UNIFORMS.hasCloud].value = 1
-    textureUpgraded = true
-  })
+  // Loaded here rather than through the Earth handle: this composite
+  // needs the raw asset, not that module's pre-baked alpha. Failure
+  // costs the clouds and nothing else — an Earth without them is a
+  // correct picture, and an output that refused to boot is not.
+  const loadCloudImage = deps.loadCloudImage ?? defaultLoadCloudImage
+  void loadCloudImage()
+    .then((img: TexImageSource | null) => {
+      if (!img || disposed) return
+      const tex = new (THREE_ as unknown as {
+        Texture: new (i: unknown) => TextureLike & { needsUpdate: boolean }
+      }).Texture(img)
+      tex.needsUpdate = true
+      cloudTexture = tex
+      uniforms[DECORATION_UNIFORMS.cloudMap].value = tex
+      uniforms[DECORATION_UNIFORMS.hasCloud].value = 1
+      textureUpgraded = true
+    })
+    .catch((err: unknown) => logger.warn('[Output] cloud texture unavailable:', err))
 
   /** What is bound to each slot, so a `setLayers` that changes only
    *  metadata can keep the decoder's texture rather than rebuilding
@@ -521,15 +566,18 @@ export async function createOutputScene(
       return was
     },
     render() {
-      // Here rather than in the caller's rAF: `update()` self-throttles
-      // the subsolar recompute to its own interval, so calling it on
-      // drawn frames only is both current and free. Deliberately no
-      // dirty flag — the sun moves ~0.004 degrees a second, and the
-      // 1 Hz static floor already redraws faster than that is visible.
-      earth.update()
-      ;(uniforms[DECORATION_UNIFORMS.sunDir].value as { copy: (v: unknown) => void }).copy(
-        earth.sunDir,
-      )
+      // On drawn frames only, and unthrottled: `getSunPosition` is pure
+      // arithmetic, so recomputing it at the draw rate costs less than
+      // the machinery to avoid it. Deliberately no dirty flag — the sun
+      // moves ~0.004 degrees a second, and the 1 Hz static floor
+      // already redraws faster than that is visible.
+      const sun = getSunPosition(new Date())
+      const dir = latLonToDirection(sun.lat, sun.lng)
+      ;(
+        uniforms[DECORATION_UNIFORMS.sunDir].value as {
+          set: (x: number, y: number, z: number) => void
+        }
+      ).set(dir.x, dir.y, dir.z)
       renderer.render(scene, camera)
     },
     setDayNight(on: boolean) {
@@ -667,8 +715,9 @@ export async function createOutputScene(
       slots = []
       // Disposes the textures this scene's sampler was bound to, so it
       // must come before the renderer loses its context.
+      disposed = true
       unsubscribeLights()
-      unsubscribeCloud()
+      cloudTexture?.dispose()
       earth.dispose()
       quad.geometry.dispose()
       material.dispose()

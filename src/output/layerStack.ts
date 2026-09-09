@@ -90,6 +90,20 @@ export const MAX_OUTPUT_LAYERS = 2
 const NIGHT_DARKENING = 0.01
 const NIGHT_LIGHT_STRENGTH = 0.5
 const CLOUD_OPACITY = 0.65
+/**
+ * Luminance-to-alpha curve for the cloud asset, `earthTileLayer`'s.
+ *
+ * Above 1, so it *suppresses* thin cover: `pow(0.3, 1.8)` is 0.12
+ * where the raw luminance was 0.3. That matters because the source is
+ * not black over clear sky, and the first version of this composite
+ * consumed `photorealEarth`'s canvas-baked alpha instead, which uses
+ * **0.55** — below 1, so it lifts the same 0.3 to 0.51. Splicing that
+ * texture into this opacity turned a light haze into a ~30% white wash
+ * over the whole day side, greyed the oceans out, and — once the night
+ * boost multiplied it — clamped the night side to solid black. One
+ * module's calibration end to end; never half of each.
+ */
+const CLOUD_ALPHA_GAMMA = 1.8
 /** Night-side clouds are boosted so even thin cover blocks the city
  *  lights underneath, rather than letting them glow through. */
 const CLOUD_NIGHT_ALPHA_BOOST = 2.5
@@ -114,14 +128,14 @@ export function nightFactor(ndotL: number, dayNight: boolean): number {
   return t * t * (3 - 2 * t)
 }
 
-/** One decorated sample of the Earth's surface. `cloudCoverage` is the
- *  cloud texture's **alpha**, which `photorealEarth`'s loader has
- *  already baked from luminance — repeating the gamma here would
- *  double-apply it. */
+/** One decorated sample of the Earth's surface. `cloudLuma` is the raw
+ *  luminance of the cloud asset at this point — the curve that turns it
+ *  into coverage lives here rather than in whoever loaded it, so the
+ *  gamma and the opacity stay one calibration. */
 export interface EarthDecoration {
   base: { r: number; g: number; b: number }
   lights: { r: number; g: number; b: number }
-  cloudCoverage: number
+  cloudLuma: number
   nightFactor: number
 }
 
@@ -141,7 +155,7 @@ export function decorateEarth(d: EarthDecoration): { r: number; g: number; b: nu
     g: d.base.g * brightness + d.lights.g * n * NIGHT_LIGHT_STRENGTH,
     b: d.base.b * brightness + d.lights.b * n * NIGHT_LIGHT_STRENGTH,
   }
-  const cloudAlpha = d.cloudCoverage * CLOUD_OPACITY
+  const cloudAlpha = Math.pow(Math.max(0, d.cloudLuma), CLOUD_ALPHA_GAMMA) * CLOUD_OPACITY
   const alpha =
     cloudAlpha + (Math.min(cloudAlpha * CLOUD_NIGHT_ALPHA_BOOST, 1) - cloudAlpha) * n
   // Day clouds are white, night clouds black — the same mix the raster
@@ -184,10 +198,11 @@ float earthNightFactor(vec3 hit, vec3 sunDir, int dayNight) {
   return smoothstep(0.0, -0.2, dot(hit, sunDir));
 }
 
-vec3 decorateEarth(vec3 base, vec3 lights, float cloudCoverage, float night) {
+vec3 decorateEarth(vec3 base, vec3 lights, float cloudLuma, float night) {
   vec3 colour = base * mix(1.0, ${NIGHT_DARKENING.toFixed(4)}, night);
   colour += lights * night * ${NIGHT_LIGHT_STRENGTH.toFixed(2)};
-  float cloudAlpha = cloudCoverage * ${CLOUD_OPACITY.toFixed(2)};
+  float cloudAlpha = pow(max(cloudLuma, 0.0), ${CLOUD_ALPHA_GAMMA.toFixed(2)})
+    * ${CLOUD_OPACITY.toFixed(2)};
   float alpha = mix(cloudAlpha, min(cloudAlpha * ${CLOUD_NIGHT_ALPHA_BOOST.toFixed(2)}, 1.0), night);
   return mix(colour, mix(vec3(1.0), vec3(0.0), night), alpha);
 }
@@ -420,11 +435,12 @@ export function buildOutputFragmentShader(layerCount: number): string {
     `  float night = earthNightFactor(hit, ${D.sunDir}, ${D.dayNight});`,
     `  vec3 nightLights = ${D.hasLights} == 1`,
     `    ? texture2D(${D.lightsMap}, sphereUv).rgb : vec3(0.0);`,
-    // `.a`, not a luminance: photorealEarth's loader already baked
-    // coverage into alpha on a canvas before upload.
-    `  float cloudCoverage = ${D.hasCloud} == 1`,
-    `    ? texture2D(${D.cloudMap}, sphereUv).a : 0.0;`,
-    '  colour = decorateEarth(colour, nightLights, cloudCoverage, night);',
+    // Raw luminance, the same quantity earthTileLayer's cloud pass
+    // reads, so the gamma below is the one that asset was tuned with.
+    `  float cloudLuma = ${D.hasCloud} == 1`,
+    `    ? dot(texture2D(${D.cloudMap}, sphereUv).rgb, vec3(0.299, 0.587, 0.114))`,
+    '    : 0.0;',
+    '  colour = decorateEarth(colour, nightLights, cloudLuma, night);',
     // Emitted only when something samples them, so a zero-layer shader
     // does not declare two unread floats.
     ...(count > 0

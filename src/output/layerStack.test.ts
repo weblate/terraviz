@@ -247,7 +247,7 @@ describe('decorateEarth', () => {
   const GREY = { r: 0.5, g: 0.5, b: 0.5 }
   const LIT = { r: 0.8, g: 0.7, b: 0.4 }
   const plain = (over = {}) => ({
-    base: GREY, lights: { r: 0, g: 0, b: 0 }, cloudCoverage: 0, nightFactor: 0, ...over,
+    base: GREY, lights: { r: 0, g: 0, b: 0 }, cloudLuma: 0, nightFactor: 0, ...over,
   })
 
   it('leaves a cloudless day side exactly as it found it', () => {
@@ -275,26 +275,27 @@ describe('decorateEarth', () => {
   })
 
   it('paints day clouds white and night clouds black', () => {
-    const day = decorateEarth(plain({ cloudCoverage: 1 }))
-    const night = decorateEarth(plain({ cloudCoverage: 1, nightFactor: 1 }))
+    const day = decorateEarth(plain({ cloudLuma: 1 }))
+    const night = decorateEarth(plain({ cloudLuma: 1, nightFactor: 1 }))
     expect(day.r).toBeGreaterThan(GREY.r)
     expect(night.r).toBeLessThan(0.5 * 0.01 + 1e-9)
   })
 
   it('boosts night cloud alpha so thin cover still hides the lights', () => {
-    const thin = 0.2
-    const lit = plain({ lights: LIT, cloudCoverage: thin, nightFactor: 1 })
+    const thin = 0.5
+    const lit = plain({ lights: LIT, cloudLuma: thin, nightFactor: 1 })
     const clear = plain({ lights: LIT, nightFactor: 1 })
     // Same city, same thin cloud: at night it is dimmed more than the
-    // day-side alpha alone would dim it.
-    const dayAlpha = thin * 0.65
+    // day-side alpha alone would dim it. The day alpha runs through the
+    // gamma, so it is computed rather than assumed.
+    const dayAlpha = Math.pow(thin, 1.8) * 0.65
     expect(decorateEarth(lit).r).toBeLessThan(
       decorateEarth(clear).r * (1 - dayAlpha) + 1e-9,
     )
   })
 
   it('never lets cloud alpha exceed one', () => {
-    const out = decorateEarth(plain({ base: { r: 1, g: 1, b: 1 }, cloudCoverage: 1, nightFactor: 1 }))
+    const out = decorateEarth(plain({ base: { r: 1, g: 1, b: 1 }, cloudLuma: 1, nightFactor: 1 }))
     for (const c of [out.r, out.g, out.b]) {
       expect(c).toBeGreaterThanOrEqual(0)
       expect(c).toBeLessThanOrEqual(1)
@@ -328,6 +329,13 @@ describe('EARTH_DECORATION_GLSL', () => {
     expect(EARTH_DECORATION_GLSL).toContain('min(cloudAlpha * 2.50, 1.0)')
   })
 
+  it('applies the suppressing gamma to the raw cloud luminance', () => {
+    // 1.80, not photorealEarth's 0.55. Above 1 it suppresses thin
+    // cover; below 1 it lifts it, and consuming that module's
+    // pre-baked alpha here washed the whole day side grey on hardware.
+    expect(EARTH_DECORATION_GLSL).toContain('pow(max(cloudLuma, 0.0), 1.80)')
+  })
+
   it('gates the whole thing on one dayNight branch', () => {
     // The single gate: everything downstream is a multiply by zero, so
     // there is no second place for "day/night off" to be half-applied.
@@ -336,5 +344,33 @@ describe('EARTH_DECORATION_GLSL', () => {
 
   it('reads the hit point as the normal, with no separate normal input', () => {
     expect(EARTH_DECORATION_GLSL).toContain('dot(hit, sunDir)')
+  })
+})
+
+describe('cloud coverage curve', () => {
+  it('suppresses thin cover rather than lifting it', () => {
+    // The regression in one number. A raw luminance of 0.3 is haze:
+    // this curve makes it 12% of full opacity. photorealEarth's 0.55
+    // gamma would make it 51%, and that texture spliced into this
+    // opacity is what greyed out the oceans and, once the night boost
+    // multiplied it, clamped the night side to solid black.
+    const base = { r: 1, g: 1, b: 1 }
+    const day = (luma: number): number =>
+      decorateEarth({ base, lights: { r: 0, g: 0, b: 0 }, cloudLuma: luma, nightFactor: 0 }).r
+    // White base under white cloud is still white, so measure against a
+    // dark base where the cloud's contribution is the whole signal.
+    const dark = { r: 0, g: 0, b: 0 }
+    const alphaAt = (luma: number): number =>
+      decorateEarth({ base: dark, lights: dark, cloudLuma: luma, nightFactor: 0 }).r
+    expect(day(0)).toBe(1)
+    expect(alphaAt(0.3)).toBeCloseTo(Math.pow(0.3, 1.8) * 0.65, 10)
+    expect(alphaAt(0.3)).toBeLessThan(Math.pow(0.3, 0.55) * 0.65)
+  })
+
+  it('is zero for a clear sky, so a cloudless output is untouched', () => {
+    const grey = { r: 0.5, g: 0.5, b: 0.5 }
+    expect(
+      decorateEarth({ base: grey, lights: { r: 0, g: 0, b: 0 }, cloudLuma: 0, nightFactor: 0 }),
+    ).toEqual(grey)
   })
 })

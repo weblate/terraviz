@@ -324,17 +324,6 @@ export interface PhotorealEarthHandle {
    *  `onBaseDiffuseChange`; unsubscribe with the returned function. */
   onNightLightsChange(callback: (tex: THREE.Texture) => void): () => void
   /**
-   * The cloud texture, or null when clouds are off or still loading.
-   *
-   * **Alpha is coverage.** The loader converts the source's luminance
-   * to alpha on a canvas before upload, so a consumer compositing this
-   * itself reads `.a` and does not repeat the gamma — the RGB is solid
-   * white by construction.
-   */
-  readonly cloudTexture: THREE.Texture | null
-  /** Fires once, when the async cloud fetch lands. */
-  onCloudChange(callback: (tex: THREE.Texture) => void): () => void
-  /**
    * Add every owned object — globe, atmospheres, sun, shadow, lights —
    * to the supplied scene. Cloud mesh attaches itself to `globe`
    * (which is in this list) once its async texture finishes loading.
@@ -415,17 +404,14 @@ export function createPhotorealEarth(
    */
   let disposed = false
 
-  /** The `diffuseSubscribers` contract for the decoration tiers, so a
-   *  consumer with no mesh (the multi-monitor output) can track every
-   *  layer this stack loads rather than running a second loader
-   *  against the same CDN. Declared up here rather than beside the
-   *  diffuse set because the cloud fetch below starts earlier in this
-   *  function than the progressive-texture section does. */
+  /** The `diffuseSubscribers` contract for the night-lights tiers, so
+   *  a consumer with no mesh (the multi-monitor output) can track every
+   *  tier this stack loads rather than running a second loader against
+   *  the same CDN. Clouds deliberately do **not** get one: this
+   *  module's loader bakes luminance to alpha at its own gamma, tuned
+   *  for a lit shell seen from outside, and a consumer compositing on
+   *  a flat unwrap needs the raw asset and its own curve. */
   const lightsSubscribers = new Set<(tex: THREE.Texture) => void>()
-  const cloudSubscribers = new Set<(tex: THREE.Texture) => void>()
-  /** Held so `cloudTexture` can hand it out; the mesh owns the same
-   *  object, and `dispose()` frees it once through the material. */
-  let cloudSurfaceTexture: THREE.Texture | null = null
 
   // ── Lighting ──────────────────────────────────────────────────────
   // Two modes, toggled by setTexture:
@@ -1093,8 +1079,6 @@ export function createPhotorealEarth(
 
         const cloudTexture = new THREE_.CanvasTexture(canvas)
         cloudTexture.colorSpace = THREE_.SRGBColorSpace
-        cloudSurfaceTexture = cloudTexture
-        for (const cb of cloudSubscribers) cb(cloudTexture)
 
         const cloudGeometry = new THREE_.SphereGeometry(
           radius * CLOUD_FACTOR, CLOUD_SEGMENTS, CLOUD_SEGMENTS,
@@ -1512,13 +1496,6 @@ export function createPhotorealEarth(
       lightsSubscribers.add(callback)
       return () => { lightsSubscribers.delete(callback) }
     },
-    get cloudTexture() {
-      return cloudSurfaceTexture
-    },
-    onCloudChange(callback) {
-      cloudSubscribers.add(callback)
-      return () => { cloudSubscribers.delete(callback) }
-    },
 
     addTo(scene) {
       for (const obj of objects) scene.add(obj)
@@ -1812,8 +1789,6 @@ export function createPhotorealEarth(
       // holding the closure, not the texture, for nothing.
       diffuseSubscribers.clear()
       lightsSubscribers.clear()
-      cloudSubscribers.clear()
-      cloudSurfaceTexture = null
       if (cancelPendingVideoListeners) {
         cancelPendingVideoListeners()
         cancelPendingVideoListeners = null
