@@ -3455,6 +3455,22 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 14. With the SST base loaded, add a foreground layer (e.g.
     cyclone tracks). Output renders both with the correct
     z-order (cyclone tracks sit on top).
+14a. **Not runnable yet, and not because of the output.** The
+    output half of this is built: `layerStack` unrolls
+    `MAX_OUTPUT_LAYERS` slots that composite in array order
+    inside one fragment shader, and `outputScene.setLayers`
+    binds them. What is missing is the *control* half — the
+    app has no stacked-dataset concept to mirror. `PanelState`
+    holds exactly one `dataset`, and the "what gets mirrored"
+    table above names the source for `layers[]` as a **new**
+    `layerStack` state in `main.ts`, which was never built. So
+    `layers` is not a publisher waiting to be wired: wiring one
+    today would publish an empty array forever. Building it is
+    a control-window feature (stack two datasets on one globe,
+    with an order the operator can change), and this step is
+    blocked on that rather than on anything under
+    `src/output/`. Skip it until then rather than recording a
+    failure.
 
 **Camera tracking + split:**
 

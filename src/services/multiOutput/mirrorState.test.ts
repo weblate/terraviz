@@ -3,8 +3,10 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { DEFAULT_DISPLAY, type ColorScaleDisplay } from '../colorScaleDisplay'
 import type { Dataset } from '../../types'
 import {
+  displayForMirror,
   operatorCameraFrom,
   overlayForMirror,
   panelMirrorState,
@@ -282,5 +284,36 @@ describe('primaryFrom', () => {
     // HLS reports 0 until enough segments have buffered. Publishing it
     // would make `outputSync` place every instant at the start.
     expect(primaryFrom(0, '2026-01-01T00:00:00Z', '2026-01-11T00:00:00Z')).toBeNull()
+  })
+})
+
+describe('displayForMirror', () => {
+  const MAGMA: ColorScaleDisplay = {
+    palette: 'magma',
+    stretch: { lo: 0.1, hi: 0.9 },
+    threshold: { min: null, max: null },
+  }
+
+  it('carries a real transform through', () => {
+    expect(displayForMirror(MAGMA)).toEqual(MAGMA)
+  })
+
+  it('collapses the identity to null', () => {
+    // `null` is what the aggregator holds before the operator touches
+    // anything and what `paletteTexture` reads as "the dataset's own
+    // ramp". Publishing DEFAULT_DISPLAY instead puts a second encoding
+    // of the same fact on the wire, reaching the shader through
+    // `buildDisplayLut` rather than `buildColorScaleLut` — two paths
+    // that then have to agree byte for byte, and which the aggregator
+    // cannot collapse because the values genuinely differ.
+    expect(displayForMirror(DEFAULT_DISPLAY)).toBeNull()
+  })
+
+  it('returns an operator to the state a fresh output boots in', () => {
+    // The visible half: try magma, reset to source, and every output
+    // goes back to no transform rather than to a transform that happens
+    // to be a no-op.
+    expect(displayForMirror(MAGMA)).not.toBeNull()
+    expect(displayForMirror({ ...MAGMA, palette: 'source', stretch: { lo: 0, hi: 1 } })).toBeNull()
   })
 })
