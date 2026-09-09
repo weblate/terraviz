@@ -57,12 +57,141 @@ import { EQUIRECT_FRAGMENT_SHADER } from './equirectRtt'
  * How many overlay layers one output composites.
  *
  * Bounded by fragment texture units, not by taste: WebGL guarantees
- * only 8, and the base map plus each layer's texture and its palette
- * LUT all want one. Four layers matches the control window's own
- * 4-globe ceiling, so an output can mirror the busiest layout the app
- * can produce.
+ * only 8. Count them — the base sphere (1), the two Earth-decoration
+ * maps rung 12c added (night lights, clouds), then each layer's
+ * texture *and* its palette LUT. So `3 + 2n <= 8`, and n is 2.
+ *
+ * It was 4, on the reasoning that four layers "matches the control
+ * window's own 4-globe ceiling". That arithmetic was already wrong
+ * before the decoration — `1 + 2*4` is 9, one past the guarantee, so a
+ * driver reporting exactly 8 would have failed to *link* the shader —
+ * and the reasoning behind it conflated two different things: a
+ * 4-globe layout is four panels holding one dataset each, and an
+ * output mirrors one panel, not all four. Lowering it costs nothing
+ * that exists: `layers` has no producer at all (see the plan's smoke
+ * step 14a), so every shipped composite is the dataset alone.
  */
-export const MAX_OUTPUT_LAYERS = 4
+export const MAX_OUTPUT_LAYERS = 2
+
+/**
+ * Day/night constants, mirrored from `earthTileLayer`'s three raster
+ * passes (`darkenFragSrc`, `lightsFragSrc`, `cloudsFragSrc`) — the
+ * closest prior art there is, because that path is also a raster globe
+ * shading from `dot(N, uSunDir)` with no PBR chain to borrow.
+ *
+ * **Copied rather than imported, and the reason is the bundle.**
+ * `earthTileLayer` is a MapLibre `CustomLayerInterface`; importing it
+ * here would pull MapLibre into the output bundle, which exists to
+ * render one quad. Same trade `overlaySampleUv` makes against
+ * `datasetProbe` — except that one is pinned by a test, and four
+ * scalars cannot be, so the guard here is weaker: drift shows up as an
+ * output whose night side does not match the control globe's.
+ */
+const NIGHT_DARKENING = 0.01
+const NIGHT_LIGHT_STRENGTH = 0.5
+const CLOUD_OPACITY = 0.65
+/** Night-side clouds are boosted so even thin cover blocks the city
+ *  lights underneath, rather than letting them glow through. */
+const CLOUD_NIGHT_ALPHA_BOOST = 2.5
+
+/**
+ * How much of the sphere is in night, 0 (full day) to 1.
+ *
+ * `smoothstep`'s edges are deliberately reversed — `(0.0, -0.2)`, not
+ * `(-0.2, 0.0)` — because that is the expression `earthTileLayer` and
+ * `photorealEarth` both ship, and the polynomial is symmetric about
+ * its midpoint, so the forward form with a `1.0 -` is the same curve
+ * written differently. Mirroring the shipped one means there is
+ * nothing to prove equal.
+ *
+ * `dayNight` off returns 0, which is the whole gate: it collapses the
+ * darkening to a no-op multiply, the night lights to nothing, and the
+ * clouds to their day colouring, with no branch anywhere below.
+ */
+export function nightFactor(ndotL: number, dayNight: boolean): number {
+  if (!dayNight) return 0
+  const t = Math.max(0, Math.min(1, (ndotL - 0) / (-0.2 - 0)))
+  return t * t * (3 - 2 * t)
+}
+
+/** One decorated sample of the Earth's surface. `cloudCoverage` is the
+ *  cloud texture's **alpha**, which `photorealEarth`'s loader has
+ *  already baked from luminance — repeating the gamma here would
+ *  double-apply it. */
+export interface EarthDecoration {
+  base: { r: number; g: number; b: number }
+  lights: { r: number; g: number; b: number }
+  cloudCoverage: number
+  nightFactor: number
+}
+
+/**
+ * The TS mirror of `EARTH_DECORATION_GLSL`, in the same
+ * shader-is-testable split the rest of this module uses.
+ *
+ * Order is `earthTileLayer`'s pass order and matters: darken under a
+ * multiply, then lights additively (so they are *not* darkened by the
+ * pass that made room for them), then clouds over the top.
+ */
+export function decorateEarth(d: EarthDecoration): { r: number; g: number; b: number } {
+  const n = d.nightFactor
+  const brightness = 1 + (NIGHT_DARKENING - 1) * n
+  const lit = {
+    r: d.base.r * brightness + d.lights.r * n * NIGHT_LIGHT_STRENGTH,
+    g: d.base.g * brightness + d.lights.g * n * NIGHT_LIGHT_STRENGTH,
+    b: d.base.b * brightness + d.lights.b * n * NIGHT_LIGHT_STRENGTH,
+  }
+  const cloudAlpha = d.cloudCoverage * CLOUD_OPACITY
+  const alpha =
+    cloudAlpha + (Math.min(cloudAlpha * CLOUD_NIGHT_ALPHA_BOOST, 1) - cloudAlpha) * n
+  // Day clouds are white, night clouds black — the same mix the raster
+  // path uses, so a cloud reads as cover rather than as a light source.
+  const cloud = 1 - n
+  return {
+    r: lit.r + (cloud - lit.r) * alpha,
+    g: lit.g + (cloud - lit.g) * alpha,
+    b: lit.b + (cloud - lit.b) * alpha,
+  }
+}
+
+/** Uniform names for the Earth decoration. Same anti-typo reason as
+ *  `overlayUniformNames`. */
+export const DECORATION_UNIFORMS = {
+  sunDir: 'uSunDir',
+  dayNight: 'uDayNight',
+  lightsMap: 'uNightLightsMap',
+  hasLights: 'uHasNightLights',
+  cloudMap: 'uCloudMap',
+  hasCloud: 'uHasCloud',
+} as const
+
+/**
+ * The GLSL mirror of `nightFactor` + `decorateEarth`.
+ *
+ * Every effect here is a property of the sphere's *surface*, which is
+ * the whole test the plan's decoration table applies: specular,
+ * atmosphere shells, ground shadow and the sun sprite depend on a
+ * viewer or a silhouette, an unwrap has neither, and baking one in
+ * would paint a fixed glare spot or limb ring onto a physical sphere —
+ * a rendering artifact that reads as a data feature. They are not
+ * deferred here; they are incoherent here.
+ */
+export const EARTH_DECORATION_GLSL = `
+float earthNightFactor(vec3 hit, vec3 sunDir, int dayNight) {
+  if (dayNight == 0) return 0.0;
+  // Reversed edges on purpose — the form earthTileLayer and
+  // photorealEarth both ship. See \`nightFactor\`'s docstring.
+  return smoothstep(0.0, -0.2, dot(hit, sunDir));
+}
+
+vec3 decorateEarth(vec3 base, vec3 lights, float cloudCoverage, float night) {
+  vec3 colour = base * mix(1.0, ${NIGHT_DARKENING.toFixed(4)}, night);
+  colour += lights * night * ${NIGHT_LIGHT_STRENGTH.toFixed(2)};
+  float cloudAlpha = cloudCoverage * ${CLOUD_OPACITY.toFixed(2)};
+  float alpha = mix(cloudAlpha, min(cloudAlpha * ${CLOUD_NIGHT_ALPHA_BOOST.toFixed(2)}, 1.0), night);
+  return mix(colour, mix(vec3(1.0), vec3(0.0), night), alpha);
+}
+`.trim()
 
 /** Normalised texture coordinates in **shader space**: `v = 1` is the
  *  image's TOP row, because THREE uploads textures with `flipY`. This
@@ -236,12 +365,20 @@ vec4 sampleOverlayLayer(
  */
 export function buildOutputFragmentShader(layerCount: number): string {
   const count = Math.max(0, Math.min(layerCount, MAX_OUTPUT_LAYERS))
-  // No layers means no composition: hand back the projection pass
-  // untouched rather than a rewritten tail carrying unused hit
-  // variables and a hard-coded alpha of 1.
-  if (count === 0) return EQUIRECT_FRAGMENT_SHADER
 
-  const declarations: string[] = []
+  // Always composed, including at zero layers. It used to hand back the
+  // projection pass untouched there — but the Earth decoration is not a
+  // layer, it is what the sphere looks like, and the idle output with
+  // no dataset at all is the case it matters most for.
+  const D = DECORATION_UNIFORMS
+  const declarations: string[] = [
+    `uniform vec3 ${D.sunDir};`,
+    `uniform int ${D.dayNight};`,
+    `uniform sampler2D ${D.lightsMap};`,
+    `uniform int ${D.hasLights};`,
+    `uniform sampler2D ${D.cloudMap};`,
+    `uniform int ${D.hasCloud};`,
+  ]
   const composites: string[] = []
   for (let slot = 0; slot < count; slot++) {
     const n = overlayUniformNames(slot)
@@ -277,8 +414,22 @@ export function buildOutputFragmentShader(layerCount: number): string {
 
   const tail = [
     '  vec3 colour = texture2D(uSphereTexture, sphereUv).rgb;',
-    '  float hitLatDeg = degrees(hitLat);',
-    '  float hitLonDeg = degrees(hitLon);',
+    // `hit` is the ray-march's landing point on the *unit* sphere, so
+    // it is already the surface normal — the one line the plan's
+    // decoration table promised the terminator would cost.
+    `  float night = earthNightFactor(hit, ${D.sunDir}, ${D.dayNight});`,
+    `  vec3 nightLights = ${D.hasLights} == 1`,
+    `    ? texture2D(${D.lightsMap}, sphereUv).rgb : vec3(0.0);`,
+    // `.a`, not a luminance: photorealEarth's loader already baked
+    // coverage into alpha on a canvas before upload.
+    `  float cloudCoverage = ${D.hasCloud} == 1`,
+    `    ? texture2D(${D.cloudMap}, sphereUv).a : 0.0;`,
+    '  colour = decorateEarth(colour, nightLights, cloudCoverage, night);',
+    // Emitted only when something samples them, so a zero-layer shader
+    // does not declare two unread floats.
+    ...(count > 0
+      ? ['  float hitLatDeg = degrees(hitLat);', '  float hitLonDeg = degrees(hitLon);']
+      : []),
     ...composites,
     '  gl_FragColor = vec4(colour, 1.0);',
     '}',
@@ -291,6 +442,9 @@ export function buildOutputFragmentShader(layerCount: number): string {
   // Appending it after the body type-checks fine in TypeScript and
   // fails only on a GPU, which is nowhere this repo's tests run — so
   // the ordering is asserted in `layerStack.test.ts`.
-  const preamble = `${declarations.join('\n')}\n\n${OVERLAY_SAMPLE_GLSL}\n`
+  const helpers = count > 0
+    ? `${EARTH_DECORATION_GLSL}\n\n${OVERLAY_SAMPLE_GLSL}`
+    : EARTH_DECORATION_GLSL
+  const preamble = `${declarations.join('\n')}\n\n${helpers}\n`
   return body.replace('void main() {', `${preamble}\nvoid main() {`)
 }

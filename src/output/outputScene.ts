@@ -70,7 +70,12 @@ import {
   IDENTITY_PARAMS,
   type EquirectParams,
 } from './equirectRtt'
-import { MAX_OUTPUT_LAYERS, buildOutputFragmentShader, overlayUniformNames } from './layerStack'
+import {
+  DECORATION_UNIFORMS,
+  MAX_OUTPUT_LAYERS,
+  buildOutputFragmentShader,
+  overlayUniformNames,
+} from './layerStack'
 // The rung ladder lives in `protocol.ts` because the Outputs panel
 // offers it and this module snaps to it, and the panel cannot import
 // the output bundle. Re-exported so the scene's own callers do not have
@@ -217,6 +222,16 @@ export interface OutputScene {
   consumeDirty(): boolean
   /** Draw one frame. */
   render(): void
+  /**
+   * Turn the day/night terminator (and with it the night lights) on or
+   * off — the mirrored `view.dayNight`.
+   *
+   * Off is not "no decoration": clouds stay, in their day colouring,
+   * because cloud cover is geography rather than illumination. The flag
+   * collapses to a night factor of zero, which is a no-op multiply
+   * rather than a branch.
+   */
+  setDayNight(on: boolean): void
   /** Swap the projection parameters (camera offset / split). */
   setParams(params: EquirectParams): void
   /**
@@ -381,7 +396,13 @@ export async function createOutputScene(
   const earth = createEarth(THREE_, {
     includeLighting: false,
     includeAtmosphere: false,
-    includeClouds: false,
+    // On for the *texture*, not the mesh. Rung 12c composites clouds
+    // itself, and this flag is what starts the fetch that produces
+    // `cloudTexture`; the shell it also builds is inert because
+    // nothing here ever calls `addTo`, so it costs one small geometry
+    // and no draw. Re-fetching the asset on this side instead would
+    // duplicate the loader and its luminance-to-alpha preprocessing.
+    includeClouds: true,
     includeSun: false,
     includeShadow: false,
   })
@@ -403,7 +424,25 @@ export async function createOutputScene(
       ),
     },
     [EQUIRECT_UNIFORMS.split]: { value: (options.params ?? IDENTITY_PARAMS).split },
+    // Copied from `earth.sunDir` on every draw rather than owned here,
+    // so the output and the control globe cannot disagree about where
+    // the sun is — they read one `getSunPosition`.
+    [DECORATION_UNIFORMS.sunDir]: { value: new THREE_.Vector3().copy(earth.sunDir) },
+    [DECORATION_UNIFORMS.dayNight]: { value: 1 },
+    // Bound to the base Earth until the real maps land, never to
+    // `null`, for the reason the sphere sampler is: an unbound sampler
+    // is a driver-dependent read on a surface where black is
+    // indistinguishable from a fault. The `has*` flags are what
+    // actually gate them, so what is bound meanwhile is never sampled.
+    [DECORATION_UNIFORMS.lightsMap]: { value: earth.baseEarthTexture },
+    [DECORATION_UNIFORMS.hasLights]: { value: earth.nightLightsTexture ? 1 : 0 },
+    [DECORATION_UNIFORMS.cloudMap]: { value: earth.baseEarthTexture },
+    [DECORATION_UNIFORMS.hasCloud]: { value: earth.cloudTexture ? 1 : 0 },
   }
+  if (earth.nightLightsTexture) {
+    uniforms[DECORATION_UNIFORMS.lightsMap].value = earth.nightLightsTexture
+  }
+  if (earth.cloudTexture) uniforms[DECORATION_UNIFORMS.cloudMap].value = earth.cloudTexture
 
   /**
    * Rebuilt whenever the slot *count* changes, and only then.
@@ -444,6 +483,19 @@ export async function createOutputScene(
     uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = tex
     textureUpgraded = true
   })
+  // Same treatment for the decoration maps: they arrive after first
+  // paint too, and an un-flagged arrival would wait out the 1 Hz floor
+  // before the city lights or the clouds appeared.
+  const unsubscribeLights = earth.onNightLightsChange(tex => {
+    uniforms[DECORATION_UNIFORMS.lightsMap].value = tex
+    uniforms[DECORATION_UNIFORMS.hasLights].value = 1
+    textureUpgraded = true
+  })
+  const unsubscribeCloud = earth.onCloudChange(tex => {
+    uniforms[DECORATION_UNIFORMS.cloudMap].value = tex
+    uniforms[DECORATION_UNIFORMS.hasCloud].value = 1
+    textureUpgraded = true
+  })
 
   /** What is bound to each slot, so a `setLayers` that changes only
    *  metadata can keep the decoder's texture rather than rebuilding
@@ -469,7 +521,22 @@ export async function createOutputScene(
       return was
     },
     render() {
+      // Here rather than in the caller's rAF: `update()` self-throttles
+      // the subsolar recompute to its own interval, so calling it on
+      // drawn frames only is both current and free. Deliberately no
+      // dirty flag — the sun moves ~0.004 degrees a second, and the
+      // 1 Hz static floor already redraws faster than that is visible.
+      earth.update()
+      ;(uniforms[DECORATION_UNIFORMS.sunDir].value as { copy: (v: unknown) => void }).copy(
+        earth.sunDir,
+      )
       renderer.render(scene, camera)
+    },
+    setDayNight(on: boolean) {
+      const next = on ? 1 : 0
+      if (uniforms[DECORATION_UNIFORMS.dayNight].value === next) return
+      uniforms[DECORATION_UNIFORMS.dayNight].value = next
+      textureUpgraded = true
     },
     setParams(params: EquirectParams) {
       const offset = uniforms[EQUIRECT_UNIFORMS.cameraOffset].value as {
@@ -600,6 +667,8 @@ export async function createOutputScene(
       slots = []
       // Disposes the textures this scene's sampler was bound to, so it
       // must come before the renderer loses its context.
+      unsubscribeLights()
+      unsubscribeCloud()
       earth.dispose()
       quad.geometry.dispose()
       material.dispose()

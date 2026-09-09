@@ -309,6 +309,32 @@ export interface PhotorealEarthHandle {
    */
   onBaseDiffuseChange(callback: (tex: THREE.Texture) => void): () => void
   /**
+   * Current night-lights tier, or null until the first lands.
+   *
+   * Exposed for the same reason `baseDiffuseTexture` is, and for one
+   * more: the multi-monitor output has no mesh to hang a material on
+   * (`docs/MULTI_MONITOR_PLAN.md` §"What the equirect path does to the
+   * Earth decoration" — the fragment shader *is* the renderer there),
+   * so it consumes this stack as a texture provider and does its own
+   * compositing. Re-deriving the URL ladder and the progressive loader
+   * on that side is exactly the duplication the plan forbids.
+   */
+  readonly nightLightsTexture: THREE.Texture | null
+  /** Subscribe to night-lights tier upgrades. Mirrors
+   *  `onBaseDiffuseChange`; unsubscribe with the returned function. */
+  onNightLightsChange(callback: (tex: THREE.Texture) => void): () => void
+  /**
+   * The cloud texture, or null when clouds are off or still loading.
+   *
+   * **Alpha is coverage.** The loader converts the source's luminance
+   * to alpha on a canvas before upload, so a consumer compositing this
+   * itself reads `.a` and does not repeat the gamma — the RGB is solid
+   * white by construction.
+   */
+  readonly cloudTexture: THREE.Texture | null
+  /** Fires once, when the async cloud fetch lands. */
+  onCloudChange(callback: (tex: THREE.Texture) => void): () => void
+  /**
    * Add every owned object — globe, atmospheres, sun, shadow, lights —
    * to the supplied scene. Cloud mesh attaches itself to `globe`
    * (which is in this list) once its async texture finishes loading.
@@ -388,6 +414,18 @@ export function createPhotorealEarth(
    * checks this and disposes anything it just created when set.
    */
   let disposed = false
+
+  /** The `diffuseSubscribers` contract for the decoration tiers, so a
+   *  consumer with no mesh (the multi-monitor output) can track every
+   *  layer this stack loads rather than running a second loader
+   *  against the same CDN. Declared up here rather than beside the
+   *  diffuse set because the cloud fetch below starts earlier in this
+   *  function than the progressive-texture section does. */
+  const lightsSubscribers = new Set<(tex: THREE.Texture) => void>()
+  const cloudSubscribers = new Set<(tex: THREE.Texture) => void>()
+  /** Held so `cloudTexture` can hand it out; the mesh owns the same
+   *  object, and `dispose()` frees it once through the material. */
+  let cloudSurfaceTexture: THREE.Texture | null = null
 
   // ── Lighting ──────────────────────────────────────────────────────
   // Two modes, toggled by setTexture:
@@ -1055,6 +1093,8 @@ export function createPhotorealEarth(
 
         const cloudTexture = new THREE_.CanvasTexture(canvas)
         cloudTexture.colorSpace = THREE_.SRGBColorSpace
+        cloudSurfaceTexture = cloudTexture
+        for (const cb of cloudSubscribers) cb(cloudTexture)
 
         const cloudGeometry = new THREE_.SphereGeometry(
           radius * CLOUD_FACTOR, CLOUD_SEGMENTS, CLOUD_SEGMENTS,
@@ -1406,12 +1446,17 @@ export function createPhotorealEarth(
       if (activeKey !== null) {
         lightsTexture?.dispose()
         lightsTexture = tex
+        // Notified even while a dataset owns the surface, exactly as
+        // the diffuse tier is: a consumer that composites for itself
+        // is not bound by whether *this* material is showing Earth.
+        for (const cb of lightsSubscribers) cb(tex)
         return
       }
       lightsTexture?.dispose()
       lightsTexture = tex
       material.emissiveMap = tex
       material.needsUpdate = true
+      for (const cb of lightsSubscribers) cb(tex)
     },
     'earth lights',
   )
@@ -1459,6 +1504,20 @@ export function createPhotorealEarth(
     onBaseDiffuseChange(callback) {
       diffuseSubscribers.add(callback)
       return () => { diffuseSubscribers.delete(callback) }
+    },
+    get nightLightsTexture() {
+      return lightsTexture
+    },
+    onNightLightsChange(callback) {
+      lightsSubscribers.add(callback)
+      return () => { lightsSubscribers.delete(callback) }
+    },
+    get cloudTexture() {
+      return cloudSurfaceTexture
+    },
+    onCloudChange(callback) {
+      cloudSubscribers.add(callback)
+      return () => { cloudSubscribers.delete(callback) }
     },
 
     addTo(scene) {
@@ -1746,9 +1805,15 @@ export function createPhotorealEarth(
       // Drop the shader-settings subscription so a Tools-menu click
       // after a VR exit doesn't keep mutating a disposed material.
       unsubscribeShaderSettings()
-      // Drop all diffuse subscribers — no point firing them after
-      // we're gone, and callers should re-subscribe on fresh handles.
+      // Drop all subscribers — no point firing them after we're gone,
+      // and callers should re-subscribe on fresh handles. The
+      // decoration sets go with the diffuse one: a consumer that kept
+      // a cloud callback registered against a disposed handle would be
+      // holding the closure, not the texture, for nothing.
       diffuseSubscribers.clear()
+      lightsSubscribers.clear()
+      cloudSubscribers.clear()
+      cloudSurfaceTexture = null
       if (cancelPendingVideoListeners) {
         cancelPendingVideoListeners()
         cancelPendingVideoListeners = null

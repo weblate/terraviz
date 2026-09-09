@@ -15,7 +15,10 @@ import { describe, it, expect } from 'vitest'
 import { latLonToTexelUv } from '../services/datasetProbe'
 import type { DatasetOverlayOptions } from '../types'
 import {
+  EARTH_DECORATION_GLSL,
   MAX_OUTPUT_LAYERS,
+  decorateEarth,
+  nightFactor,
   overlaySampleUv,
   overlayUniformNames,
   buildOutputFragmentShader,
@@ -98,10 +101,27 @@ describe('shader-space V orientation', () => {
 })
 
 describe('buildOutputFragmentShader', () => {
-  it('returns the bare equirect pass for zero layers', () => {
+  it('composites no layers at zero, but still decorates the Earth', () => {
+    // It used to hand back the projection pass untouched here. The
+    // decoration is not a layer — it is what the sphere looks like —
+    // and an idle output with no dataset is the case it matters most
+    // for, so zero layers is decorated and simply has nothing over it.
     const src = buildOutputFragmentShader(0)
     expect(src).not.toContain('sampleOverlayLayer')
-    expect(src).toContain('gl_FragColor = texture2D(uSphereTexture, sphereUv);')
+    expect(src).toContain('decorateEarth(')
+    expect(src).toContain('earthNightFactor(hit,')
+  })
+
+  it('decorates before it composites, so a dataset is never tinted', () => {
+    // Day/night shading belongs to the Earth, not to the data. If the
+    // order inverted, a night-side smoke plume would read as less
+    // smoke — a rendering artifact indistinguishable from a value.
+    const src = buildOutputFragmentShader(1)
+    // Anchored on the call sites, not the names: both helpers are
+    // *defined* in the preamble, so a bare name finds the definition.
+    expect(src.indexOf('colour = decorateEarth(colour,')).toBeLessThan(
+      src.indexOf('vec4 layer = sampleOverlayLayer('),
+    )
   })
 
   it('declares the helper before main(), as GLSL ES 1.00 requires', () => {
@@ -117,8 +137,10 @@ describe('buildOutputFragmentShader', () => {
   })
 
   it('declares every uniform each slot composites with', () => {
-    const src = buildOutputFragmentShader(3)
-    for (let slot = 0; slot < 3; slot++) {
+    // Driven off the cap rather than a literal, so lowering it cannot
+    // quietly make this assert nothing.
+    const src = buildOutputFragmentShader(MAX_OUTPUT_LAYERS)
+    for (let slot = 0; slot < MAX_OUTPUT_LAYERS; slot++) {
       for (const name of Object.values(overlayUniformNames(slot))) {
         expect(src).toContain(`${name}`)
       }
@@ -140,10 +162,13 @@ describe('buildOutputFragmentShader', () => {
   })
 
   it('composites in array order, so array order is z-order', () => {
-    const src = buildOutputFragmentShader(3)
-    const positions = [0, 1, 2].map(s => src.indexOf(`sampleOverlayLayer(${overlayUniformNames(s).map}`))
-    expect(positions[0]).toBeLessThan(positions[1])
-    expect(positions[1]).toBeLessThan(positions[2])
+    const src = buildOutputFragmentShader(MAX_OUTPUT_LAYERS)
+    const positions = Array.from({ length: MAX_OUTPUT_LAYERS }, (_, s) =>
+      src.indexOf(`sampleOverlayLayer(${overlayUniformNames(s).map}`),
+    )
+    for (let i = 1; i < positions.length; i++) {
+      expect(positions[i - 1]).toBeLessThan(positions[i])
+    }
   })
 
   it('keeps the ray-march equirectRtt tests cover byte-identical', () => {
@@ -178,5 +203,138 @@ describe('data-encoded handling', () => {
 
   it('returns zero alpha outside a bbox so the layer contributes nothing', () => {
     expect(OVERLAY_SAMPLE_GLSL).toContain('return vec4(0.0);')
+  })
+})
+
+describe('nightFactor', () => {
+  it('is zero in full daylight and one well past the terminator', () => {
+    expect(nightFactor(1, true)).toBe(0)
+    expect(nightFactor(-1, true)).toBe(1)
+  })
+
+  it('rises monotonically through the terminator', () => {
+    const samples = [0, -0.05, -0.1, -0.15, -0.2].map(n => nightFactor(n, true))
+    for (let i = 1; i < samples.length; i++) {
+      expect(samples[i]).toBeGreaterThan(samples[i - 1])
+    }
+    expect(samples[0]).toBe(0)
+    expect(samples[samples.length - 1]).toBe(1)
+  })
+
+  it('matches the forward-edge form of the same curve', () => {
+    // The shipped expression reverses smoothstep's edges. The
+    // polynomial is symmetric about its midpoint, so `1 - smoothstep(
+    // -0.2, 0, x)` is the identical curve — worth pinning, because it
+    // is the reason mirroring the reversed form proves nothing new.
+    const forward = (x: number): number => {
+      const t = Math.max(0, Math.min(1, (x + 0.2) / 0.2))
+      return 1 - t * t * (3 - 2 * t)
+    }
+    for (const x of [0.5, 0, -0.05, -0.13, -0.2, -0.5]) {
+      expect(nightFactor(x, true)).toBeCloseTo(forward(x), 10)
+    }
+  })
+
+  it('is zero everywhere when day/night is off', () => {
+    // The single gate: it collapses the darkening to a no-op multiply,
+    // the lights to nothing and the clouds to their day colouring,
+    // with no branch anywhere downstream.
+    for (const x of [1, 0, -0.1, -1]) expect(nightFactor(x, false)).toBe(0)
+  })
+})
+
+describe('decorateEarth', () => {
+  const GREY = { r: 0.5, g: 0.5, b: 0.5 }
+  const LIT = { r: 0.8, g: 0.7, b: 0.4 }
+  const plain = (over = {}) => ({
+    base: GREY, lights: { r: 0, g: 0, b: 0 }, cloudCoverage: 0, nightFactor: 0, ...over,
+  })
+
+  it('leaves a cloudless day side exactly as it found it', () => {
+    expect(decorateEarth(plain())).toEqual(GREY)
+  })
+
+  it('darkens the night side', () => {
+    const out = decorateEarth(plain({ nightFactor: 1 }))
+    expect(out.r).toBeCloseTo(0.5 * 0.01, 10)
+  })
+
+  it('shows city lights only at night', () => {
+    expect(decorateEarth(plain({ lights: LIT })).r).toBeCloseTo(GREY.r, 10)
+    expect(decorateEarth(plain({ lights: LIT, nightFactor: 1 })).r).toBeGreaterThan(
+      decorateEarth(plain({ nightFactor: 1 })).r,
+    )
+  })
+
+  it('adds the lights after the darkening rather than through it', () => {
+    // Order is earthTileLayer's pass order and it matters: darken
+    // multiplies, lights add. Darkening the lights too would make the
+    // city glow the darkening was making room for ~1% of itself.
+    const out = decorateEarth(plain({ lights: LIT, nightFactor: 1 }))
+    expect(out.r).toBeCloseTo(0.5 * 0.01 + 0.8 * 0.5, 10)
+  })
+
+  it('paints day clouds white and night clouds black', () => {
+    const day = decorateEarth(plain({ cloudCoverage: 1 }))
+    const night = decorateEarth(plain({ cloudCoverage: 1, nightFactor: 1 }))
+    expect(day.r).toBeGreaterThan(GREY.r)
+    expect(night.r).toBeLessThan(0.5 * 0.01 + 1e-9)
+  })
+
+  it('boosts night cloud alpha so thin cover still hides the lights', () => {
+    const thin = 0.2
+    const lit = plain({ lights: LIT, cloudCoverage: thin, nightFactor: 1 })
+    const clear = plain({ lights: LIT, nightFactor: 1 })
+    // Same city, same thin cloud: at night it is dimmed more than the
+    // day-side alpha alone would dim it.
+    const dayAlpha = thin * 0.65
+    expect(decorateEarth(lit).r).toBeLessThan(
+      decorateEarth(clear).r * (1 - dayAlpha) + 1e-9,
+    )
+  })
+
+  it('never lets cloud alpha exceed one', () => {
+    const out = decorateEarth(plain({ base: { r: 1, g: 1, b: 1 }, cloudCoverage: 1, nightFactor: 1 }))
+    for (const c of [out.r, out.g, out.b]) {
+      expect(c).toBeGreaterThanOrEqual(0)
+      expect(c).toBeLessThanOrEqual(1)
+    }
+  })
+})
+
+describe('EARTH_DECORATION_GLSL', () => {
+  // `decorateEarth` above is the tested implementation; this is its
+  // hand-transcription into a string no test can execute without a GPU.
+  // So these assert the load-bearing *terms* are present and in the
+  // right order — the same standard the overlay GLSL is held to, and
+  // the reason is the same: a dropped term compiles fine and is only
+  // visible on a sphere nobody in this repo can see.
+
+  it('darkens by the night constant and adds the lights by the strength one', () => {
+    expect(EARTH_DECORATION_GLSL).toContain('mix(1.0, 0.0100, night)')
+    expect(EARTH_DECORATION_GLSL).toContain('lights * night * 0.50')
+  })
+
+  it('adds the lights after the darkening multiply, not through it', () => {
+    // Inverted, the city glow would be darkened to ~1% of itself by
+    // the very pass that made room for it.
+    const darken = EARTH_DECORATION_GLSL.indexOf('base * mix(1.0,')
+    const lights = EARTH_DECORATION_GLSL.indexOf('colour += lights')
+    expect(darken).toBeGreaterThanOrEqual(0)
+    expect(lights).toBeGreaterThan(darken)
+  })
+
+  it('boosts night cloud alpha and clamps it to one', () => {
+    expect(EARTH_DECORATION_GLSL).toContain('min(cloudAlpha * 2.50, 1.0)')
+  })
+
+  it('gates the whole thing on one dayNight branch', () => {
+    // The single gate: everything downstream is a multiply by zero, so
+    // there is no second place for "day/night off" to be half-applied.
+    expect(EARTH_DECORATION_GLSL).toContain('if (dayNight == 0) return 0.0;')
+  })
+
+  it('reads the hit point as the normal, with no separate normal input', () => {
+    expect(EARTH_DECORATION_GLSL).toContain('dot(hit, sunDir)')
   })
 })

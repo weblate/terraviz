@@ -152,7 +152,13 @@ async function boot(): Promise<void> {
           // decoder never sees it.
           recomposite()
         }
-        if (changed.includes('view')) scene.setParams(state.view.params)
+        if (changed.includes('view')) {
+          scene.setParams(state.view.params)
+          // Geometry and illumination arrive on the same key but
+          // are different questions: `params` is where the camera
+          // is looking, `dayNight` is whether the Earth is lit.
+          scene.setDayNight(state.view.dayNight)
+        }
         // Anything that changed is worth a frame — including the keys
         // this loop does not yet composite, so the 1 Hz floor never
         // holds a change back once they are wired.
