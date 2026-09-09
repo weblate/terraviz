@@ -13,7 +13,13 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { syncVideoToState, type SyncInputs, type SyncTarget } from './outputSync'
+import {
+  OUTPUT_SEEK_SETTLE_MS,
+  createPlayheadSync,
+  syncVideoToState,
+  type SyncInputs,
+  type SyncTarget,
+} from './outputSync'
 import { SIBLING_HARD_SEEK_THRESHOLD_S, SIBLING_MIN_READY_STATE } from '../utils/time'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 
@@ -55,6 +61,7 @@ function target(over: Partial<SyncTarget> = {}): SyncTarget & { played: number; 
     readyState: 4,
     duration: DURATION,
     paused: false,
+    seeking: false,
     currentTime: 50,
     playbackRate: 1,
     played: 0,
@@ -366,5 +373,102 @@ describe('the reported drift', () => {
 
     expect(out.seeked).toBe(true)
     expect(out.driftS).toBeCloseTo(-40, 6)
+  })
+})
+
+describe('seek settling — not chasing a target the seek itself moved', () => {
+  /** Behind by 166 ms: what the debug HUD read in the field. */
+  const BEHIND_S = 0.166
+
+  it('leaves a seeking element alone', () => {
+    // Mid-seek, `currentTime` already reads the target while the frame
+    // on the glass is the old one. Any error computed here is fiction,
+    // and acting on it is the tightest turn of the loop.
+    const video = target({ seeking: true, currentTime: 10 })
+
+    const out = syncVideoToState(video, inputs())
+
+    expect(out.kind).toBe('seeking')
+    expect(video.currentTime).toBe(10)
+    expect(video.played).toBe(0)
+  })
+
+  it('seeks a drift past the threshold when nothing has seeked recently', () => {
+    const video = target({ currentTime: 50 - BEHIND_S })
+
+    const out = syncVideoToState(video, inputs())
+
+    expect(out.seeked).toBe(true)
+    expect(out.driftS).toBeCloseTo(-BEHIND_S, 6)
+  })
+
+  it('trims the same drift instead, inside the settle window', () => {
+    // The field bug. A seek is not instant: the element stalls, the
+    // decoder refills, and the primary plays on throughout, so the
+    // moment a seek lands the output is behind again by however long
+    // the seek took. Seeking that is a loop that manufactures the error
+    // it corrects — once per rAF, which is what "very choppy" was.
+    const video = target({ currentTime: 50 - BEHIND_S })
+
+    const out = syncVideoToState(video, inputs(), OUTPUT_SEEK_SETTLE_MS / 2)
+
+    expect(out.seeked).toBe(false)
+    expect(video.currentTime).toBe(50 - BEHIND_S)
+    // Behind, so it runs faster and closes the gap smoothly instead.
+    expect(video.playbackRate).toBeGreaterThan(1)
+  })
+
+  it('still seeks an error the trim could not close in that window', () => {
+    // A scrub, not a settling seek. Suppressing this one would strand
+    // the output seconds out with a control that visibly does nothing.
+    const video = target({ currentTime: 10 })
+
+    const out = syncVideoToState(video, inputs(), 0)
+
+    expect(out.seeked).toBe(true)
+    expect(video.currentTime).toBeCloseTo(50, 6)
+  })
+
+  it('reopens the window once the settle time has passed', () => {
+    const video = target({ currentTime: 50 - BEHIND_S })
+
+    expect(syncVideoToState(video, inputs(), OUTPUT_SEEK_SETTLE_MS).seeked).toBe(true)
+  })
+})
+
+describe('createPlayheadSync', () => {
+  const BEHIND_S = 0.166
+
+  function at(times: number[]): { sync: ReturnType<typeof createPlayheadSync>['sync'] } {
+    let i = 0
+    return createPlayheadSync(() => times[Math.min(i++, times.length - 1)] ?? 0)
+  }
+
+  it('suppresses the second seek and allows one after the window', () => {
+    const controller = at([0, 10, 20, OUTPUT_SEEK_SETTLE_MS + 1])
+    const video = target({ currentTime: 50 - BEHIND_S })
+    const state = inputs()
+
+    // Seeks, and lands where it was asked to.
+    expect(controller.sync(video, state).seeked).toBe(true)
+    // Two frames later the primary has moved on and the element is
+    // behind again — the loop's next turn, now refused.
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(false)
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(false)
+    // Past the window, one more correction is allowed.
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(true)
+  })
+
+  it('does not start the window on a call that did not seek', () => {
+    // Stamping every call would suppress the *first* seek after a quiet
+    // period, which is the one that matters.
+    const controller = at([0, 10])
+    const aligned = target({ currentTime: 50 })
+
+    expect(controller.sync(aligned, inputs()).seeked).toBe(false)
+    expect(controller.sync(target({ currentTime: 10 }), inputs()).seeked).toBe(true)
   })
 })

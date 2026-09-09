@@ -3395,6 +3395,22 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 12. Let the video play for 60 s. Open the output's debug
     overlay (commit 11) — sync delta should remain ≤ 200 ms
     p95 with no visible drift on the LED-sphere mock.
+12b. **Read the sync field for the sign of a seek loop.** A
+    number parked just past the hard-seek threshold — the field
+    case was a steady `-166 ms` against 150 ms — with visibly
+    choppy playback is not a slow output; it is the correction
+    fighting itself. A seek stalls the element while the
+    primary plays on, so a seek that takes longer than the
+    threshold leaves the output far enough behind to earn
+    another one, once per rendered frame. `outputSync` closes
+    that loop by not steering a seeking element and by raising
+    the threshold for `OUTPUT_SEEK_SETTLE_MS` after each seek,
+    so the trim gets a chance to converge. If the field still
+    parks above the threshold once it is *smooth*, that is a
+    real measurement of an output's floor — a second window, a
+    second decoder, an IPC hop — and the case for an
+    output-specific threshold, which does not exist yet and
+    should not be invented without it.
 12a. **A dataset with no time axis.** Load one of the SOS
     looping animations — Air Traffic is the canonical case:
     global video, no `startTime`/`endTime`, a 24-hour loop

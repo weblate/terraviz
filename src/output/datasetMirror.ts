@@ -45,7 +45,7 @@
  * an output showing only image datasets never pays for hls.js.
  */
 
-import { syncVideoToState, type SyncInputs, type SyncOutcome, type SyncTarget } from './outputSync'
+import { createPlayheadSync, type SyncInputs, type SyncOutcome, type SyncTarget } from './outputSync'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
 
@@ -94,8 +94,13 @@ export function needsReload(
   return current.url !== next.url || current.kind !== next.kind
 }
 
-export function createDatasetMirror(deps: { loader?: MediaLoader } = {}): DatasetMirror {
+export function createDatasetMirror(
+  deps: { loader?: MediaLoader; nowMs?: () => number } = {},
+): DatasetMirror {
   const loader = deps.loader ?? createDefaultMediaLoader()
+  // Holds the one thing the pure sync layer cannot: when it last
+  // seeked, so a seek that is still settling does not earn another.
+  const playhead = createPlayheadSync(deps.nowMs)
   let source: MediaSource | null = null
   let dataset: MirroredDataset | null = null
   let generation = 0
@@ -163,7 +168,7 @@ export function createDatasetMirror(deps: { loader?: MediaLoader } = {}): Datase
     },
 
     sync(state) {
-      return syncVideoToState(source?.video ?? null, state)
+      return playhead.sync(source?.video ?? null, state)
     },
 
     dispose() {
