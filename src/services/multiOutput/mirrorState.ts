@@ -18,6 +18,7 @@
  */
 
 import type { Dataset, DatasetOverlayOptions } from '../../types'
+import { isDefaultDisplay, type ColorScaleDisplay } from '../colorScaleDisplay'
 import { overlayOptionsFromDataset } from '../datasetOverlayOptions'
 import { videoTimeToDate } from '../../utils/time'
 import type {
@@ -286,4 +287,31 @@ function datasetSpan(
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null
   if (end.getTime() <= start.getTime()) return null
   return { start, end }
+}
+
+/**
+ * The operator's palette / stretch / threshold, as the wire carries it.
+ *
+ * The identity collapses to `null` rather than travelling as
+ * `DEFAULT_DISPLAY`, and that is not tidiness. Two things already treat
+ * `null` as "no transform": the aggregator holds it before the operator
+ * has touched anything, and `outputScene.paletteTexture` reads it as
+ * "build the dataset's own ramp". Publishing the identity object
+ * instead would put a second encoding of the same fact on the wire,
+ * reaching the shader down a different path — `buildDisplayLut` with
+ * identity parameters rather than `buildColorScaleLut` — which then has
+ * to agree byte for byte forever, and which the aggregator's structural
+ * equality cannot collapse because the two values genuinely differ.
+ *
+ * The visible consequence is the reset: an operator who tries magma and
+ * goes back to source returns the wire to the state a freshly-booted
+ * output is already in, rather than leaving every output on a transform
+ * that happens to be a no-op.
+ *
+ * `isDefaultDisplay` is imported rather than re-derived — it exists for
+ * this question, and a second copy of "what counts as no transform"
+ * would be free to disagree with the control window's own reset control.
+ */
+export function displayForMirror(display: ColorScaleDisplay): ColorScaleDisplay | null {
+  return isDefaultDisplay(display) ? null : display
 }

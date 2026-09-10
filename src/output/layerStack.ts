@@ -57,12 +57,257 @@ import { EQUIRECT_FRAGMENT_SHADER } from './equirectRtt'
  * How many overlay layers one output composites.
  *
  * Bounded by fragment texture units, not by taste: WebGL guarantees
- * only 8, and the base map plus each layer's texture and its palette
- * LUT all want one. Four layers matches the control window's own
- * 4-globe ceiling, so an output can mirror the busiest layout the app
- * can produce.
+ * only 8. Count them — the base sphere (1), the two Earth-decoration
+ * maps rung 12c added (night lights, clouds), then each layer's
+ * texture *and* its palette LUT. So `3 + 2n <= 8`, and n is 2.
+ *
+ * It was 4, on the reasoning that four layers "matches the control
+ * window's own 4-globe ceiling". That arithmetic was already wrong
+ * before the decoration — `1 + 2*4` is 9, one past the guarantee, so a
+ * driver reporting exactly 8 would have failed to *link* the shader —
+ * and the reasoning behind it conflated two different things: a
+ * 4-globe layout is four panels holding one dataset each, and an
+ * output mirrors one panel, not all four. Lowering it costs nothing
+ * that exists: `layers` has no producer at all (see the plan's smoke
+ * step 14a), so every shipped composite is the dataset alone.
  */
-export const MAX_OUTPUT_LAYERS = 4
+export const MAX_OUTPUT_LAYERS = 2
+
+/**
+ * Day/night constants, mirrored from `earthTileLayer`'s three raster
+ * passes (`darkenFragSrc`, `lightsFragSrc`, `cloudsFragSrc`) — the
+ * closest prior art there is, because that path is also a raster globe
+ * shading from `dot(N, uSunDir)` with no PBR chain to borrow.
+ *
+ * **Copied rather than imported, and the reason is the bundle.**
+ * `earthTileLayer` is a MapLibre `CustomLayerInterface`; importing it
+ * here would pull MapLibre into the output bundle, which exists to
+ * render one quad. Same trade `overlaySampleUv` makes against
+ * `datasetProbe` — except that one is pinned by a test, and four
+ * scalars cannot be, so the guard here is weaker: drift shows up as an
+ * output whose night side does not match the control globe's.
+ */
+const NIGHT_DARKENING = 0.01
+const NIGHT_LIGHT_STRENGTH = 0.5
+const CLOUD_OPACITY = 0.65
+/**
+ * Luminance-to-alpha curve for the cloud asset, `earthTileLayer`'s.
+ *
+ * Above 1, so it *suppresses* thin cover: `pow(0.3, 1.8)` is 0.12
+ * where the raw luminance was 0.3. That matters because the source is
+ * not black over clear sky, and the first version of this composite
+ * consumed `photorealEarth`'s canvas-baked alpha instead, which uses
+ * **0.55** — below 1, so it lifts the same 0.3 to 0.51. Splicing that
+ * texture into this opacity turned a light haze into a ~30% white wash
+ * over the whole day side, greyed the oceans out, and — once the night
+ * boost multiplied it — clamped the night side to solid black. One
+ * module's calibration end to end; never half of each.
+ */
+const CLOUD_ALPHA_GAMMA = 1.8
+/** Night-side clouds are boosted so even thin cover blocks the city
+ *  lights underneath, rather than letting them glow through. */
+const CLOUD_NIGHT_ALPHA_BOOST = 2.5
+
+/**
+ * The cloud zoom-fade anchors, in operator zoom levels.
+ * `earthTileLayer`'s, unchanged: full cover at or below the first,
+ * none at or above the second.
+ *
+ * The cloud asset is one global texture, so magnifying a patch of it
+ * magnifies its blur — past a point it is a fuzzy grey wash sitting
+ * over basemap detail that is genuinely sharper underneath, which is
+ * why the control globe dissolves it on the way in.
+ */
+const CLOUD_FADE_START_ZOOM = 3
+const CLOUD_FADE_END_ZOOM = 6
+
+/**
+ * How far past the geometric terminator the night side reaches full
+ * darkness, in units of `dot(normal, sunDir)`. Twilight, in effect.
+ *
+ * Named rather than inlined because both the TS mirror and the GLSL
+ * have to use the same edge, and the two write it with opposite signs.
+ */
+const TERMINATOR_SOFTNESS = 0.2
+
+/**
+ * How much of the sphere is in night, 0 (full day) to 1.
+ *
+ * Written as `1 - smoothstep(-S, 0, NdotL)` with the edges in
+ * **ascending** order. `earthTileLayer` and `photorealEarth` both ship
+ * the reversed form, `smoothstep(0, -S, NdotL)`, and the first draft
+ * here mirrored them on the reasoning that copying a shipped
+ * expression leaves nothing to prove equal. But GLSL leaves
+ * `smoothstep` **undefined** when `edge0 >= edge1`: every driver this
+ * repo has met computes the general formula and gets the right answer,
+ * which is exactly why the reversed form survives in shaders that were
+ * tested on hardware — and this one has not been. The polynomial is
+ * symmetric about its midpoint, so the two are the same curve; taking
+ * the defined one costs nothing and removes undefined behaviour from
+ * the one shader nobody here can run. A test pins them equal.
+ *
+ * `dayNight` off returns 0, which is the whole gate: it collapses the
+ * darkening to a no-op multiply, the night lights to nothing, and the
+ * clouds to their day colouring, with no branch anywhere below.
+ */
+export function nightFactor(ndotL: number, dayNight: boolean): number {
+  if (!dayNight) return 0
+  const t = Math.max(0, Math.min(1, (ndotL + TERMINATOR_SOFTNESS) / TERMINATOR_SOFTNESS))
+  return 1 - t * t * (3 - 2 * t)
+}
+
+/**
+ * The operator zoom this fragment is showing, from its ray length.
+ *
+ * The projection's zoom is a warp, so "how zoomed in is this?" has a
+ * different answer at every pixel — which is the whole point of doing
+ * the cloud fade here rather than as one uniform: on the control globe
+ * the whole viewport is at one zoom, while on an output the focus is
+ * magnified and the antipode is compressed *in the same frame*, and a
+ * single fade would either keep the wash over the magnified part or
+ * strip clouds off the three-quarters of the sphere that never zoomed.
+ *
+ * `t` is the ray-march's own hit distance, already computed. The camera
+ * sits at `|o| = f` from the centre, so `t` runs from `1 - f` looking
+ * at the focus to `1 + f` looking at the antipode, and the linear
+ * magnification relative to a centred camera is `1 / t`.
+ *
+ * The conversion back to a zoom level is `cameraOffsetForCamera`'s own
+ * mapping inverted — `f = 1 - 1/(z + 1)`, so `1 - f = 1/(z + 1)` and
+ * `z = 1/t - 1`. That makes this **exact at the focus**: the centre of
+ * the operator's area of interest reports the operator's actual zoom,
+ * so feeding it through the control globe's unmodified curve below
+ * makes the two surfaces agree there by construction rather than by a
+ * matched pair of hand-tuned numbers.
+ *
+ * Two deliberate imprecisions. The warp is anisotropic — the true
+ * linear scale is `sqrt(cos θ) / t`, where `cos θ` is the ray's
+ * incidence on the surface — and this ignores the `cos θ`, which costs
+ * at most ~27% of a magnification factor mid-frame and nothing at
+ * either pole of the warp. And `MAX_CAMERA_OFFSET` caps `f` at 0.85,
+ * so the largest local zoom any output can report is `1/0.15 - 1`,
+ * about 5.67: past that the operator keeps zooming and the output does
+ * not. Clouds therefore bottom out at ~11% of their alpha rather than
+ * at zero, which is not a shortfall in the fade — it is the control
+ * globe's own value at zoom 5.67, which is the zoom the capped output
+ * is in fact showing.
+ */
+export function localZoomAt(rayLength: number): number {
+  if (!(rayLength > 0)) return 0
+  return Math.max(0, 1 / rayLength - 1)
+}
+
+/**
+ * Cloud coverage multiplier for a local zoom, 1 (full) to 0 (gone).
+ *
+ * `earthTileLayer`'s curve, unmodified — the same reason the four
+ * decoration scalars above are its and not this module's.
+ */
+export function cloudZoomFade(localZoom: number): number {
+  const span = CLOUD_FADE_END_ZOOM - CLOUD_FADE_START_ZOOM
+  return 1 - Math.max(0, Math.min(1, (localZoom - CLOUD_FADE_START_ZOOM) / span))
+}
+
+/** One decorated sample of the Earth's surface. `cloudLuma` is the raw
+ *  luminance of the cloud asset at this point — the curve that turns it
+ *  into coverage lives here rather than in whoever loaded it, so the
+ *  gamma and the opacity stay one calibration. `cloudFade` is
+ *  `cloudZoomFade`'s output for this fragment. */
+export interface EarthDecoration {
+  base: { r: number; g: number; b: number }
+  lights: { r: number; g: number; b: number }
+  cloudLuma: number
+  cloudFade: number
+  nightFactor: number
+}
+
+/**
+ * The TS mirror of `EARTH_DECORATION_GLSL`, in the same
+ * shader-is-testable split the rest of this module uses.
+ *
+ * Order is `earthTileLayer`'s pass order and matters: darken under a
+ * multiply, then lights additively (so they are *not* darkened by the
+ * pass that made room for them), then clouds over the top.
+ */
+export function decorateEarth(d: EarthDecoration): { r: number; g: number; b: number } {
+  const n = d.nightFactor
+  const brightness = 1 + (NIGHT_DARKENING - 1) * n
+  const lit = {
+    r: d.base.r * brightness + d.lights.r * n * NIGHT_LIGHT_STRENGTH,
+    g: d.base.g * brightness + d.lights.g * n * NIGHT_LIGHT_STRENGTH,
+    b: d.base.b * brightness + d.lights.b * n * NIGHT_LIGHT_STRENGTH,
+  }
+  const cloudAlpha = Math.pow(Math.max(0, d.cloudLuma), CLOUD_ALPHA_GAMMA) * CLOUD_OPACITY
+  // The zoom fade multiplies the *boosted* alpha, which is where
+  // `earthTileLayer` applies it — after the night mix, not before it.
+  // Folding it into `cloudAlpha` instead would let the night boost
+  // partly undo the fade, so a zoomed-in night side would keep cover a
+  // zoomed-in day side had lost.
+  const alpha =
+    (cloudAlpha + (Math.min(cloudAlpha * CLOUD_NIGHT_ALPHA_BOOST, 1) - cloudAlpha) * n) *
+    d.cloudFade
+  // Day clouds are white, night clouds black — the same mix the raster
+  // path uses, so a cloud reads as cover rather than as a light source.
+  const cloud = 1 - n
+  return {
+    r: lit.r + (cloud - lit.r) * alpha,
+    g: lit.g + (cloud - lit.g) * alpha,
+    b: lit.b + (cloud - lit.b) * alpha,
+  }
+}
+
+/** Uniform names for the Earth decoration. Same anti-typo reason as
+ *  `overlayUniformNames`. */
+export const DECORATION_UNIFORMS = {
+  sunDir: 'uSunDir',
+  dayNight: 'uDayNight',
+  lightsMap: 'uNightLightsMap',
+  hasLights: 'uHasNightLights',
+  cloudMap: 'uCloudMap',
+  hasCloud: 'uHasCloud',
+} as const
+
+/**
+ * The GLSL mirror of `nightFactor` + `decorateEarth`.
+ *
+ * Every effect here is a property of the sphere's *surface*, which is
+ * the whole test the plan's decoration table applies: specular,
+ * atmosphere shells, ground shadow and the sun sprite depend on a
+ * viewer or a silhouette, an unwrap has neither, and baking one in
+ * would paint a fixed glare spot or limb ring onto a physical sphere —
+ * a rendering artifact that reads as a data feature. They are not
+ * deferred here; they are incoherent here.
+ */
+export const EARTH_DECORATION_GLSL = `
+float earthNightFactor(vec3 hit, vec3 sunDir, int dayNight) {
+  if (dayNight == 0) return 0.0;
+  // Ascending edges, unlike the older shaders' reversed form: GLSL
+  // leaves smoothstep undefined for edge0 >= edge1. Same curve — the
+  // polynomial is symmetric — but defined. See \`nightFactor\`.
+  return 1.0 - smoothstep(-${TERMINATOR_SOFTNESS.toFixed(1)}, 0.0, dot(hit, sunDir));
+}
+
+// Per-fragment, because the projection's zoom is a warp: the focus and
+// the antipode are at different magnifications in the same frame. See
+// \`localZoomAt\` / \`cloudZoomFade\`.
+float earthCloudZoomFade(float rayLength) {
+  float localZoom = max(1.0 / max(rayLength, 1e-4) - 1.0, 0.0);
+  return 1.0 - clamp(
+    (localZoom - ${CLOUD_FADE_START_ZOOM.toFixed(1)})
+      / ${(CLOUD_FADE_END_ZOOM - CLOUD_FADE_START_ZOOM).toFixed(1)},
+    0.0, 1.0);
+}
+
+vec3 decorateEarth(vec3 base, vec3 lights, float cloudLuma, float night, float cloudFade) {
+  vec3 colour = base * mix(1.0, ${NIGHT_DARKENING.toFixed(4)}, night);
+  colour += lights * night * ${NIGHT_LIGHT_STRENGTH.toFixed(2)};
+  float cloudAlpha = pow(max(cloudLuma, 0.0), ${CLOUD_ALPHA_GAMMA.toFixed(2)})
+    * ${CLOUD_OPACITY.toFixed(2)};
+  float alpha = mix(cloudAlpha, min(cloudAlpha * ${CLOUD_NIGHT_ALPHA_BOOST.toFixed(2)}, 1.0), night)
+    * cloudFade;
+  return mix(colour, mix(vec3(1.0), vec3(0.0), night), alpha);
+}
+`.trim()
 
 /** Normalised texture coordinates in **shader space**: `v = 1` is the
  *  image's TOP row, because THREE uploads textures with `flipY`. This
@@ -236,12 +481,20 @@ vec4 sampleOverlayLayer(
  */
 export function buildOutputFragmentShader(layerCount: number): string {
   const count = Math.max(0, Math.min(layerCount, MAX_OUTPUT_LAYERS))
-  // No layers means no composition: hand back the projection pass
-  // untouched rather than a rewritten tail carrying unused hit
-  // variables and a hard-coded alpha of 1.
-  if (count === 0) return EQUIRECT_FRAGMENT_SHADER
 
-  const declarations: string[] = []
+  // Always composed, including at zero layers. It used to hand back the
+  // projection pass untouched there — but the Earth decoration is not a
+  // layer, it is what the sphere looks like, and the idle output with
+  // no dataset at all is the case it matters most for.
+  const D = DECORATION_UNIFORMS
+  const declarations: string[] = [
+    `uniform vec3 ${D.sunDir};`,
+    `uniform int ${D.dayNight};`,
+    `uniform sampler2D ${D.lightsMap};`,
+    `uniform int ${D.hasLights};`,
+    `uniform sampler2D ${D.cloudMap};`,
+    `uniform int ${D.hasCloud};`,
+  ]
   const composites: string[] = []
   for (let slot = 0; slot < count; slot++) {
     const n = overlayUniformNames(slot)
@@ -277,8 +530,29 @@ export function buildOutputFragmentShader(layerCount: number): string {
 
   const tail = [
     '  vec3 colour = texture2D(uSphereTexture, sphereUv).rgb;',
-    '  float hitLatDeg = degrees(hitLat);',
-    '  float hitLonDeg = degrees(hitLon);',
+    // `hit` is the ray-march's landing point on the *unit* sphere, so
+    // it is already the surface normal — the one line the plan's
+    // decoration table promised the terminator would cost.
+    `  float night = earthNightFactor(hit, ${D.sunDir}, ${D.dayNight});`,
+    `  vec3 nightLights = ${D.hasLights} == 1`,
+    `    ? texture2D(${D.lightsMap}, sphereUv).rgb : vec3(0.0);`,
+    // Raw luminance, the same quantity earthTileLayer's cloud pass
+    // reads, so the gamma below is the one that asset was tuned with.
+    `  float cloudLuma = ${D.hasCloud} == 1`,
+    `    ? dot(texture2D(${D.cloudMap}, sphereUv).rgb, vec3(0.299, 0.587, 0.114))`,
+    '    : 0.0;',
+    // `t` is the ray-march's hit distance, so the fade is per fragment:
+    // clouds dissolve where the projection magnifies and stay where it
+    // does not, which is the same "vanish on the way in" the control
+    // globe does — just applied to a frame that holds several zooms at
+    // once.
+    '  float cloudFade = earthCloudZoomFade(t);',
+    '  colour = decorateEarth(colour, nightLights, cloudLuma, night, cloudFade);',
+    // Emitted only when something samples them, so a zero-layer shader
+    // does not declare two unread floats.
+    ...(count > 0
+      ? ['  float hitLatDeg = degrees(hitLat);', '  float hitLonDeg = degrees(hitLon);']
+      : []),
     ...composites,
     '  gl_FragColor = vec4(colour, 1.0);',
     '}',
@@ -291,6 +565,9 @@ export function buildOutputFragmentShader(layerCount: number): string {
   // Appending it after the body type-checks fine in TypeScript and
   // fails only on a GPU, which is nowhere this repo's tests run — so
   // the ordering is asserted in `layerStack.test.ts`.
-  const preamble = `${declarations.join('\n')}\n\n${OVERLAY_SAMPLE_GLSL}\n`
+  const helpers = count > 0
+    ? `${EARTH_DECORATION_GLSL}\n\n${OVERLAY_SAMPLE_GLSL}`
+    : EARTH_DECORATION_GLSL
+  const preamble = `${declarations.join('\n')}\n\n${helpers}\n`
   return body.replace('void main() {', `${preamble}\nvoid main() {`)
 }

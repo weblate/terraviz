@@ -110,6 +110,7 @@ import type { VrDatasetTexture } from './services/vrScene'
 import { overlayOptionsFromDataset } from './services/datasetOverlayOptions'
 import { publishGlobeState } from './services/multiOutput/globeStateEvents'
 import {
+  displayForMirror,
   operatorCameraFrom,
   panelMirrorState,
   playbackFrom,
@@ -2015,6 +2016,13 @@ class InteractiveSphere {
       onChange: (next) => {
         this.colorScaleDisplay = next
         this.viewports.setColorScaleDisplay(next)
+        // The one place this value changes, so the one place an output
+        // can learn about it. It is deliberately *not* republished on a
+        // dataset load: the transform is app-wide and outlives the
+        // dataset it was set on, exactly as it does on the control
+        // globes, and a picture dataset ignores it anyway because
+        // `paletteTexture` builds no LUT without a `colorScale`.
+        publishGlobeState({ display: displayForMirror(next) })
         // Rebuild the floating bars so they track the globe. Cheap:
         // this is DOM, and the LUT upload has already happened.
         this.refreshPanelLegends()

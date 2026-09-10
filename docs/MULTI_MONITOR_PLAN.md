@@ -571,13 +571,17 @@ be subtly wrong on a subset of the catalog.
 
 > **Asked for, at the first hardware session (2026-09):** "at some
 > point I would want the Earth as realistic as possible." The outputs
-> were showing base diffuse and nothing else, which is what rung 12c
-> exists to fix. This section is the answer to *how* realistic is
-> coherent: the table below sorts every effect by what it depends on,
-> and the split is not a matter of effort. Three more cross and are
-> worth building; four cannot cross at all, because they are properties
-> of *looking at* a sphere from outside and nobody looks at an LED
-> sphere from outside.
+> were showing base diffuse and nothing else.
+>
+> This section is the answer to *how* realistic is coherent: the table
+> below sorts every effect by what it depends on, and the split is not
+> a matter of effort. Three more cross the boundary; four cannot cross
+> at all, because they are properties of *looking at* a sphere from
+> outside and nobody looks at an LED sphere from outside.
+>
+> **Rung 12c has since built all three that cross.** The four that do
+> not are ruled out permanently rather than deferred — the table says
+> why, and it is a statement about the surface, not about the backlog.
 
 Constraint 3 has a consequence the rest of this plan was written
 without. If the equirect pass ray-marches an analytic sphere and
@@ -604,6 +608,105 @@ not a porting question at all.
 | Atmosphere shells | the **silhouette** — the shell exists "so the shell's silhouette is the limb of the atmosphere proper" (`:148-151`) | **Meaningless.** |
 | Ground shadow | a scene to cast onto | **Meaningless.** |
 | Sun sprite | a billboard in world space | **Meaningless.** |
+
+**Two traps this path sets, both sprung on the first build.**
+
+*The sun's frame, not its source.* `photorealEarth`'s
+`sunDirectionFromLatLng` builds its vector for the globe **mesh**,
+and negates Z relative to `equirectRtt`'s `latLonToDirection`.
+Borrowing that handle's `sunDir` therefore mirrors the sun in
+longitude and lights the opposite hemisphere — the Americas went
+dark while the control globe had them in daylight. Sharing
+`getSunPosition` does not fix it and never could; what matters is
+that the sun and the camera are derived through the *same*
+lat/lon-to-direction function, which makes the frames agree by
+construction rather than by coincidence.
+
+*One module's calibration, end to end.* The cloud asset is shared
+but the curve that turns it into coverage is not.
+`earthTileLayer` computes alpha in-shader with a gamma of **1.8**,
+which suppresses haze; `photorealEarth` bakes it onto a canvas at
+**0.55**, which lifts haze, because it is feeding a lit shell seen
+from outside. Splicing that texture into the other's opacity turned
+a light haze into a ~30% white wash over the whole day side, greyed
+the oceans, and — once the night-side alpha boost multiplied it —
+clamped the night to solid black. Take the raw asset and bring the
+whole curve, or take neither.
+
+**One effect crosses, but not as a uniform: the cloud zoom fade.**
+The control globe dissolves its clouds on the way in — full cover
+at zoom 3, none at zoom 6 — because the cloud asset is a single
+global texture and magnifying a patch of it magnifies its blur,
+leaving a fuzzy grey wash over basemap detail that is genuinely
+sharper underneath. Asked for at the second hardware session
+(2026-09): *"clouds should only vanish in the zoomed portion. In
+other words based on camera altitude."*
+
+The qualifier is the whole design. On the control globe the
+viewport is at one zoom, so the fade is one scalar. On an output
+the zoom **is** the warp: the focus is magnified and the antipode
+compressed *in the same frame*, and there is no single number that
+is right for both. A uniform copied across would either keep the
+wash over the magnified part it exists to clear, or strip clouds
+off the three-quarters of the sphere that never zoomed at all.
+
+So it is per fragment, and the quantity is already on hand. The
+ray-march computes a hit distance `t` for every pixel; with the
+camera at `|o| = f` that runs from `1 − f` at the focus to `1 + f`
+at the antipode, and the linear magnification relative to a centred
+camera is `1 / t`. Inverting `cameraOffsetForCamera`'s own mapping
+(`f = 1 − 1/(z+1)`) turns that into a zoom level:
+
+```
+localZoom = 1/t − 1
+```
+
+**Exact at the focus** — the centre of the operator's area of
+interest reports the operator's actual zoom — so feeding it through
+`earthTileLayer`'s *unmodified* curve makes the two surfaces agree
+there by construction, rather than by a second pair of hand-tuned
+anchors. Two imprecisions are deliberate and worth stating rather
+than discovering: the warp is anisotropic (the true linear scale is
+`√(cos θ)/t`, and dropping `cos θ` costs at most ~27% of a
+magnification factor mid-frame, nothing at either pole), and
+`MAX_CAMERA_OFFSET = 0.85` caps the reachable local zoom at ~5.67,
+so clouds bottom out at ~11% of their alpha instead of at zero.
+That residual is **agreement, not a shortfall**: 11% is what the
+control globe has left at zoom 5.67, which is the zoom a capped
+output is in fact showing. Rescaling the curve to end at the cap
+is the tempting fix, and it would put a second cloud calibration in
+the repo — the trap immediately above, in a new place.
+
+**Verified on a real GL implementation (2026-09-09).** The decoration
+GLSL is a hand transcription of tested TypeScript, which is the
+weakest guard in this module — a transcription error compiles fine and
+fails only on a GPU. It has now been rendered: `output.html`, and a
+throwaway harness driving `outputScene.setParams`, run headless in
+Chromium over ANGLE/SwiftShader, and both the terminator and the fade
+were measured back out of the pixels.
+
+| Check | Method | Result |
+|---|---|---|
+| Terminator position | render at four frozen UTC instants, divide by the same frame with `dayNight` off to cancel albedo, least-squares fit the subsolar point | fitted longitude within **1.5°** of `getSunPosition`'s at 00/06/12/18 UTC, tracking −15°/h in the correct direction |
+| Terminator frame | 06:00 and 18:00 specifically | fitted **+91°** and **−91°**; the borrowed-vector bug mirrors longitude, so it would read −90 and +90 here — and would agree at 00:00/12:00, which is why it hid at those two hours |
+| Cloud zoom fade | flat cloud field, alpha recovered from a paired render with clouds off, compared against the ray length's own prediction | worst deviation **0.0020** over the frame at zoom 0 and zoom 5 — 8-bit quantisation |
+
+**One real gap this turned up: the ocean.** The output's base diffuse
+is `photorealEarth`'s `earth_diffuse_*.jpg`, whose water is
+`rgb(2, 5, 20)` — very nearly black, because that stack paints ocean
+colour with the specular and atmosphere passes this surface cannot
+carry. The control globe's base is *not* that texture at all: it is
+GIBS `BlueMarble_NextGeneration` raster tiles, which carry their own
+blue water. So a day-side ocean that reads blue on the control globe
+reads black on an output, which is what "the main application window
+is much more blue" was reporting. It is not scattering, and it will
+not be fixed by adding any effect from the table above. The fix is a
+choice about the base texture — a bathymetry-coloured diffuse, an
+ocean tint applied where the diffuse is water, or sampling the same
+GIBS product the control globe does — and is deliberately left open
+here rather than picked in passing, because it changes a committed
+18.5 MB asset set or adds a network dependency to a window that is
+meant to work air-gapped.
 
 The four that do not cross are not blocked; they are
 **incoherent on this surface**. An equirectangular unwrap shows
@@ -2303,7 +2406,7 @@ without rolling the whole feature back.
 | 11c | `multi-output: machine-scoped decoder budget` | **Landed.** `PersistedOutputConfig.concurrentDecoderBudget` (machine-scoped, `null` = "nobody has measured this machine, ask it"), `manager.decoderBudget()` / `setDecoderBudget()` / `decoderLoad()`, the refusal inside `spawn()` — so a restore is held to the same rule as an Add — and the panel's number field, "N of M video decoders in use" readout, and disabled Add with a message naming what to close. The count is **windows that can hold a decoder**, not decoders currently decoding; see the revised "Counted" row above for why, since it departs from what this section originally said. The control window's contribution reaches the manager through an injected `controlPanels()` — `main.ts` owns both `viewportManager` and `bootMultiOutput`, and neither of those should learn what the other is. Unset falls back to `maxVideoPanels()` rather than storing it, so an unpinned budget keeps tracking the machine. **Still not enforced at layout change** (plan: "at both spawn time and layout change") — a control window that grows from 1 globe to 4 while outputs are up can still cross the budget. That needs `viewportManager` to consult the manager, which is a cross-cutting change and its own commit. | Yes (additive) |
 | 12a | `multi-output: window chrome — fullscreen, decorations, F11, idle cursor` | **Landed.** `src/services/windowChrome.ts` (shared by both windows), the F11 handler, the idle-cursor rule in `base.css`, and the upgrade of the Tools bar's existing fullscreen button. Two findings worth recording. First, §3.6 mechanism 2 was **already half-built**: a fullscreen button has shipped since §3.3, driving `document.requestFullscreen` directly — which is the whole answer in a browser and half of it in a packaged app, since it fullscreens the *webview* while leaving the native title bar and border in the captured signal. The button was upgraded rather than joined by a second one. Second, that same button read its label off `document.fullscreenElement`, which stays **null** when the native window goes fullscreen — so on desktop it would have offered "Enter fullscreen" over a window already in it, and F11 changes the state without `fullscreenchange` firing at all; the controller is now what it reads. Fullscreen and decorations are one operation because `setFullscreen(true)` alone leaves the title bar on some window managers and removes it on others, and decorations follow rather than lead so a failed fullscreen cannot strand an operator with an unmovable undecorated window. The desktop host is built **synchronously** and imports Tauri on first use, because the Tools menu reads the state while laying out its markup. F11 on an output passes `initial: true` and persists nothing — an output is fullscreen by construction and a title bar borrowed for calibration must not come back next launch. | Yes (additive) |
 | 12b | `multi-output: kiosk launch flag` | **Landed.** `--kiosk` and `TERRAVIZ_KIOSK=1` parsed in `src-tauri/src/lib.rs` (`main.rs` was already the 12-line shim this section predicted), applied in `setup()` behind `#[cfg(desktop)]`. "Before first paint" is **best-effort**, not guaranteed: `setup()` is the earliest point an `AppHandle` exists, and the static alternative in `tauri.conf.json` cannot be conditional on a flag. `TERRAVIZ_KIOSK=0` and an empty value mean *off* — a deployment templating one unit file across several machines sets the variable explicitly to disable kiosk, so the value is matched against an allowlist rather than tested for presence. The flag beats a falsy environment, since an operator adding it to one launch is deciding now while the environment is the installation's default. Decorations drop only after fullscreen succeeds, and every failure is logged and swallowed. One thing this rung had to add on the **TypeScript** side: the kiosk flag makes the native window fullscreen without the JS controller knowing, so `WindowChromeHost` gained an async `queryFullscreen()` seeded once at construction — without it the Tools button offers "Enter fullscreen" over a kiosk window and the first press is a no-op. That needs `core:window:allow-is-fullscreen`, added to `default.json` (`output.json` already had it). | Yes (additive) |
-| 12c | `multi-output: the Earth decoration the equirect path can carry` | The three effects §"What the equirect path does to the Earth decoration" says **cross** — day/night terminator, night lights, clouds — wired into `layerStack`'s fragment shader. Currently specified and unbuilt, which is why the first hardware session saw a flat diffuse Earth and asked for more. Not a research question: the terminator is `dot(hit, uSunDir)` (the ray-march's hit point on the unit sphere *is* the normal), night lights are a second sampler gated by it, clouds are one more layer in a composite that already unrolls slots. The sun direction comes from `getSunPosition` in `src/utils/time.ts`, which the control globe already uses, so the two cannot disagree about where the sun is. **The four that do not cross stay out** — specular, atmosphere shells, ground shadow, sun sprite are not deferred, they are incoherent on this surface, and baking one in paints a fixed glare spot or limb ring onto a physical sphere in a place correct from exactly one vantage point. That is a rendering artifact that reads as a data feature, which is worse than its absence. So "as realistic as possible" on a sphere **is** diffuse + night lights + clouds + terminator; this rung is the whole of it. | Yes (additive) |
+| 12c | `multi-output: the Earth decoration the equirect path can carry` | The three effects §"What the equirect path does to the Earth decoration" says **cross** — day/night terminator, night lights, clouds — wired into `layerStack`'s fragment shader. **Landed.** Specified here first, then built exactly as specified, which is why the first hardware session's flat diffuse Earth is now day/night-shaded with city lights and cloud cover. Not a research question: the terminator is `dot(hit, uSunDir)` (the ray-march's hit point on the unit sphere *is* the normal), night lights are a second sampler gated by it, clouds are one more layer in a composite that already unrolls slots. The sun direction comes from `getSunPosition` in `src/utils/time.ts`, which the control globe already uses, so the two cannot disagree about where the sun is. **The four that do not cross stay out** — specular, atmosphere shells, ground shadow, sun sprite are not deferred, they are incoherent on this surface, and baking one in paints a fixed glare spot or limb ring onto a physical sphere in a place correct from exactly one vantage point. That is a rendering artifact that reads as a data feature, which is worse than its absence. So "as realistic as possible" on a sphere **is** diffuse + night lights + clouds + terminator; this rung is the whole of it. | Yes (additive) |
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window crash. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". | Yes (additive) |
 | 15 | `multi-output: operator runbook` | `docs/MULTI_MONITOR_OPERATIONS.md` — the deployment half this plan has so far deferred, and which a spike showed is not optional. Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
@@ -3374,12 +3477,15 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     the window is not where the manager put it, the second
     that something is stretching the projection.
 8. Output renders the photoreal Earth idle state (no dataset
-   loaded yet): the base diffuse, re-projected. **Not**
-   day/night, night lights or clouds — those are unwired
-   (plan §"What the equirect path does to the Earth
-   decoration"), and specular, atmosphere, sun and ground
-   shadow never cross to an unwrap at all. A flat, evenly-lit
-   Earth is the pass condition here; a black sphere is not.
+   loaded yet): base diffuse, re-projected, **with** the
+   day/night terminator, night lights and clouds rung 12c
+   wired. Specular, atmosphere, sun and ground shadow never
+   cross to an unwrap at all, so their absence is the pass
+   condition rather than a gap. A black sphere is a failure;
+   so, now, is a flat evenly-lit one — that was the pass
+   condition before 12c and it means the decoration did not
+   reach the shader. The lit hemisphere should match the
+   control globe's, since both read one `getSunPosition`.
 9. The Outputs panel lists the new output with health badge:
    healthy.
 
@@ -3455,6 +3561,22 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 14. With the SST base loaded, add a foreground layer (e.g.
     cyclone tracks). Output renders both with the correct
     z-order (cyclone tracks sit on top).
+14a. **Not runnable yet, and not because of the output.** The
+    output half of this is built: `layerStack` unrolls
+    `MAX_OUTPUT_LAYERS` slots that composite in array order
+    inside one fragment shader, and `outputScene.setLayers`
+    binds them. What is missing is the *control* half — the
+    app has no stacked-dataset concept to mirror. `PanelState`
+    holds exactly one `dataset`, and the "what gets mirrored"
+    table above names the source for `layers[]` as a **new**
+    `layerStack` state in `main.ts`, which was never built. So
+    `layers` is not a publisher waiting to be wired: wiring one
+    today would publish an empty array forever. Building it is
+    a control-window feature (stack two datasets on one globe,
+    with an order the operator can change), and this step is
+    blocked on that rather than on anything under
+    `src/output/`. Skip it until then rather than recording a
+    failure.
 
 **Camera tracking + split:**
 

@@ -29,7 +29,12 @@
 import './output.css'
 import { createDatasetMirror } from './datasetMirror'
 import { OVERLAY_REFRESH_MS, createDebugOverlay, createFpsMeter } from './debugOverlay'
-import { connectOutputLink, createTauriLinkHost } from './outputLink'
+import {
+  STATE_KEYS,
+  connectOutputLink,
+  createTauriLinkHost,
+  type StateKey,
+} from './outputLink'
 import {
   contentKindFor,
   createOutputScene,
@@ -38,7 +43,7 @@ import {
 } from './outputScene'
 import type { SyncOutcome } from './outputSync'
 import { createFullscreenController, resolveChromeHost } from '../services/windowChrome'
-import type { OutputRenderConfig } from '../services/multiOutput/protocol'
+import type { OutputGlobeState, OutputRenderConfig } from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
 
 /** The same gate `bootMultiOutput` applies on the control side. */
@@ -141,7 +146,10 @@ async function boot(): Promise<void> {
         scene.setLayers(layers)
       }
 
-      link.onChange((changed, state) => {
+      const applyState = (
+        changed: readonly StateKey[],
+        state: Readonly<OutputGlobeState>,
+      ): void => {
         // Only on a real dataset change: `datasetMirror` decides
         // whether that means a reload or just new metadata, since an
         // overlay-only change must not restart the decoder.
@@ -152,12 +160,32 @@ async function boot(): Promise<void> {
           // decoder never sees it.
           recomposite()
         }
-        if (changed.includes('view')) scene.setParams(state.view.params)
+        if (changed.includes('view')) {
+          scene.setParams(state.view.params)
+          // Geometry and illumination arrive on the same key but
+          // are different questions: `params` is where the camera
+          // is looking, `dayNight` is whether the Earth is lit.
+          scene.setDayNight(state.view.dayNight)
+        }
         // Anything that changed is worth a frame — including the keys
         // this loop does not yet composite, so the 1 Hz floor never
         // holds a change back once they are wired.
         dirty = true
-      })
+      }
+      link.onChange(applyState)
+      // The same race the render config below handles, and a worse
+      // outcome. `connectOutputLink` installs its own IPC listener
+      // before emitting `output_ready`, so the manager's first snapshot
+      // can be folded into the link's store while it is still awaiting
+      // that emit — before this listener exists. Nothing would replay
+      // it: the idle heartbeat sends a *full* snapshot every second,
+      // but the store compares against what it already holds, so an
+      // identical one reports no changed keys and never fires. The
+      // output would sit on the idle Earth with a dataset already
+      // loaded on the control window, until the operator happened to
+      // change something. `STATE_KEYS` rather than a hand-written list
+      // so a key added to the schema is applied here too.
+      applyState(STATE_KEYS, link.state())
 
       /**
        * Window configuration, which travels on its own channel.

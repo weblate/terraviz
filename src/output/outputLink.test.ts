@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   OUTPUT_MODE,
   connectOutputLink,
+  STATE_KEYS,
   createOutputStateStore,
   isRenderConfig,
   isStateMessage,
@@ -121,6 +122,29 @@ describe('the store: what counts as a change', () => {
 
     expect(r.applied).toBe(true)
     expect(r.changed).toEqual([])
+  })
+
+  it('keeps a snapshot folded before anyone subscribed, and never re-announces it', () => {
+    // Why `output/main.ts` applies `link.state()` once after
+    // subscribing. `connectOutputLink` installs its IPC listener
+    // before emitting `output_ready`, so the manager's first snapshot
+    // can be folded while it is still awaiting that emit — with the
+    // consumer's listener not yet registered. Nothing replays it: the
+    // idle heartbeat sends a *full* snapshot every second, but the
+    // store compares against what it holds, so the repeat reports
+    // nothing. The state is not lost; it is simply never announced,
+    // and an output would sit on the idle Earth with a dataset already
+    // up on the control window.
+    const store = createOutputStateStore()
+
+    const first = store.accept(full(1, { dataset: dataset('SST') }))
+    expect(first.changed).toContain('dataset')
+    // Retained — which is what makes reading it after subscribing a
+    // fix rather than a guess.
+    expect(store.state().dataset?.id).toBe('SST')
+
+    // A second later, the heartbeat. Identical, so silent.
+    expect(store.accept(full(1, { dataset: dataset('SST') })).changed).toEqual([])
   })
 
   it('reports only the keys that differ inside a snapshot', () => {
@@ -519,5 +543,16 @@ describe('the render-config channel', () => {
     host.deliverConfig({ framebufferWidth: 1024, debugOverlay: false })
 
     expect(stays).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('STATE_KEYS', () => {
+  it('names every key of the initial state', () => {
+    // `output/main.ts` passes this as "everything changed" when it
+    // applies the state held at subscribe time. A key missing here is
+    // one applied on diffs and skipped on that initial pass — a
+    // difference that would only show at boot, which is the hardest
+    // place to notice it.
+    expect([...STATE_KEYS].sort()).toEqual(Object.keys(outputInitialState()).sort())
   })
 })

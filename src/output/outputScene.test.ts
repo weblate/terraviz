@@ -28,7 +28,10 @@ import {
   type OutputLayerInput,
 } from './outputScene'
 import { MAX_OUTPUT_LAYERS } from './layerStack'
-import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS } from './equirectRtt'
+import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS, latLonToDirection } from './equirectRtt'
+import { getSunPosition } from '../utils/time'
+import { until } from '../test-utils'
+import { DECORATION_UNIFORMS } from './layerStack'
 import { DEFAULT_FRAMEBUFFER_WIDTH } from '../services/multiOutput/protocol'
 
 describe('resolveFramebufferSize', () => {
@@ -155,6 +158,10 @@ describe('the sphere texture binding', () => {
         set(x: number, y: number, z: number): void {
           this.x = x; this.y = y; this.z = z
         }
+        copy(v: { x: number; y: number; z: number }): this {
+          this.x = v.x; this.y = v.y; this.z = v.z
+          return this
+        }
       },
       ShaderMaterial: class {
         uniforms: Record<string, { value: unknown }>
@@ -211,23 +218,36 @@ describe('the sphere texture binding', () => {
 
   function fakeEarth(base: FakeTexture, upgrade?: FakeTexture) {
     let subscriber: ((t: unknown) => void) | null = null
+    let lightsSubscriber: ((t: unknown) => void) | null = null
     const earthDisposed = { value: false }
     const unsubscribed = { value: false }
+    const updates = { count: 0 }
+    const sunDir = { x: 1, y: 0, z: 0 }
     const createEarth = ((_three: unknown, options: Record<string, boolean>) => {
       return {
         baseEarthTexture: base,
         baseDiffuseTexture: null,
+        nightLightsTexture: null,
+        sunDir,
         optionsSeen: options,
         onBaseDiffuseChange(cb: (t: unknown) => void) {
           subscriber = cb
           return () => { unsubscribed.value = true }
         },
+        onNightLightsChange(cb: (t: unknown) => void) {
+          lightsSubscriber = cb
+          return () => {}
+        },
+        update() { updates.count++ },
         dispose() { earthDisposed.value = true },
       }
     }) as never
     return {
       createEarth,
       upgradeNow: () => subscriber?.(upgrade),
+      lightsNow: (tex: unknown) => lightsSubscriber?.(tex),
+      updates,
+      sunDir,
       earthDisposed,
       unsubscribed,
     }
@@ -258,7 +278,11 @@ describe('the sphere texture binding', () => {
       return {
         baseEarthTexture: { id: 'base' },
         baseDiffuseTexture: null,
+        nightLightsTexture: null,
+        sunDir: { x: 1, y: 0, z: 0 },
         onBaseDiffuseChange: () => () => {},
+        onNightLightsChange: () => () => {},
+        update() {},
         dispose() {},
       }
     }) as never
@@ -270,7 +294,9 @@ describe('the sphere texture binding', () => {
 
     // The equirect pass never rasterises a mesh, so anything that only
     // exists on one is built and thrown away — and half of them are
-    // meaningless on an unwrap anyway.
+    // meaningless on an unwrap anyway. Clouds included: rung 12c wants
+    // the *raw* asset and loads it through its own seam, because that
+    // module's loader bakes alpha at a gamma tuned for a lit shell.
     expect(seen).toEqual({
       includeLighting: false,
       includeAtmosphere: false,
@@ -720,6 +746,159 @@ describe('the sphere texture binding', () => {
       expect(scene.rendererName()).toBeNull()
     })
   })
+
+  describe('the Earth decoration (rung 12c)', () => {
+    it('binds both decoration samplers from the first frame, never null', async () => {
+      // The rule the sphere sampler already follows: an unbound sampler
+      // is a driver-dependent read, and on an output black is
+      // indistinguishable from a fault. The `has*` flags are what gate
+      // them, so what is bound before they load is never sampled.
+      const three = fakeThree()
+      const base = { id: 'base' } as FakeTexture
+      const earth = fakeEarth(base)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.lightsMap].value).toBe(base)
+      expect(u[DECORATION_UNIFORMS.cloudMap].value).toBe(base)
+      expect(u[DECORATION_UNIFORMS.hasLights].value).toBe(0)
+      expect(u[DECORATION_UNIFORMS.hasCloud].value).toBe(0)
+    })
+
+    it('takes the night lights when they land, and reports itself dirty', async () => {
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+      scene.consumeDirty()
+
+      const lights = { id: 'lights' }
+      earth.lightsNow(lights)
+
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.lightsMap].value).toBe(lights)
+      expect(u[DECORATION_UNIFORMS.hasLights].value).toBe(1)
+      // Without the flag the arrival would wait out the 1 Hz static
+      // floor before the city lights appeared on a projector.
+      expect(scene.consumeDirty()).toBe(true)
+    })
+
+    it('takes the clouds when they land, and reports itself dirty', async () => {
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+      const image = { id: 'cloud-image' } as unknown as TexImageSource
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        {
+          loadThree: async () => three.THREE_,
+          createEarth: earth.createEarth,
+          loadCloudImage: async () => image,
+        },
+      )
+      await until(
+        () => three.uniformsSeen[0][DECORATION_UNIFORMS.hasCloud].value === 1,
+        'the cloud texture to be bound',
+      )
+
+      const u = three.uniformsSeen[0]
+      expect((u[DECORATION_UNIFORMS.cloudMap].value as { image: unknown }).image).toBe(image)
+      expect(scene.consumeDirty()).toBe(true)
+    })
+
+    it('renders a correct Earth when the cloud asset will not load', async () => {
+      // An output that refused to boot over a missing decoration texture
+      // would be a worse failure than one without clouds.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        {
+          loadThree: async () => three.THREE_,
+          createEarth: earth.createEarth,
+          loadCloudImage: async () => null,
+        },
+      )
+
+      expect(three.uniformsSeen[0][DECORATION_UNIFORMS.hasCloud].value).toBe(0)
+      expect(() => scene.render()).not.toThrow()
+    })
+
+    it("puts the sun in the ray-march's frame, not the globe mesh's", async () => {
+      // The bug this replaced. `photorealEarth.sunDir` negates Z — it is
+      // built for the globe *mesh*'s frame — so borrowing it mirrored the
+      // sun in longitude and lit the opposite hemisphere: on hardware the
+      // Americas went dark while the control globe had them in daylight.
+      // Sharing `getSunPosition` was never the property that mattered;
+      // sharing the frame is, so this derives the direction through the
+      // same `latLonToDirection` `cameraOffsetForCamera` uses.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      // Deliberately wrong, and deliberately ignored.
+      earth.sunDir.x = 0
+      earth.sunDir.z = -1
+      scene.render()
+
+      const solar = getSunPosition(new Date())
+      const expected = latLonToDirection(solar.lat, solar.lng)
+      const sun = three.uniformsSeen[0][DECORATION_UNIFORMS.sunDir].value as {
+        x: number
+        y: number
+        z: number
+      }
+      expect(sun.x).toBeCloseTo(expected.x, 4)
+      expect(sun.y).toBeCloseTo(expected.y, 4)
+      expect(sun.z).toBeCloseTo(expected.z, 4)
+    })
+
+    it('does not mark itself dirty just because the sun moved', async () => {
+      // The sun advances ~0.004 degrees a second. Flagging that would
+      // hold a static output at the render rate forever to animate
+      // something nobody can see move.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+      scene.consumeDirty()
+
+      scene.render()
+
+      expect(scene.consumeDirty()).toBe(false)
+    })
+
+    it('turns day/night off and back on, and no-ops on an unchanged flag', async () => {
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.dayNight].value).toBe(1)
+
+      scene.consumeDirty()
+      scene.setDayNight(false)
+      expect(u[DECORATION_UNIFORMS.dayNight].value).toBe(0)
+      expect(scene.consumeDirty()).toBe(true)
+
+      // Repeated from a heartbeat snapshot: nothing changed, so nothing
+      // is redrawn for it.
+      scene.setDayNight(false)
+      expect(scene.consumeDirty()).toBe(false)
+    })
+  })
 })
 
 describe('vite entry list', () => {
@@ -756,4 +935,6 @@ describe('the output page', () => {
   it('loads its entry module relative to itself', () => {
     expect(html).toContain('src="./main.ts"')
   })
+
+
 })
