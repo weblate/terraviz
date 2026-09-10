@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderWorkflowsPage } from './workflows'
 import type { PublisherWorkflow } from '../workflows-api'
+import { until } from '../../../test-utils'
 
 function workflow(overrides: Partial<PublisherWorkflow> = {}): PublisherWorkflow {
   return {
@@ -84,6 +85,40 @@ describe('renderWorkflowsPage', () => {
     await new Promise(r => setTimeout(r, 0))
     expect(runCalls).toEqual(['wf1'])
     expect(mount.querySelector('.publisher-row-action-status')?.textContent).toBe('Queued ✓')
+  })
+
+  it('survives a runs response whose body is not the shape it expects', async () => {
+    // The bug this replaces: the capture fixtures served the workflows
+    // *list* payload to the per-workflow runs probe (the runs URL has
+    // the list URL as a substring), so `data.runs` was undefined and
+    // `for...of` threw. The call is floated, so that surfaced as an
+    // uncaught page error rather than a missing badge — a last-run
+    // badge is decoration and must not be able to take the page down.
+    const errors: unknown[] = []
+    const onError = (e: PromiseRejectionEvent | ErrorEvent): void => {
+      errors.push(e)
+    }
+    window.addEventListener('unhandledrejection', onError as EventListener)
+    window.addEventListener('error', onError as EventListener)
+    try {
+      await renderWorkflowsPage(mount, {
+        listFn: async () => ({ ok: true, data: { workflows: [workflow({ id: 'wf1' })] } }),
+        // A well-formed 200 carrying the wrong body.
+        runsFn: async () => ({ ok: true, data: { workflows: [] } }) as never,
+        navigate: () => {},
+      })
+      await until(
+        () => mount.querySelector('[data-workflow-lastrun="wf1"]') !== null,
+        'the workflows table to render',
+      )
+      // The row is there, just without a badge — degraded, not broken.
+      expect(mount.querySelector('table')).not.toBeNull()
+      expect(mount.querySelector('.publisher-workflows-runstatus')).toBeNull()
+      expect(errors).toEqual([])
+    } finally {
+      window.removeEventListener('unhandledrejection', onError as EventListener)
+      window.removeEventListener('error', onError as EventListener)
+    }
   })
 
   it('renders the empty state when no workflows exist', async () => {

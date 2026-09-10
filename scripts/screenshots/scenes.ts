@@ -31,6 +31,7 @@ import type { Page } from 'playwright'
 
 import { gotoApp } from './core/browser'
 import type { FixtureRule } from './core/fixtures'
+import type { ExpectedBadResponse } from './core/signals'
 import type { Box } from './core/types'
 import { analyticsFixtures, feedbackFixtures } from './fixtures/admin'
 import { catalogReportFixtures } from './fixtures/catalog'
@@ -97,6 +98,17 @@ export interface Scene {
    * is always local + stubbed).
    */
   requiresFixtures?: boolean
+  /**
+   * Bad responses this scene is *supposed* to provoke.
+   *
+   * A scene that exists to capture a failure surface stubs the failure
+   * deliberately, and the report would otherwise badge it forever —
+   * which is how a badge stops being read. Declaring the expectation
+   * keeps the badge meaningful and keeps the scene honest: a *different*
+   * endpoint failing, or the same one failing with a different code,
+   * still reports.
+   */
+  expectedBadResponses?: ExpectedBadResponse[]
 }
 
 /** Open the catalog landing surface (the Browse overlay). */
@@ -841,6 +853,9 @@ export const scenes: Scene[] = [
     description: 'Publisher portal — datasets list, server-error card',
     fixtures: publisherFixtures({ datasets: 'error' }),
     requiresFixtures: true,
+    // The 500 *is* the scene: the fixture stubs it so the page renders
+    // its error card. Anything else failing here is still a problem.
+    expectedBadResponses: [{ url: '/api/v1/publish/datasets', status: 500 }],
     async setup(page) {
       await openPublish(page, '/publish/datasets')
       await page.locator('.publisher-error').first().waitFor()
