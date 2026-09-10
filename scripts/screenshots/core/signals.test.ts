@@ -153,6 +153,29 @@ describe('a scene that expects a bad response', () => {
     c.handleResponse(response('http://x/api/v1/publish/datasets?limit=200', 500))
     expect(c.signals.badResponses).toEqual([])
   })
+
+  it('over-matches child routes when the declaration is a bare string', () => {
+    // Not an endorsement — a pin on the sharp edge, so the docstring's
+    // warning cannot quietly stop being true. `/publish/datasets/<id>`
+    // is a real route, and a substring declaration swallows it.
+    const c = createSignalCollector([{ url: '/api/v1/publish/datasets', status: 500 }])
+    c.handleResponse(response('http://x/api/v1/publish/datasets/01ABC', 500))
+    expect(c.signals.badResponses).toEqual([])
+  })
+
+  it('an anchored pattern keeps the child route reporting', () => {
+    // What publish-datasets-error actually declares. The query string
+    // still matches; the detail route does not.
+    const anchored = [{ url: /\/api\/v1\/publish\/datasets(\?|$)/, status: 500 }]
+    const c = createSignalCollector(anchored)
+    c.handleResponse(response('http://x/api/v1/publish/datasets?status=draft&limit=200', 500))
+    c.handleResponse(response('http://x/api/v1/publish/datasets', 500))
+    c.handleResponse(response('http://x/api/v1/publish/datasets/01ABC', 500))
+
+    expect(c.signals.badResponses).toEqual([
+      { url: 'http://x/api/v1/publish/datasets/01ABC', status: 500 },
+    ])
+  })
 })
 
 describe('axeEnabled', () => {

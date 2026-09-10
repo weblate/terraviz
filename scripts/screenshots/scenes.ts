@@ -854,8 +854,11 @@ export const scenes: Scene[] = [
     fixtures: publisherFixtures({ datasets: 'error' }),
     requiresFixtures: true,
     // The 500 *is* the scene: the fixture stubs it so the page renders
-    // its error card. Anything else failing here is still a problem.
-    expectedBadResponses: [{ url: '/api/v1/publish/datasets', status: 500 }],
+    // its error card. Anchored rather than a bare substring, because
+    // `/publish/datasets/<id>` is a real route here (the fixtures stub
+    // it too) and a plain `includes` would suppress its failures as
+    // well — the opposite of what declaring an expectation is for.
+    expectedBadResponses: [{ url: /\/api\/v1\/publish\/datasets(\?|$)/, status: 500 }],
     async setup(page) {
       await openPublish(page, '/publish/datasets')
       await page.locator('.publisher-error').first().waitFor()

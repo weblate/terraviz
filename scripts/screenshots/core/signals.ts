@@ -50,7 +50,15 @@ export interface BadResponse {
  * several is the likely case rather than the unlikely one.
  */
 export interface ExpectedBadResponse {
-  /** Substring or pattern matched against the response URL. */
+  /**
+   * Matched against the response URL: a string by `includes`, a RegExp
+   * by `test`.
+   *
+   * **A bare string over-matches a route that has children.** Declaring
+   * `/publish/datasets` suppresses `/publish/datasets/<id>` too, which
+   * is the opposite of the point — use an anchored pattern like
+   * `/\/publish\/datasets(\?|$)/` for any endpoint with sub-routes.
+   */
   url: string | RegExp
   status: number
 }
