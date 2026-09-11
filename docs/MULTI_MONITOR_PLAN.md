@@ -605,7 +605,7 @@ not a porting question at all.
 | Day/night terminator | `dot(surfaceNormal, sunDir)` | **Crosses, in one line.** In a ray-march the hit point on the unit sphere *is* the normal, so `vNdotL` (`photorealEarth.ts:566`) is `dot(hit, uSunDir)`. |
 | Clouds | an equirect texture on a shell at 1.005 | **Crosses.** Another layer in the composite. |
 | Specular ocean | the **viewer's** position — `rayDir = normalize(fragKm - camKm)` (`:870`) | **Meaningless.** |
-| Atmosphere shells | the **silhouette** — the shell exists "so the shell's silhouette is the limb of the atmosphere proper" (`:148-151`) | **Meaningless.** |
+| Atmosphere shells | the **silhouette** — the shell exists "so the shell's silhouette is the limb of the atmosphere proper" (`:148-151`) | **Meaningless as a shell; the disc tint crosses.** The mesh and its limb do not survive an unwrap. But the shell covers the whole visible *disc*, not a ring, and pinned to nadir its integral collapses to a function of sun angle alone — which is meaningful at every point of an unwrap. See §"One real gap this turned up" and `src/output/atmosphereNadir.ts`. Do not read this row as licence to remove that pass. |
 | Ground shadow | a scene to cast onto | **Meaningless.** |
 | Sun sprite | a billboard in world space | **Meaningless.** |
 
@@ -677,36 +677,130 @@ output is in fact showing. Rescaling the curve to end at the cap
 is the tempting fix, and it would put a second cloud calibration in
 the repo — the trap immediately above, in a new place.
 
-**Verified on a real GL implementation (2026-09-09).** The decoration
+**Verified on a real GL implementation (2026-09-11).** The decoration
 GLSL is a hand transcription of tested TypeScript, which is the
 weakest guard in this module — a transcription error compiles fine and
-fails only on a GPU. It has now been rendered: `output.html`, and a
-throwaway harness driving `outputScene.setParams`, run headless in
-Chromium over ANGLE/SwiftShader, and both the terminator and the fade
-were measured back out of the pixels.
+fails only on a GPU. It has now been rendered headless in Chromium
+over ANGLE/SwiftShader and the numbers measured back out of the
+pixels. Two harnesses, and the difference between them is worth
+keeping: the first drives `outputScene.setParams` through
+`output.html`, which exercises the real scene and therefore reads
+through the equirect camera's pixel→lat/lon mapping; the second
+compiles `buildOutputFragmentShader` against a **uniform** base
+texture in a bare WebGL context, which removes that mapping from the
+comparison entirely. The second exists because the first produced an
+unresolvable reading on the atmosphere — a lit band that would not
+line up with the subsolar longitude — and the way out was to stop
+measuring two things at once rather than to keep staring at the one
+number.
 
 | Check | Method | Result |
 |---|---|---|
 | Terminator position | render at four frozen UTC instants, divide by the same frame with `dayNight` off to cancel albedo, least-squares fit the subsolar point | fitted longitude within **1.5°** of `getSunPosition`'s at 00/06/12/18 UTC, tracking −15°/h in the correct direction |
 | Terminator frame | 06:00 and 18:00 specifically | fitted **+91°** and **−91°**; the borrowed-vector bug mirrors longitude, so it would read −90 and +90 here — and would agree at 00:00/12:00, which is why it hid at those two hours |
 | Cloud zoom fade | flat cloud field, alpha recovered from a paired render with clouds off, compared against the ray length's own prediction | worst deviation **0.0020** over the frame at zoom 0 and zoom 5 — 8-bit quantisation |
+| Grade + atmosphere | the composed shader compiled against a *uniform* base texture, so the pixel→lat/lon mapping drops out of the comparison, then every sampled fragment checked against `gradeEarthBase`/`decorateEarth`/`applyAtmosphere` run in TypeScript | worst deviation **0.499 of one byte**, mean 0.046, over 176 fragments spanning the whole sun sweep — rounding and nothing else. The measured ocean: raw `rgb(2, 5, 20)` → graded `rgb(0, 0, 12)` → `rgb(2, 5, 29)` at the subsolar point, the +18 blue matching `SUN_INTENSITY`'s own docstring calibration |
 
-**One real gap this turned up: the ocean.** The output's base diffuse
-is `photorealEarth`'s `earth_diffuse_*.jpg`, whose water is
-`rgb(2, 5, 20)` — very nearly black, because that stack paints ocean
-colour with the specular and atmosphere passes this surface cannot
-carry. The control globe's base is *not* that texture at all: it is
-GIBS `BlueMarble_NextGeneration` raster tiles, which carry their own
-blue water. So a day-side ocean that reads blue on the control globe
-reads black on an output, which is what "the main application window
-is much more blue" was reporting. It is not scattering, and it will
-not be fixed by adding any effect from the table above. The fix is a
-choice about the base texture — a bathymetry-coloured diffuse, an
-ocean tint applied where the diffuse is water, or sampling the same
-GIBS product the control globe does — and is deliberately left open
-here rather than picked in passing, because it changes a committed
-18.5 MB asset set or adds a network dependency to a window that is
-meant to work air-gapped.
+**A second gap, found in review: the whole Earth was too dark.** The
+base texture arrives from `photorealEarth` tagged `SRGBColorSpace`,
+which is right for *that* module's material — Three uploads it with an
+sRGB internal format so the sampler decodes to linear for the lighting
+pipeline downstream. This path has no such pipeline: one quad, a
+hand-written `ShaderMaterial`, straight to the default framebuffer with
+no `colorspace_fragment` chunk to re-encode on the way out. And every
+constant in `layerStack` is copied from `earthTileLayer`, which grades
+and composites in sRGB **display** space because it reads the MapLibre
+framebuffer. Decoded-linear input under display-space constants is not
+a subtlety — measured through the real composed shader:
+
+| Base (sRGB) | Decoded-linear (as shipped) | Display space (fixed) |
+|---|---|---|
+| Ocean `rgb(2, 5, 20)` | `rgb(2, 5, 17)` | `rgb(2, 5, 28)` |
+| Land `rgb(181, 150, 103)` | `rgb(112, 68, 30)` | `rgb(172, 139, 96)` |
+| Sahara `rgb(213, 174, 131)` | `rgb(166, 96, 50)` | `rgb(205, 162, 124)` |
+| Vegetation `rgb(27, 47, 19)` | **`rgb(2, 5, 17)`** | `rgb(15, 41, 21)` |
+
+The vegetation row is the one that settles it: dark green land reached
+the framebuffer **byte-identical to ocean**, so forest and sea were the
+same colour on the sphere. Contrast-around-0.5 in linear space treats
+anything below mid-grey as far-below-midtone and crushes it, which is
+the failure `photorealEarth`'s own contrast knob carries a paragraph
+about avoiding.
+
+**It predates the colour grade.** Rung 12c's decoration inherited it
+the same way — its four constants are `earthTileLayer`'s too. The fix
+removes the decode rather than compensating for it (`useDisplaySpace`
+in `outputScene`), so every copied constant is correct by construction
+instead of correct after an offsetting transform, and the cloud
+texture — built here by `new Texture(img)` and left at Three's default
+`NoColorSpace` — stops being the only one that was already right.
+Retagging is safe because `createPhotorealEarth` builds these per call
+and an output window holds its own instance.
+
+**One real gap this turned up: the ocean — and the first diagnosis of
+it was wrong twice.** The output's day-side sea read near-black beside
+a blue one, which is what "the main application window is much more
+blue" was reporting. It was first attributed to scattering, then
+"corrected" to a claim that the control globe's GIBS
+`BlueMarble_NextGeneration` tiles "carry their own blue water" and
+that scattering therefore had nothing to do with it. Measured rather
+than asserted, a BMNG tile's ocean is `rgb(2, 5, 20)` and
+`earth_diffuse_2048.jpg`'s is `rgb(2, 5, 20)` — **byte-identical, the
+same product.** Blue Marble's blue is not in Blue Marble. The second
+claim was the wrong one, and the original instinct was right.
+
+The blue comes from two passes the output was not running, both of
+which cross to an unwrap:
+
+- **Pass 0, the colour grade.** Contrast 1.10 ("a slight S-curve to
+  deepen ocean blues") and saturation 1.20 ("push the Blue Marble
+  greens/blues a touch"), applied to the raw tiles before anything
+  composites on them. Purely per-pixel: no geometry, no viewer, no
+  silhouette, nothing for an unwrap to reinterpret. On the real ocean
+  value it clips red and green to black and leaves blue standing.
+- **Pass 5, atmospheric scattering.** The shell sits at
+  `ATMOSPHERE_RADIUS_FACTOR` (~1.0157), so it covers the whole visible
+  **disc**, not a limb ring, compositing
+  `scattered + background x viewTransmittance`. Rayleigh beta scatters
+  blue ~5.7x harder than red, so over a near-black ocean the
+  in-scattered term *is* the water's colour.
+
+**The table's "atmosphere shells → meaningless" row was right about
+the limb and wrong about the disc tint.** Pin the view to nadir —
+the one choice an unwrap can make without inventing a viewer — and
+every term of `computeAtmosphereScattering` collapses onto a single
+scalar: with the ray from the top of atmosphere at `-P`,
+`normalize(samplePos)` is `P` at every step, so the sun-transmittance
+lookup's `mu` is `dot(P, sunDir)` *constant down the column*; the
+view-side optical depths depend only on altitude; and both phase
+functions key on that same scalar negated. Exact rather than
+approximate, because the shared ray-march is single-scatter with no
+ground-albedo coupling. So it is a **256x1 RGBA LUT** — RGB the
+in-scatter, alpha the transmittance — indexed by the value
+`earthNightFactor` is already handed, and it is *static*: the sun's
+position never enters the table, only its cosine, which the shader
+derives per fragment. Built once, never rebuilt. `src/output/
+atmosphereNadir.ts`.
+
+**This sharpens the table's rule rather than breaking it.** The test
+is not "does the effect depend on a viewer" but *what does it become
+at nadir*: scattering becomes a smooth global function of sun angle,
+meaningful everywhere; specular becomes a fixed bright spot at the
+subsolar point, which is the glare artifact this section rules out,
+reached by another route. Specular, ground shadow and the sun sprite
+stay out on that sharper test, and now for a stated reason rather than
+by category.
+
+Two limits are stated rather than hidden. It is **single-scatter**, so
+it reads dark at high sun-zenith angles — the control globe shares
+that limitation, which is the point: the two agree because they share
+these constants, not because either is right. And **nadir is a
+choice**: the control globe shows one viewer's scattering, so the two
+match near its sub-viewer point and diverge toward its limb. An unwrap
+has no viewer to match. The same reasoning keeps the shared 16-step
+tier even though this table is built once on the CPU and could afford
+any step count — integrating more finely would render an ocean
+measurably bluer than the globe it exists to agree with.
 
 The four that do not cross are not blocked; they are
 **incoherent on this surface**. An equirectangular unwrap shows
@@ -2406,7 +2500,7 @@ without rolling the whole feature back.
 | 11c | `multi-output: machine-scoped decoder budget` | **Landed.** `PersistedOutputConfig.concurrentDecoderBudget` (machine-scoped, `null` = "nobody has measured this machine, ask it"), `manager.decoderBudget()` / `setDecoderBudget()` / `decoderLoad()`, the refusal inside `spawn()` — so a restore is held to the same rule as an Add — and the panel's number field, "N of M video decoders in use" readout, and disabled Add with a message naming what to close. The count is **windows that can hold a decoder**, not decoders currently decoding; see the revised "Counted" row above for why, since it departs from what this section originally said. The control window's contribution reaches the manager through an injected `controlPanels()` — `main.ts` owns both `viewportManager` and `bootMultiOutput`, and neither of those should learn what the other is. Unset falls back to `maxVideoPanels()` rather than storing it, so an unpinned budget keeps tracking the machine. **Still not enforced at layout change** (plan: "at both spawn time and layout change") — a control window that grows from 1 globe to 4 while outputs are up can still cross the budget. That needs `viewportManager` to consult the manager, which is a cross-cutting change and its own commit. | Yes (additive) |
 | 12a | `multi-output: window chrome — fullscreen, decorations, F11, idle cursor` | **Landed.** `src/services/windowChrome.ts` (shared by both windows), the F11 handler, the idle-cursor rule in `base.css`, and the upgrade of the Tools bar's existing fullscreen button. Two findings worth recording. First, §3.6 mechanism 2 was **already half-built**: a fullscreen button has shipped since §3.3, driving `document.requestFullscreen` directly — which is the whole answer in a browser and half of it in a packaged app, since it fullscreens the *webview* while leaving the native title bar and border in the captured signal. The button was upgraded rather than joined by a second one. Second, that same button read its label off `document.fullscreenElement`, which stays **null** when the native window goes fullscreen — so on desktop it would have offered "Enter fullscreen" over a window already in it, and F11 changes the state without `fullscreenchange` firing at all; the controller is now what it reads. Fullscreen and decorations are one operation because `setFullscreen(true)` alone leaves the title bar on some window managers and removes it on others, and decorations follow rather than lead so a failed fullscreen cannot strand an operator with an unmovable undecorated window. The desktop host is built **synchronously** and imports Tauri on first use, because the Tools menu reads the state while laying out its markup. F11 on an output passes `initial: true` and persists nothing — an output is fullscreen by construction and a title bar borrowed for calibration must not come back next launch. | Yes (additive) |
 | 12b | `multi-output: kiosk launch flag` | **Landed.** `--kiosk` and `TERRAVIZ_KIOSK=1` parsed in `src-tauri/src/lib.rs` (`main.rs` was already the 12-line shim this section predicted), applied in `setup()` behind `#[cfg(desktop)]`. "Before first paint" is **best-effort**, not guaranteed: `setup()` is the earliest point an `AppHandle` exists, and the static alternative in `tauri.conf.json` cannot be conditional on a flag. `TERRAVIZ_KIOSK=0` and an empty value mean *off* — a deployment templating one unit file across several machines sets the variable explicitly to disable kiosk, so the value is matched against an allowlist rather than tested for presence. The flag beats a falsy environment, since an operator adding it to one launch is deciding now while the environment is the installation's default. Decorations drop only after fullscreen succeeds, and every failure is logged and swallowed. One thing this rung had to add on the **TypeScript** side: the kiosk flag makes the native window fullscreen without the JS controller knowing, so `WindowChromeHost` gained an async `queryFullscreen()` seeded once at construction — without it the Tools button offers "Enter fullscreen" over a kiosk window and the first press is a no-op. That needs `core:window:allow-is-fullscreen`, added to `default.json` (`output.json` already had it). | Yes (additive) |
-| 12c | `multi-output: the Earth decoration the equirect path can carry` | The three effects §"What the equirect path does to the Earth decoration" says **cross** — day/night terminator, night lights, clouds — wired into `layerStack`'s fragment shader. **Landed.** Specified here first, then built exactly as specified, which is why the first hardware session's flat diffuse Earth is now day/night-shaded with city lights and cloud cover. Not a research question: the terminator is `dot(hit, uSunDir)` (the ray-march's hit point on the unit sphere *is* the normal), night lights are a second sampler gated by it, clouds are one more layer in a composite that already unrolls slots. The sun direction comes from `getSunPosition` in `src/utils/time.ts`, which the control globe already uses, so the two cannot disagree about where the sun is. **The four that do not cross stay out** — specular, atmosphere shells, ground shadow, sun sprite are not deferred, they are incoherent on this surface, and baking one in paints a fixed glare spot or limb ring onto a physical sphere in a place correct from exactly one vantage point. That is a rendering artifact that reads as a data feature, which is worse than its absence. So "as realistic as possible" on a sphere **is** diffuse + night lights + clouds + terminator; this rung is the whole of it. | Yes (additive) |
+| 12c | `multi-output: the Earth decoration the equirect path can carry` | The three effects §"What the equirect path does to the Earth decoration" says **cross** — day/night terminator, night lights, clouds — wired into `layerStack`'s fragment shader. **Landed.** Specified here first, then built exactly as specified, which is why the first hardware session's flat diffuse Earth is now day/night-shaded with city lights and cloud cover. Not a research question: the terminator is `dot(hit, uSunDir)` (the ray-march's hit point on the unit sphere *is* the normal), night lights are a second sampler gated by it, clouds are one more layer in a composite that already unrolls slots. The sun direction comes from `getSunPosition` in `src/utils/time.ts`, which the control globe already uses, so the two cannot disagree about where the sun is. **The four that do not cross stay out** — specular, atmosphere *shells*, ground shadow, sun sprite are not deferred, they are incoherent on this surface, and baking one in paints a fixed glare spot or limb ring onto a physical sphere in a place correct from exactly one vantage point. That is a rendering artifact that reads as a data feature, which is worse than its absence. So "as realistic as possible" on a sphere **is** diffuse + night lights + clouds + terminator; this rung is the whole of it. **Amended after this rung shipped:** the atmosphere's *shell* stays out for the reason above, but its **disc tint** was later found to cross — pinned to nadir the scattering integral is a function of sun angle alone, with no silhouette to be wrong about. That is what made the output's ocean black beside a blue one. It is not a fifth effect sneaking back in; it is the sharper test (what does this become at nadir?) applied to a row this table got half right. | Yes (additive) |
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window crash. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". | Yes (additive) |
 | 15 | `multi-output: operator runbook` | `docs/MULTI_MONITOR_OPERATIONS.md` — the deployment half this plan has so far deferred, and which a spike showed is not optional. Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |

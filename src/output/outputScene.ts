@@ -72,8 +72,13 @@ import {
   type EquirectParams,
 } from './equirectRtt'
 import { getSunPosition } from '../utils/time'
-import { getCloudTextureUrl } from '../utils/deviceCapability'
+import { getCloudTextureUrl, isMobile } from '../utils/deviceCapability'
 import { logger } from '../utils/logger'
+import { NADIR_LUT_SIZE, buildNadirScatterLut } from './atmosphereNadir'
+import {
+  ATMOSPHERE_STEPS_HIGH,
+  ATMOSPHERE_STEPS_MOBILE,
+} from '../services/atmosphereConstants'
 import {
   DECORATION_UNIFORMS,
   MAX_OUTPUT_LAYERS,
@@ -325,11 +330,82 @@ function defaultCreateEarth(): Promise<CreateEarth> {
 /** The slice of a Three texture this module touches. */
 interface TextureLike {
   needsUpdate?: boolean
+  // Sampler state, optional because only the LUT upload sets it: a
+  // `DataTexture` defaults to nearest filtering and every other
+  // texture here arrives already configured by whoever loaded it.
+  minFilter?: unknown
+  magFilter?: unknown
+  wrapS?: unknown
+  wrapT?: unknown
+  // Written by `useDisplaySpace`, which is the whole reason this is
+  // not `readonly`: the textures arrive tagged for another material.
+  colorSpace?: unknown
   dispose(): void
 }
 
 interface ShaderMaterialLike {
   dispose(): void
+}
+
+/**
+ * The integration tier for this machine's scattering table.
+ *
+ * Mirrors `earthTileLayer`'s own `isMobile() ? MOBILE : HIGH` choice
+ * rather than picking independently, because the whole point of the
+ * table is that the output and the control globe agree — and
+ * `isMobile()` is `innerWidth <= 768 || maxTouchPoints > 0`, so it is
+ * true of a touchscreen desktop, not only a phone. An output that
+ * hard-coded HIGH there would integrate more finely than the globe
+ * beside it and render a bluer ocean, which is the failure this whole
+ * path exists to remove.
+ */
+function atmosphereStepsForDevice(): { primarySteps: number } {
+  return isMobile() ? ATMOSPHERE_STEPS_MOBILE : ATMOSPHERE_STEPS_HIGH
+}
+
+/**
+ * Put a texture into the colour space this shader actually works in.
+ *
+ * `photorealEarth` tags its diffuse and night-lights `SRGBColorSpace`,
+ * which is right for *its* material: Three uploads those with an sRGB
+ * internal format, so the sampler decodes to linear and the lighting
+ * pipeline downstream expects exactly that. This module has no such
+ * pipeline. It renders one quad with a hand-written `ShaderMaterial`
+ * straight to the default framebuffer — no `colorspace_fragment`
+ * chunk, so nothing re-encodes on the way out — and every constant in
+ * `layerStack` is copied from `earthTileLayer`, which grades and
+ * composites in sRGB **display** space because it reads the MapLibre
+ * framebuffer (see `photorealEarth`'s own note at the contrast knob).
+ *
+ * Decoded-linear input under display-space constants is a real,
+ * measured error and not a subtlety: lit daytime land
+ * `rgb(181, 150, 103)` reached the framebuffer as `rgb(112, 68, 31)` —
+ * about 60% brightness, crushed toward red — and contrast-around-0.5
+ * in linear space drove the ocean to black. It predates the colour
+ * grade; rung 12c's decoration inherited it the same way.
+ *
+ * So the decode is removed rather than compensated for, which makes
+ * every copied constant correct by construction instead of correct
+ * after an offsetting transform. The cloud texture already works this
+ * way — it is built here by `new Texture(img)` and left at Three's
+ * default `NoColorSpace` — so this brings the other two into line with
+ * the one that was never wrong.
+ *
+ * Mutating a texture another module created is the part to be uneasy
+ * about. It is safe here because `createPhotorealEarth` builds these
+ * per call and this window holds its own instance: VR and Orbit have
+ * theirs, and an output page never constructs one of those anyway.
+ * `colorSpace` is set *before* `needsUpdate` because Three bakes the
+ * space in at upload, so the flag is what forces the re-upload.
+ */
+function useDisplaySpace<T extends TextureLike>(
+  three: unknown,
+  tex: T | null | undefined,
+): T | null | undefined {
+  if (!tex) return tex
+  tex.colorSpace = (three as { NoColorSpace?: unknown }).NoColorSpace
+  tex.needsUpdate = true
+  return tex
 }
 
 /** What is currently bound to one overlay slot. */
@@ -431,6 +507,57 @@ export async function createOutputScene(
     includeShadow: false,
   })
 
+  // Static by construction (see the uniform's note below), so this is
+  // the one texture built eagerly rather than on an asset arriving.
+  // A failure costs the ocean its colour, not the render loop.
+  //
+  // The tier is read *here* rather than defaulted inside the builder,
+  // because `earthTileLayer` picks its own from `isMobile()` and that
+  // is true of any touch-capable machine, not just a phone — a
+  // touchscreen desktop would otherwise run the control globe at 10
+  // steps and this output at 16, making the output's ocean bluer than
+  // the globe it exists to match. `atmosphereNadir` stays pure; this
+  // module already reads the environment for `getCloudTextureUrl`.
+  //
+  // Both filters are set explicitly because `THREE.DataTexture`
+  // defaults to `NearestFilter` — unlike `Texture` — which would
+  // quantise the sun-angle lookup into 256 bands and stop the shader
+  // agreeing with `sampleNadirLut`, the TS mirror it is tested
+  // against. Same four properties `photorealEarth` sets on both of
+  // its own LUT uploads.
+  let atmosphereLut: TextureLike | null = null
+  try {
+    const api = THREE_ as unknown as {
+      DataTexture: new (d: Uint8Array, w: number, h: number, f: unknown) => TextureLike
+      RGBAFormat: unknown
+      LinearFilter: unknown
+      ClampToEdgeWrapping: unknown
+    }
+    atmosphereLut = new api.DataTexture(
+      buildNadirScatterLut(NADIR_LUT_SIZE, atmosphereStepsForDevice().primarySteps),
+      NADIR_LUT_SIZE,
+      1,
+      api.RGBAFormat,
+    )
+    atmosphereLut.minFilter = api.LinearFilter
+    atmosphereLut.magFilter = api.LinearFilter
+    atmosphereLut.wrapS = api.ClampToEdgeWrapping
+    atmosphereLut.wrapT = api.ClampToEdgeWrapping
+    atmosphereLut.needsUpdate = true
+  } catch (err) {
+    logger.warn('[outputScene] atmosphere LUT unavailable', err)
+    atmosphereLut = null
+  }
+
+  // Everything this shader samples must be in display space; see
+  // `useDisplaySpace`. Done once here so the placeholder binds below
+  // (which reuse `baseEarthTexture`) pick up the same retagged object,
+  // and again in each change callback, since a tier upgrade hands over
+  // a texture this has never seen.
+  useDisplaySpace(THREE_, earth.baseEarthTexture)
+  useDisplaySpace(THREE_, earth.baseDiffuseTexture)
+  useDisplaySpace(THREE_, earth.nightLightsTexture)
+
   const uniforms: Record<string, { value: unknown }> = {
     // `baseEarthTexture` is loaded unconditionally and is never null,
     // so the sampler is bound from the first frame. A `null` here
@@ -467,6 +594,19 @@ export async function createOutputScene(
     [DECORATION_UNIFORMS.hasLights]: { value: earth.nightLightsTexture ? 1 : 0 },
     [DECORATION_UNIFORMS.cloudMap]: { value: earth.baseEarthTexture },
     [DECORATION_UNIFORMS.hasCloud]: { value: 0 },
+    // Atmospheric scattering, reduced to a static 1 KiB table. It is
+    // indexed by the *sun cosine*, which the shader derives per
+    // fragment from `uSunDir` — the sun's position never enters the
+    // table, so unlike every other texture here it is built once and
+    // never rebuilt, not even as the sun moves. See `atmosphereNadir`.
+    // Falls back to the base texture rather than `null` for the reason
+    // the two samplers above do: a null sampler is undefined behaviour
+    // that some drivers answer with black, and black here would tint
+    // the whole sphere rather than fail visibly.
+    [DECORATION_UNIFORMS.atmosphereLut]: {
+      value: atmosphereLut ?? earth.baseEarthTexture,
+    },
+    [DECORATION_UNIFORMS.hasAtmosphere]: { value: atmosphereLut ? 1 : 0 },
   }
   if (earth.nightLightsTexture) {
     uniforms[DECORATION_UNIFORMS.lightsMap].value = earth.nightLightsTexture
@@ -512,14 +652,14 @@ export async function createOutputScene(
   let cloudTexture: (TextureLike & { needsUpdate: boolean }) | null = null
   let disposed = false
   const unsubscribeDiffuse = earth.onBaseDiffuseChange(tex => {
-    uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = tex
+    uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = useDisplaySpace(THREE_, tex)
     textureUpgraded = true
   })
   // Same treatment for the decoration maps: they arrive after first
   // paint too, and an un-flagged arrival would wait out the 1 Hz floor
   // before the city lights or the clouds appeared.
   const unsubscribeLights = earth.onNightLightsChange(tex => {
-    uniforms[DECORATION_UNIFORMS.lightsMap].value = tex
+    uniforms[DECORATION_UNIFORMS.lightsMap].value = useDisplaySpace(THREE_, tex)
     uniforms[DECORATION_UNIFORMS.hasLights].value = 1
     textureUpgraded = true
   })
@@ -718,6 +858,7 @@ export async function createOutputScene(
       disposed = true
       unsubscribeLights()
       cloudTexture?.dispose()
+      atmosphereLut?.dispose()
       earth.dispose()
       quad.geometry.dispose()
       material.dispose()

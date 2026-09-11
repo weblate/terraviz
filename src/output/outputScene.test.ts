@@ -32,6 +32,7 @@ import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS, latLonToDirection } from './equirec
 import { getSunPosition } from '../utils/time'
 import { until } from '../test-utils'
 import { DECORATION_UNIFORMS } from './layerStack'
+import { NADIR_LUT_SIZE } from './atmosphereNadir'
 import { DEFAULT_FRAMEBUFFER_WIDTH } from '../services/multiOutput/protocol'
 
 describe('resolveFramebufferSize', () => {
@@ -201,6 +202,9 @@ describe('the sphere texture binding', () => {
         dispose(): void { disposed.push('dataTexture') }
       },
       RGBAFormat: 'RGBAFormat',
+      LinearFilter: 'LinearFilter',
+      NoColorSpace: 'NoColorSpace',
+      ClampToEdgeWrapping: 'ClampToEdgeWrapping',
       PlaneGeometry: class { dispose(): void { disposed.push('geometry') } },
       // Retains its constructor args, as the real Mesh does: `dispose()`
       // reaches through `quad.geometry`, and a fake that drops them
@@ -767,6 +771,143 @@ describe('the sphere texture binding', () => {
       expect(u[DECORATION_UNIFORMS.cloudMap].value).toBe(base)
       expect(u[DECORATION_UNIFORMS.hasLights].value).toBe(0)
       expect(u[DECORATION_UNIFORMS.hasCloud].value).toBe(0)
+    })
+
+    it('strips the sRGB decode off every texture it samples', async () => {
+      // `photorealEarth` tags its diffuse and night lights
+      // `SRGBColorSpace`, which is right for its own material and wrong
+      // here: Three uploads those with an sRGB internal format, so the
+      // sampler decodes to linear, while every constant in
+      // `layerStack` is copied from `earthTileLayer` and calibrated for
+      // sRGB *display* space. Nothing re-encodes on the way out either
+      // — one `render()` to the default framebuffer with a hand-written
+      // ShaderMaterial, so no `colorspace_fragment` chunk.
+      //
+      // Measured cost of getting this wrong, through the real composed
+      // shader: lit land `rgb(181, 150, 103)` reached the framebuffer
+      // as `rgb(112, 68, 30)`, and dark vegetation `rgb(27, 47, 19)`
+      // came out `rgb(2, 5, 17)` — byte-identical to ocean. Forest and
+      // sea were the same colour on the sphere.
+      const three = fakeThree()
+      const base = { id: 'base' } as FakeTexture
+      const earth = fakeEarth(base)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      expect((base as unknown as { colorSpace: unknown }).colorSpace).toBe('NoColorSpace')
+      expect((base as unknown as { needsUpdate: unknown }).needsUpdate).toBe(true)
+    })
+
+    it('retags a tier upgrade too, not just what it started with', async () => {
+      // The 2K -> 4K -> 8K progression hands over textures this module
+      // has never seen. Retagging only at construction would leave the
+      // output correct until the first upgrade landed and wrong after,
+      // which is the worst shape for a bug like this: it would look
+      // fixed for the first few seconds of every launch.
+      const three = fakeThree()
+      const upgrade = { id: 'upgrade' } as FakeTexture
+      const lights = { id: 'lights' } as FakeTexture
+      const earth = fakeEarth({ id: 'base' } as FakeTexture, upgrade)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+      earth.upgradeNow()
+      earth.lightsNow(lights)
+
+      for (const tex of [upgrade, lights]) {
+        expect((tex as unknown as { colorSpace: unknown }).colorSpace).toBe('NoColorSpace')
+        expect((tex as unknown as { needsUpdate: unknown }).needsUpdate).toBe(true)
+      }
+    })
+
+    it('builds the scattering table eagerly and switches it on', async () => {
+      // Unlike the two samplers above, this one has nothing to wait
+      // for: the table is a function of the shared constants alone, so
+      // there is no asset arrival that would flip the flag later. If it
+      // is not on at construction it is never on.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.hasAtmosphere].value).toBe(1)
+      const lut = u[DECORATION_UNIFORMS.atmosphereLut].value as {
+        data: Uint8Array
+        width: number
+        height: number
+      }
+      expect(lut.width).toBe(NADIR_LUT_SIZE)
+      expect(lut.height).toBe(1)
+      expect(lut.data.length).toBe(NADIR_LUT_SIZE * 4)
+    })
+
+    it('sets both filters, because DataTexture defaults to nearest', async () => {
+      // `THREE.DataTexture` defaults `magFilter`/`minFilter` to
+      // `NearestFilter` — unlike `Texture`, which defaults to linear.
+      // Left alone, the shader quantises the sun-angle lookup into 256
+      // bands and stops agreeing with `sampleNadirLut`, the TS mirror
+      // it is tested against. Caught in review after a GL harness that
+      // bound the LUT through raw WebGL with `gl.LINEAR` set by hand,
+      // so the measurement never exercised the shipped defaults.
+      // `photorealEarth` sets the same four properties on both of its
+      // own LUT uploads.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      const lut = three.uniformsSeen[0][DECORATION_UNIFORMS.atmosphereLut].value as {
+        minFilter: unknown
+        magFilter: unknown
+        wrapS: unknown
+        wrapT: unknown
+      }
+      expect(lut.minFilter).toBe('LinearFilter')
+      expect(lut.magFilter).toBe('LinearFilter')
+      expect(lut.wrapS).toBe('ClampToEdgeWrapping')
+      expect(lut.wrapT).toBe('ClampToEdgeWrapping')
+    })
+
+    it('falls back to the base texture, not null, if the table fails', async () => {
+      // Same never-bind-null rule as the two samplers above, and the
+      // one place it is reachable: the table is built inside a
+      // try/catch because a Three build without `DataTexture` would
+      // otherwise take down the whole scene for a decoration.
+      const three = fakeThree()
+      const base = { id: 'base' } as FakeTexture
+      const earth = fakeEarth(base)
+      const broken = {
+        ...(three.THREE_ as Record<string, unknown>),
+        DataTexture: class {
+          constructor() {
+            throw new Error('no DataTexture')
+          }
+        },
+      }
+
+      await createOutputScene(
+        { canvas: canvas() },
+        {
+          loadThree: async () => broken as unknown as typeof three.THREE_,
+          createEarth: earth.createEarth,
+        },
+      )
+
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.hasAtmosphere].value).toBe(0)
+      expect(u[DECORATION_UNIFORMS.atmosphereLut].value).toBe(base)
     })
 
     it('takes the night lights when they land, and reports itself dirty', async () => {
