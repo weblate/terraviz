@@ -701,6 +701,42 @@ number.
 | Cloud zoom fade | flat cloud field, alpha recovered from a paired render with clouds off, compared against the ray length's own prediction | worst deviation **0.0020** over the frame at zoom 0 and zoom 5 — 8-bit quantisation |
 | Grade + atmosphere | the composed shader compiled against a *uniform* base texture, so the pixel→lat/lon mapping drops out of the comparison, then every sampled fragment checked against `gradeEarthBase`/`decorateEarth`/`applyAtmosphere` run in TypeScript | worst deviation **0.499 of one byte**, mean 0.046, over 176 fragments spanning the whole sun sweep — rounding and nothing else. The measured ocean: raw `rgb(2, 5, 20)` → graded `rgb(0, 0, 12)` → `rgb(2, 5, 29)` at the subsolar point, the +18 blue matching `SUN_INTENSITY`'s own docstring calibration |
 
+**A second gap, found in review: the whole Earth was too dark.** The
+base texture arrives from `photorealEarth` tagged `SRGBColorSpace`,
+which is right for *that* module's material — Three uploads it with an
+sRGB internal format so the sampler decodes to linear for the lighting
+pipeline downstream. This path has no such pipeline: one quad, a
+hand-written `ShaderMaterial`, straight to the default framebuffer with
+no `colorspace_fragment` chunk to re-encode on the way out. And every
+constant in `layerStack` is copied from `earthTileLayer`, which grades
+and composites in sRGB **display** space because it reads the MapLibre
+framebuffer. Decoded-linear input under display-space constants is not
+a subtlety — measured through the real composed shader:
+
+| Base (sRGB) | Decoded-linear (as shipped) | Display space (fixed) |
+|---|---|---|
+| Ocean `rgb(2, 5, 20)` | `rgb(2, 5, 17)` | `rgb(2, 5, 28)` |
+| Land `rgb(181, 150, 103)` | `rgb(112, 68, 30)` | `rgb(172, 139, 96)` |
+| Sahara `rgb(213, 174, 131)` | `rgb(166, 96, 50)` | `rgb(205, 162, 124)` |
+| Vegetation `rgb(27, 47, 19)` | **`rgb(2, 5, 17)`** | `rgb(15, 41, 21)` |
+
+The vegetation row is the one that settles it: dark green land reached
+the framebuffer **byte-identical to ocean**, so forest and sea were the
+same colour on the sphere. Contrast-around-0.5 in linear space treats
+anything below mid-grey as far-below-midtone and crushes it, which is
+the failure `photorealEarth`'s own contrast knob carries a paragraph
+about avoiding.
+
+**It predates the colour grade.** Rung 12c's decoration inherited it
+the same way — its four constants are `earthTileLayer`'s too. The fix
+removes the decode rather than compensating for it (`useDisplaySpace`
+in `outputScene`), so every copied constant is correct by construction
+instead of correct after an offsetting transform, and the cloud
+texture — built here by `new Texture(img)` and left at Three's default
+`NoColorSpace` — stops being the only one that was already right.
+Retagging is safe because `createPhotorealEarth` builds these per call
+and an output window holds its own instance.
+
 **One real gap this turned up: the ocean — and the first diagnosis of
 it was wrong twice.** The output's day-side sea read near-black beside
 a blue one, which is what "the main application window is much more

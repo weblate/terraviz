@@ -203,6 +203,7 @@ describe('the sphere texture binding', () => {
       },
       RGBAFormat: 'RGBAFormat',
       LinearFilter: 'LinearFilter',
+      NoColorSpace: 'NoColorSpace',
       ClampToEdgeWrapping: 'ClampToEdgeWrapping',
       PlaneGeometry: class { dispose(): void { disposed.push('geometry') } },
       // Retains its constructor args, as the real Mesh does: `dispose()`
@@ -770,6 +771,58 @@ describe('the sphere texture binding', () => {
       expect(u[DECORATION_UNIFORMS.cloudMap].value).toBe(base)
       expect(u[DECORATION_UNIFORMS.hasLights].value).toBe(0)
       expect(u[DECORATION_UNIFORMS.hasCloud].value).toBe(0)
+    })
+
+    it('strips the sRGB decode off every texture it samples', async () => {
+      // `photorealEarth` tags its diffuse and night lights
+      // `SRGBColorSpace`, which is right for its own material and wrong
+      // here: Three uploads those with an sRGB internal format, so the
+      // sampler decodes to linear, while every constant in
+      // `layerStack` is copied from `earthTileLayer` and calibrated for
+      // sRGB *display* space. Nothing re-encodes on the way out either
+      // — one `render()` to the default framebuffer with a hand-written
+      // ShaderMaterial, so no `colorspace_fragment` chunk.
+      //
+      // Measured cost of getting this wrong, through the real composed
+      // shader: lit land `rgb(181, 150, 103)` reached the framebuffer
+      // as `rgb(112, 68, 30)`, and dark vegetation `rgb(27, 47, 19)`
+      // came out `rgb(2, 5, 17)` — byte-identical to ocean. Forest and
+      // sea were the same colour on the sphere.
+      const three = fakeThree()
+      const base = { id: 'base' } as FakeTexture
+      const earth = fakeEarth(base)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      expect((base as unknown as { colorSpace: unknown }).colorSpace).toBe('NoColorSpace')
+      expect((base as unknown as { needsUpdate: unknown }).needsUpdate).toBe(true)
+    })
+
+    it('retags a tier upgrade too, not just what it started with', async () => {
+      // The 2K -> 4K -> 8K progression hands over textures this module
+      // has never seen. Retagging only at construction would leave the
+      // output correct until the first upgrade landed and wrong after,
+      // which is the worst shape for a bug like this: it would look
+      // fixed for the first few seconds of every launch.
+      const three = fakeThree()
+      const upgrade = { id: 'upgrade' } as FakeTexture
+      const lights = { id: 'lights' } as FakeTexture
+      const earth = fakeEarth({ id: 'base' } as FakeTexture, upgrade)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+      earth.upgradeNow()
+      earth.lightsNow(lights)
+
+      for (const tex of [upgrade, lights]) {
+        expect((tex as unknown as { colorSpace: unknown }).colorSpace).toBe('NoColorSpace')
+        expect((tex as unknown as { needsUpdate: unknown }).needsUpdate).toBe(true)
+      }
     })
 
     it('builds the scattering table eagerly and switches it on', async () => {

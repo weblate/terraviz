@@ -337,6 +337,9 @@ interface TextureLike {
   magFilter?: unknown
   wrapS?: unknown
   wrapT?: unknown
+  // Written by `useDisplaySpace`, which is the whole reason this is
+  // not `readonly`: the textures arrive tagged for another material.
+  colorSpace?: unknown
   dispose(): void
 }
 
@@ -358,6 +361,51 @@ interface ShaderMaterialLike {
  */
 function atmosphereStepsForDevice(): { primarySteps: number } {
   return isMobile() ? ATMOSPHERE_STEPS_MOBILE : ATMOSPHERE_STEPS_HIGH
+}
+
+/**
+ * Put a texture into the colour space this shader actually works in.
+ *
+ * `photorealEarth` tags its diffuse and night-lights `SRGBColorSpace`,
+ * which is right for *its* material: Three uploads those with an sRGB
+ * internal format, so the sampler decodes to linear and the lighting
+ * pipeline downstream expects exactly that. This module has no such
+ * pipeline. It renders one quad with a hand-written `ShaderMaterial`
+ * straight to the default framebuffer — no `colorspace_fragment`
+ * chunk, so nothing re-encodes on the way out — and every constant in
+ * `layerStack` is copied from `earthTileLayer`, which grades and
+ * composites in sRGB **display** space because it reads the MapLibre
+ * framebuffer (see `photorealEarth`'s own note at the contrast knob).
+ *
+ * Decoded-linear input under display-space constants is a real,
+ * measured error and not a subtlety: lit daytime land
+ * `rgb(181, 150, 103)` reached the framebuffer as `rgb(112, 68, 31)` —
+ * about 60% brightness, crushed toward red — and contrast-around-0.5
+ * in linear space drove the ocean to black. It predates the colour
+ * grade; rung 12c's decoration inherited it the same way.
+ *
+ * So the decode is removed rather than compensated for, which makes
+ * every copied constant correct by construction instead of correct
+ * after an offsetting transform. The cloud texture already works this
+ * way — it is built here by `new Texture(img)` and left at Three's
+ * default `NoColorSpace` — so this brings the other two into line with
+ * the one that was never wrong.
+ *
+ * Mutating a texture another module created is the part to be uneasy
+ * about. It is safe here because `createPhotorealEarth` builds these
+ * per call and this window holds its own instance: VR and Orbit have
+ * theirs, and an output page never constructs one of those anyway.
+ * `colorSpace` is set *before* `needsUpdate` because Three bakes the
+ * space in at upload, so the flag is what forces the re-upload.
+ */
+function useDisplaySpace<T extends TextureLike>(
+  three: unknown,
+  tex: T | null | undefined,
+): T | null | undefined {
+  if (!tex) return tex
+  tex.colorSpace = (three as { NoColorSpace?: unknown }).NoColorSpace
+  tex.needsUpdate = true
+  return tex
 }
 
 /** What is currently bound to one overlay slot. */
@@ -501,6 +549,15 @@ export async function createOutputScene(
     atmosphereLut = null
   }
 
+  // Everything this shader samples must be in display space; see
+  // `useDisplaySpace`. Done once here so the placeholder binds below
+  // (which reuse `baseEarthTexture`) pick up the same retagged object,
+  // and again in each change callback, since a tier upgrade hands over
+  // a texture this has never seen.
+  useDisplaySpace(THREE_, earth.baseEarthTexture)
+  useDisplaySpace(THREE_, earth.baseDiffuseTexture)
+  useDisplaySpace(THREE_, earth.nightLightsTexture)
+
   const uniforms: Record<string, { value: unknown }> = {
     // `baseEarthTexture` is loaded unconditionally and is never null,
     // so the sampler is bound from the first frame. A `null` here
@@ -595,14 +652,14 @@ export async function createOutputScene(
   let cloudTexture: (TextureLike & { needsUpdate: boolean }) | null = null
   let disposed = false
   const unsubscribeDiffuse = earth.onBaseDiffuseChange(tex => {
-    uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = tex
+    uniforms[EQUIRECT_UNIFORMS.sphereTexture].value = useDisplaySpace(THREE_, tex)
     textureUpgraded = true
   })
   // Same treatment for the decoration maps: they arrive after first
   // paint too, and an un-flagged arrival would wait out the 1 Hz floor
   // before the city lights or the clouds appeared.
   const unsubscribeLights = earth.onNightLightsChange(tex => {
-    uniforms[DECORATION_UNIFORMS.lightsMap].value = tex
+    uniforms[DECORATION_UNIFORMS.lightsMap].value = useDisplaySpace(THREE_, tex)
     uniforms[DECORATION_UNIFORMS.hasLights].value = 1
     textureUpgraded = true
   })
