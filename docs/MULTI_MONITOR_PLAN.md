@@ -677,6 +677,38 @@ output is in fact showing. Rescaling the curve to end at the cap
 is the tempting fix, and it would put a second cloud calibration in
 the repo — the trap immediately above, in a new place.
 
+**The decoration is idle-only — found on hardware, rung 9 step 13.**
+The first Windows pass reported that a regional dataset rendered
+correctly placed but wrongly lit: *"once a dataset loads the globe
+should revert to a diffuse unlit globe … however, on the generated 2:1
+outputs the data is still shown with day night lighting."* That is
+right, and the control globe already does it — `earthTileLayer` gates
+its entire pass chain on `datasetActive` and returns before pass 0,
+with the comment "no earth effects when dataset is active". So a
+control globe showing a dataset is unlit **and ungraded**, and a
+bbox-clipped dataset `discard`s to raw Blue Marble tiles outside its
+box.
+
+This path had composited the decoration *under* the layers instead, on
+the reasoning recorded in §"What the equirect path does to the Earth
+decoration": under-compositing was supposed to mean day/night could
+never tint a dataset. **That holds only for opaque global coverage.**
+A data-encoded overlay is translucent by construction — its alpha *is*
+the measurement — so the terminator showed through the night-side
+smoke plume the argument used as its own example, and outside the bbox
+the two globes disagreed outright.
+
+The gate is the slot count, decided at build time because the shader
+text is already a function of it: no layers means the idle Earth and
+its full treatment, any layer means the raw sample and nothing on top.
+It costs nothing at runtime, and it is a *tighter* test than the
+control side's — `main.ts` fills a slot only when the mirror holds
+decoded media, whereas `datasetActive` is set when the dataset is
+assigned. Measured through the real composed shader: a lit land sample
+`rgb(181, 150, 103)` renders `rgb(172, 139, 96)` on an idle output and
+`rgb(181, 150, 103)` — byte-identical to the raw tile — once a layer
+exists.
+
 **Verified on a real GL implementation (2026-09-11).** The decoration
 GLSL is a hand transcription of tested TypeScript, which is the
 weakest guard in this module — a transcription error compiles fine and
