@@ -15,13 +15,17 @@ import { describe, it, expect, vi } from 'vitest'
 
 import {
   OUTPUT_MODE,
+  PICTURE_KEYS,
+  PLAYHEAD_KEYS,
   connectOutputLink,
   STATE_KEYS,
+  changesPicture,
   createOutputStateStore,
   isRenderConfig,
   isStateMessage,
   outputInitialState,
   type OutputLinkHost,
+  type StateKey,
 } from './outputLink'
 import { IDENTITY_PARAMS } from './equirectRtt'
 import {
@@ -557,3 +561,42 @@ describe('STATE_KEYS', () => {
   })
 })
 
+/**
+ * Which diffs are worth a frame.
+ *
+ * The wrong answer here is invisible in both directions and expensive
+ * in one: too eager burns a GPU budget on redrawing an identical
+ * 4096×2048 sphere sixty times a second, too lazy leaves a stale
+ * picture that looks exactly like a dropped texture upload.
+ */
+describe('changesPicture', () => {
+  it('classifies every state key, exactly once', () => {
+    // The compile-time partition proof beside the lists is the real
+    // guard; this is the runtime half of it, so a list that drifts from
+    // the type fails here rather than in front of an audience.
+    const classified = [...PICTURE_KEYS, ...PLAYHEAD_KEYS]
+    expect([...classified].sort()).toEqual([...STATE_KEYS].sort())
+    expect(new Set(classified).size).toBe(classified.length)
+  })
+
+  it('draws for anything composited', () => {
+    for (const key of PICTURE_KEYS) {
+      expect(changesPicture([key])).toBe(true)
+    }
+  })
+
+  it('does not draw for the playhead keys alone', () => {
+    // These arrive on every frame the operator's globe plays. Nothing
+    // here reads them except the correction, which reports its own
+    // pixel change by comparing `currentTime` across the steer.
+    expect(changesPicture(PLAYHEAD_KEYS)).toBe(false)
+    expect(changesPicture([])).toBe(false)
+  })
+
+  it('draws when a picture key rides along with a playhead one', () => {
+    // A dataset load publishes `dataset`, `primary` and `playback`
+    // together. Testing `some` rather than `every` is what keeps that
+    // load from being suppressed by the two keys beside it.
+    expect(changesPicture(['playback', 'dataset'] as StateKey[])).toBe(true)
+  })
+})

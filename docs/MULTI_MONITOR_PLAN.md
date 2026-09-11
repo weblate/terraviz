@@ -1428,6 +1428,30 @@ wrong; it is simply an asset class whose seeks are expensive,
 and the correction has to be robust to it rather than assume it
 away.
 
+#### A playhead diff is not a frame
+
+Related, and found reading the same report. The output's loop
+paces itself: 30 fps while its own video is advancing, 1 Hz for
+anything static, and immediately whenever something changed.
+`applyState` marked *every* state diff as a change.
+
+`playback` and `primary` change on every frame the operator's
+globe plays, so an output redrew a 4096x2048 ray-marched sphere
+at the control window's frame rate instead of 30 fps — double
+the GPU for an identical picture, on a machine whose webview may
+be on the iGPU (see Risks) and whose control window is decoding
+the same video in the next process. Neither key changes a pixel
+here: the output's own frame advance is what `contentKindFor`
+paces, and a seek is caught by the render loop comparing
+`currentTime` across the steer.
+
+`PICTURE_KEYS` / `PLAYHEAD_KEYS` in `outputLink.ts` partition
+`StateKey` between the two, with compile-time proofs that every
+key is classified and none is classified twice. Keys that are
+composited but not yet published — `layers`, `simulationDate` —
+stay on the picture side, so the 1 Hz floor never holds one back
+once it is wired.
+
 #### The `readyState` gate
 
 Steer from `readyState >= SIBLING_MIN_READY_STATE`, importing
