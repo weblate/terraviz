@@ -303,9 +303,20 @@ export function nadirScatter(
  * `colour = colour * lut.a + lut.rgb`. Packing transmittance into a
  * second texture would double the uploads to save nothing.
  *
- * Rebuilt when the sun has moved enough to matter, not per frame —
- * the subsolar point moves ~0.004 degrees a second, so this is a
- * once-a-minute cost at worst, and the caller decides.
+ * **Built once and never rebuilt.** The sun's *position* never enters
+ * this table — only its cosine, which the shader derives per fragment
+ * from `uSunDir`. An earlier draft of this comment said the table was
+ * rebuilt as the sun moved, which is the mistake the whole design
+ * exists to avoid: a per-minute rebuild would burn a 256-entry
+ * integration to reproduce the bytes it already holds.
+ *
+ * `steps` is a parameter rather than a constant because the control
+ * globe picks its tier from `isMobile()` (`earthTileLayer.ts`), and an
+ * output that hard-coded HIGH would integrate more finely than the
+ * globe it exists to match on any touch-capable machine — rendering a
+ * measurably bluer ocean, which is the exact failure this module is
+ * here to fix. The caller reads the environment and passes the tier;
+ * this module stays pure. The default is HIGH so a test need not.
  */
 export function buildNadirScatterLut(
   size: number = NADIR_LUT_SIZE,

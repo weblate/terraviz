@@ -61,7 +61,12 @@ import { EQUIRECT_FRAGMENT_SHADER } from './equirectRtt'
  * Bounded by fragment texture units, not by taste: WebGL guarantees
  * only 8. Count them — the base sphere (1), the two Earth-decoration
  * maps rung 12c added (night lights, clouds), then each layer's
- * texture *and* its palette LUT. So `3 + 2n <= 8`, and n is 2.
+ * texture *and* its palette LUT. The non-layer samplers are four,
+ * not three — `uSphereTexture` plus the night-lights, cloud and
+ * atmosphere maps — so `4 + 2n <= 8`, and n is 2. The cap is
+ * unchanged by that correction, but the arithmetic is what a
+ * future change would reason from, and `3 + 2n` would licence a
+ * third slot that fails to link on the guaranteed 8 units.
  *
  * It was 4, on the reasoning that four layers "matches the control
  * window's own 4-globe ceiling". That arithmetic was already wrong

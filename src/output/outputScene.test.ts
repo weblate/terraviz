@@ -202,6 +202,8 @@ describe('the sphere texture binding', () => {
         dispose(): void { disposed.push('dataTexture') }
       },
       RGBAFormat: 'RGBAFormat',
+      LinearFilter: 'LinearFilter',
+      ClampToEdgeWrapping: 'ClampToEdgeWrapping',
       PlaneGeometry: class { dispose(): void { disposed.push('geometry') } },
       // Retains its constructor args, as the real Mesh does: `dispose()`
       // reaches through `quad.geometry`, and a fake that drops them
@@ -793,6 +795,36 @@ describe('the sphere texture binding', () => {
       expect(lut.width).toBe(NADIR_LUT_SIZE)
       expect(lut.height).toBe(1)
       expect(lut.data.length).toBe(NADIR_LUT_SIZE * 4)
+    })
+
+    it('sets both filters, because DataTexture defaults to nearest', async () => {
+      // `THREE.DataTexture` defaults `magFilter`/`minFilter` to
+      // `NearestFilter` — unlike `Texture`, which defaults to linear.
+      // Left alone, the shader quantises the sun-angle lookup into 256
+      // bands and stops agreeing with `sampleNadirLut`, the TS mirror
+      // it is tested against. Caught in review after a GL harness that
+      // bound the LUT through raw WebGL with `gl.LINEAR` set by hand,
+      // so the measurement never exercised the shipped defaults.
+      // `photorealEarth` sets the same four properties on both of its
+      // own LUT uploads.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      const lut = three.uniformsSeen[0][DECORATION_UNIFORMS.atmosphereLut].value as {
+        minFilter: unknown
+        magFilter: unknown
+        wrapS: unknown
+        wrapT: unknown
+      }
+      expect(lut.minFilter).toBe('LinearFilter')
+      expect(lut.magFilter).toBe('LinearFilter')
+      expect(lut.wrapS).toBe('ClampToEdgeWrapping')
+      expect(lut.wrapT).toBe('ClampToEdgeWrapping')
     })
 
     it('falls back to the base texture, not null, if the table fails', async () => {

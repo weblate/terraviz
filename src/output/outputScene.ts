@@ -72,9 +72,13 @@ import {
   type EquirectParams,
 } from './equirectRtt'
 import { getSunPosition } from '../utils/time'
-import { getCloudTextureUrl } from '../utils/deviceCapability'
+import { getCloudTextureUrl, isMobile } from '../utils/deviceCapability'
 import { logger } from '../utils/logger'
 import { NADIR_LUT_SIZE, buildNadirScatterLut } from './atmosphereNadir'
+import {
+  ATMOSPHERE_STEPS_HIGH,
+  ATMOSPHERE_STEPS_MOBILE,
+} from '../services/atmosphereConstants'
 import {
   DECORATION_UNIFORMS,
   MAX_OUTPUT_LAYERS,
@@ -326,11 +330,34 @@ function defaultCreateEarth(): Promise<CreateEarth> {
 /** The slice of a Three texture this module touches. */
 interface TextureLike {
   needsUpdate?: boolean
+  // Sampler state, optional because only the LUT upload sets it: a
+  // `DataTexture` defaults to nearest filtering and every other
+  // texture here arrives already configured by whoever loaded it.
+  minFilter?: unknown
+  magFilter?: unknown
+  wrapS?: unknown
+  wrapT?: unknown
   dispose(): void
 }
 
 interface ShaderMaterialLike {
   dispose(): void
+}
+
+/**
+ * The integration tier for this machine's scattering table.
+ *
+ * Mirrors `earthTileLayer`'s own `isMobile() ? MOBILE : HIGH` choice
+ * rather than picking independently, because the whole point of the
+ * table is that the output and the control globe agree — and
+ * `isMobile()` is `innerWidth <= 768 || maxTouchPoints > 0`, so it is
+ * true of a touchscreen desktop, not only a phone. An output that
+ * hard-coded HIGH there would integrate more finely than the globe
+ * beside it and render a bluer ocean, which is the failure this whole
+ * path exists to remove.
+ */
+function atmosphereStepsForDevice(): { primarySteps: number } {
+  return isMobile() ? ATMOSPHERE_STEPS_MOBILE : ATMOSPHERE_STEPS_HIGH
 }
 
 /** What is currently bound to one overlay slot. */
@@ -435,18 +462,39 @@ export async function createOutputScene(
   // Static by construction (see the uniform's note below), so this is
   // the one texture built eagerly rather than on an asset arriving.
   // A failure costs the ocean its colour, not the render loop.
+  //
+  // The tier is read *here* rather than defaulted inside the builder,
+  // because `earthTileLayer` picks its own from `isMobile()` and that
+  // is true of any touch-capable machine, not just a phone — a
+  // touchscreen desktop would otherwise run the control globe at 10
+  // steps and this output at 16, making the output's ocean bluer than
+  // the globe it exists to match. `atmosphereNadir` stays pure; this
+  // module already reads the environment for `getCloudTextureUrl`.
+  //
+  // Both filters are set explicitly because `THREE.DataTexture`
+  // defaults to `NearestFilter` — unlike `Texture` — which would
+  // quantise the sun-angle lookup into 256 bands and stop the shader
+  // agreeing with `sampleNadirLut`, the TS mirror it is tested
+  // against. Same four properties `photorealEarth` sets on both of
+  // its own LUT uploads.
   let atmosphereLut: TextureLike | null = null
   try {
     const api = THREE_ as unknown as {
       DataTexture: new (d: Uint8Array, w: number, h: number, f: unknown) => TextureLike
       RGBAFormat: unknown
+      LinearFilter: unknown
+      ClampToEdgeWrapping: unknown
     }
     atmosphereLut = new api.DataTexture(
-      buildNadirScatterLut(),
+      buildNadirScatterLut(NADIR_LUT_SIZE, atmosphereStepsForDevice().primarySteps),
       NADIR_LUT_SIZE,
       1,
       api.RGBAFormat,
     )
+    atmosphereLut.minFilter = api.LinearFilter
+    atmosphereLut.magFilter = api.LinearFilter
+    atmosphereLut.wrapS = api.ClampToEdgeWrapping
+    atmosphereLut.wrapT = api.ClampToEdgeWrapping
     atmosphereLut.needsUpdate = true
   } catch (err) {
     logger.warn('[outputScene] atmosphere LUT unavailable', err)

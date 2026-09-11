@@ -984,13 +984,23 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 >
 > Rung 12c has since landed too: an output now carries the **Earth
 > decoration** the equirect path can — day/night terminator, night
-> lights, clouds — which is the whole of "as realistic as possible" on
-> this surface. The four effects the plan's §"What the equirect path
-> does to the Earth decoration" rules out (specular, atmosphere shells,
+> lights, clouds — plus the atmosphere's **disc tint**, which the plan
+> first ruled out and later found crosses. The effects that genuinely
+> do not cross (specular, atmosphere *shells* as a mesh with a limb,
 > ground shadow, sun sprite) are **not** deferred: they depend on a
 > viewer or a silhouette, an unwrap has neither, and baking one in
 > paints a fixed glare spot or limb ring onto a physical sphere in a
 > place correct from exactly one vantage point. Don't add them.
+>
+> The atmosphere is the one row that table got half right, and the
+> distinction is worth keeping straight: the *shell* is a mesh whose
+> whole point is its silhouette, and an unwrap has no silhouette — but
+> that shell covers the visible **disc**, and pinned to nadir its
+> integral collapses to a function of sun angle alone, meaningful at
+> every point of an unwrap. That disc tint is `atmosphereNadir.ts`, and
+> it is why the output's ocean is not black. Removing it on the
+> strength of the "atmosphere → meaningless" row would reintroduce the
+> bug it was written to fix.
 >
 > What rungs 9-12 deliberately leave for later, so don't read their
 > absence as oversight: per-output **rename** (unassigned — the persisted
