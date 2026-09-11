@@ -15,6 +15,7 @@ import {
   monitorKey,
   openOutputUI,
   resetOutputUIForTests,
+  monitorLayout,
   type OutputPanelManager,
 } from './outputUI'
 
@@ -48,13 +49,21 @@ function record(label: string, on: OutputMonitor): OutputRecord {
  * private fields is typed nominally, so satisfying that type would mean
  * constructing a real manager, which needs a host, which needs Tauri.
  */
-function fakeManager(monitors: OutputMonitor[] = [monitor()]) {
+function fakeManager(
+  monitors: OutputMonitor[] = [monitor()],
+  /** What the platform calls primary. Omit for "the first enumerated
+   *  display"; pass `null` for a platform that will not say. */
+  primary: OutputMonitor | null | undefined = undefined,
+) {
   const records: OutputRecord[] = []
   let restoreOnLaunch = false
   let decoderBudget: number | null = null
   const mgr = {
     start: vi.fn(async () => {}),
     listMonitors: vi.fn(async () => monitors),
+    primaryMonitor: vi.fn(async () =>
+      primary === undefined ? (monitors[0] ?? null) : primary,
+    ),
     outputs: vi.fn(() => [...records]),
     addOutput: vi.fn(async ({ monitorIndex }: { monitorIndex: number }) => {
       const target = monitors[monitorIndex]
@@ -141,16 +150,14 @@ describe('the Outputs panel', () => {
   })
 
   it('lists every detected display', async () => {
-    const { mgr } = fakeManager([
-      monitor({ name: 'LEFT', position: { x: -1680, y: 0 } }),
-      monitor({ name: 'RIGHT' }),
-    ])
+    const left = monitor({ name: 'LEFT', position: { x: -1680, y: 0 } })
+    const { mgr } = fakeManager([left, monitor({ name: 'RIGHT' })], left)
     mount(mgr)
 
     await until(painted, 'the panel body')
     const options = $$('.output-monitor-select option')
     expect(options.map(o => o.textContent)).toEqual([
-      'LEFT — 1920×1080',
+      'LEFT — 1920×1080 (primary)',
       'RIGHT — 1920×1080',
     ])
   })
@@ -631,5 +638,199 @@ describe('the Outputs panel', () => {
 
     await until(painted, 'the second body')
     expect($$('.output-panel')).toHaveLength(1)
+  })
+})
+
+/**
+ * The position diagram's arithmetic.
+ *
+ * Kept pure and tested here because the thing it gets wrong is silent:
+ * a diagram drawn from a bad layout still looks like a diagram, and an
+ * operator reads it as the truth about their desk right up to the
+ * moment a fullscreen window opens on the wrong display.
+ */
+describe('monitorLayout', () => {
+  it('places a negative origin inside the box instead of off its edge', () => {
+    // The arrangement the hardware spike behind this feature actually
+    // found: primary on the right, secondary at x = -1680. A layout
+    // that assumed a non-negative origin would put LEFT at a negative
+    // fraction, which CSS renders outside the container.
+    const layout = monitorLayout([
+      monitor({ name: 'LEFT', position: { x: -1680, y: 0 }, size: { width: 1680, height: 1050 } }),
+      monitor({ name: 'RIGHT', position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }),
+    ])
+
+    expect(layout).not.toBeNull()
+    const [left, right] = layout!.boxes
+    expect(left.x).toBe(0)
+    expect(right.x).toBeCloseTo(1680 / 3600)
+    // And left really is to the left, which is the one thing the
+    // diagram exists to say.
+    expect(left.x).toBeLessThan(right.x)
+  })
+
+  it('is to scale, so a 4K beside a 1080p reads as the bigger panel', () => {
+    const layout = monitorLayout([
+      monitor({ position: { x: 0, y: 0 }, size: { width: 3840, height: 2160 } }),
+      monitor({ position: { x: 3840, y: 0 }, size: { width: 1920, height: 1080 } }),
+    ])!
+
+    const [big, small] = layout.boxes
+    expect(big.width).toBeCloseTo(3840 / 5760)
+    expect(small.width).toBeCloseTo(1920 / 5760)
+    expect(big.height).toBeCloseTo(1)
+    expect(small.height).toBeCloseTo(0.5)
+    expect(layout.aspect).toBeCloseTo(5760 / 2160)
+  })
+
+  it('stacks vertically when that is how the desk is arranged', () => {
+    const layout = monitorLayout([
+      monitor({ position: { x: 0, y: -1080 }, size: { width: 1920, height: 1080 } }),
+      monitor({ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }),
+    ])!
+
+    expect(layout.boxes[0].y).toBe(0)
+    expect(layout.boxes[1].y).toBeCloseTo(0.5)
+    expect(layout.aspect).toBeCloseTo(1920 / 2160)
+  })
+
+  it('drops an undrawable display without losing the others or their indices', () => {
+    // One bad entry must not cost the diagram — the same per-entry
+    // tolerance rung 10's persistence parse uses. The surviving box
+    // still has to point at its own option, so the index is the one
+    // from the array passed in, not a position in the filtered list.
+    const layout = monitorLayout([
+      monitor({ name: 'BROKEN', size: { width: 0, height: 0 } }),
+      monitor({ name: 'REAL', position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }),
+    ])!
+
+    expect(layout.boxes).toHaveLength(1)
+    expect(layout.boxes[0].index).toBe(1)
+  })
+
+  it('refuses to draw when there is no arrangement', () => {
+    // An empty framed box reads as a failure; no diagram reads as a
+    // machine with nothing to show, which is what it is.
+    expect(monitorLayout([])).toBeNull()
+    expect(monitorLayout([monitor({ size: { width: 0, height: 0 } })])).toBeNull()
+    expect(
+      monitorLayout([monitor({ size: { width: Number.NaN, height: Number.NaN } })]),
+    ).toBeNull()
+    expect(
+      monitorLayout([monitor({ position: { x: Number.POSITIVE_INFINITY, y: 0 } })]),
+    ).toBeNull()
+  })
+})
+
+describe('the position diagram', () => {
+  const boxes = (): HTMLElement[] => $$('.output-monitor-box') as HTMLElement[]
+
+  it('draws one box per display, in the order the desk has them', async () => {
+    const left = monitor({ name: 'LEFT', position: { x: -1920, y: 0 } })
+    const { mgr } = fakeManager([left, monitor({ name: 'RIGHT' })], left)
+    mount(mgr)
+
+    await until(painted, 'the panel body')
+    const drawn = boxes()
+    expect(drawn).toHaveLength(2)
+    expect(parseFloat(drawn[0].style.left)).toBeCloseTo(0)
+    expect(parseFloat(drawn[1].style.left)).toBeCloseTo(50)
+    expect(parseFloat(drawn[0].style.width)).toBeCloseTo(50)
+  })
+
+  it('is hidden from assistive technology, because the picker already says it', async () => {
+    // Not an oversight: every fact the diagram draws is in the option
+    // text below it, and a second reading of one choice — or worse, a
+    // second control for it — is noise in a screen reader.
+    const { mgr } = fakeManager()
+    mount(mgr)
+
+    await until(painted, 'the panel body')
+    expect($('.output-monitor-map')?.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('marks the primary display the platform named, not the first one', async () => {
+    const first = monitor({ name: 'FIRST' })
+    const second = monitor({ name: 'SECOND', position: { x: 1920, y: 0 } })
+    const { mgr } = fakeManager([first, second], second)
+    mount(mgr)
+
+    await until(painted, 'the panel body')
+    expect(boxes()[0].classList.contains('is-primary')).toBe(false)
+    expect(boxes()[1].classList.contains('is-primary')).toBe(true)
+    const options = $$('.output-monitor-select option')
+    expect(options[1].textContent).toContain('primary')
+    expect(options[0].textContent).not.toContain('primary')
+  })
+
+  it('marks nothing when the platform will not say which is primary', async () => {
+    // X11 can leave no display marked, and a guess that is usually
+    // right and silently wrong is the failure the name-only monitor
+    // match was rejected for.
+    const { mgr } = fakeManager([monitor({ name: 'A' }), monitor({ name: 'B', position: { x: 1920, y: 0 } })], null)
+    mount(mgr)
+
+    await until(painted, 'the panel body')
+    expect(boxes().some(b => b.classList.contains('is-primary'))).toBe(false)
+    expect($$('.output-monitor-select option').some(o => o.textContent?.includes('primary'))).toBe(
+      false,
+    )
+  })
+
+  it('keeps the panel when the primary lookup rejects', async () => {
+    // A marker is worth less than the panel. The enumeration failing is
+    // fatal to it; this is not.
+    const { mgr, raw } = fakeManager()
+    raw.primaryMonitor.mockRejectedValue(new Error('no'))
+    mount(mgr)
+
+    await until(painted, 'the panel body')
+    expect($('.output-monitor-map')).not.toBeNull()
+    expect(boxes().some(b => b.classList.contains('is-primary'))).toBe(false)
+  })
+
+  it('dims a display that already has an output rather than hiding it', async () => {
+    const a = monitor({ name: 'A' })
+    const b = monitor({ name: 'B', position: { x: 1920, y: 0 } })
+    const { mgr } = fakeManager([a, b], a)
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    const select = $<HTMLSelectElement>('.output-monitor-select')!
+    select.value = '1'
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+    await until(() => boxes().some(box => box.classList.contains('is-occupied')), 'the add')
+
+    // Still two boxes: a display with an output on it is part of the
+    // arrangement, and a hole where it sits would misdescribe the desk.
+    expect(boxes()).toHaveLength(2)
+    expect(boxes()[0].classList.contains('is-occupied')).toBe(false)
+    expect(boxes()[1].classList.contains('is-occupied')).toBe(true)
+  })
+
+  it('moves the highlight when the picker changes', async () => {
+    const a = monitor({ name: 'A' })
+    const { mgr } = fakeManager([a, monitor({ name: 'B', position: { x: 1920, y: 0 } })], a)
+    mount(mgr)
+    await until(painted, 'the panel body')
+
+    expect(boxes()[0].classList.contains('is-selected')).toBe(true)
+    const select = $<HTMLSelectElement>('.output-monitor-select')!
+    select.value = '1'
+    select.dispatchEvent(new Event('change'))
+
+    expect(boxes()[0].classList.contains('is-selected')).toBe(false)
+    expect(boxes()[1].classList.contains('is-selected')).toBe(true)
+  })
+
+  it('omits the diagram rather than drawing an empty frame', async () => {
+    const { mgr } = fakeManager([monitor({ size: { width: 0, height: 0 } })])
+    mount(mgr)
+
+    await until(painted, 'the panel body')
+    expect($('.output-monitor-map')).toBeNull()
+    // The display is still listed: it can be picked even if it cannot
+    // be drawn to scale.
+    expect($$('.output-monitor-select option')).toHaveLength(1)
   })
 })

@@ -108,6 +108,9 @@ interface FakeOptions {
   failAt?: 'setPosition' | 'setSize' | 'setFullscreen' | 'show'
   /** Make `close()` reject, as a window whose process already died does. */
   failClose?: boolean
+  /** What the platform calls primary. Omit for "the first enumerated
+   *  display"; pass `null` for a platform that will not say. */
+  primary?: OutputMonitor | null
 }
 
 function createFakeHost(options: FakeOptions = {}) {
@@ -119,6 +122,13 @@ function createFakeHost(options: FakeOptions = {}) {
 
   const host: MultiOutputHost = {
     availableMonitors: async () => monitors,
+
+    // The first enumerated display, which is what both desktop
+    // platforms report for a default arrangement. `options.primary` is
+    // for the cases that matter: a machine whose primary is not first,
+    // and a platform that will not say at all.
+    primaryMonitor: async () =>
+      options.primary === undefined ? (monitors[0] ?? null) : options.primary,
 
     async createWindow(label, url) {
       calls.push(`create:${label}:${url}`)

@@ -3672,6 +3672,23 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 4. Tools menu shows an "Outputs" entry.
 5. Outputs panel opens; lists both monitors with name,
    resolution, position diagram. Primary clearly marked.
+   Check all four: the picker's option text carries the name,
+   the pixel size, and `(primary)` on exactly one display; the
+   diagram above it draws one rectangle per display, to scale
+   and in the arrangement the desk has them. Changing the
+   picker must move the diagram's highlight — that is the
+   confirmation the step is really for, since an output opens
+   fullscreen and an operator has one chance to notice it is
+   about to land on the wrong display.
+5a. **Nothing marked primary is a pass, on X11.** The primary
+   is asked of the platform rather than inferred, and X11 can
+   leave no display marked at all; the panel then marks none
+   rather than guessing at the one nearest the origin. On
+   Windows and macOS a missing marker *is* a failure. If the
+   arrangement is primary-left — the spike's secondary sat at
+   `x = -1680` — check the diagram is not drawn with a display
+   hanging off its left edge, which is what an assumed
+   non-negative origin looks like.
 6. **Single-monitor guard.** Disconnect the secondary monitor.
    Add Output button is hidden / disabled. Reconnect:
    the button reappears.

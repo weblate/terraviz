@@ -139,6 +139,77 @@
   border-radius: var(--radius-sm, 0.25rem);
 }
 
+/* The position diagram (rung 9 step 5) — a scale picture of the
+   displays as the platform reports them, so "which of these is the
+   projector" can be answered before a fullscreen window answers it.
+
+   `--output-map-aspect` is set from TypeScript and is the only number
+   that has to come from there; the cap below and the width that keeps
+   the ratio under it are said here, in rem, so they scale with the
+   panel. The `min()` satisfies both constraints at once with the ratio
+   intact: a three-across desk gets short rather than overflowing the
+   panel, and a stacked pair gets narrow rather than tall. */
+.output-monitor-map {
+  --output-map-max-block: 6.5rem;
+  position: relative;
+  inline-size: min(
+    100%,
+    calc(var(--output-map-max-block) * var(--output-map-aspect, 1.78))
+  );
+  aspect-ratio: var(--output-map-aspect, 1.78);
+  max-block-size: var(--output-map-max-block);
+  margin-inline: auto;
+}
+
+/* Placed with physical `left` / `top` from TypeScript, which is the
+   point rather than an oversight and why nothing here sets them: this
+   is a picture of a desk, so a display on the operator's left stays on
+   the left under `dir="rtl"`. The logical properties the rest of the
+   app uses would mirror it. */
+.output-monitor-box {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.18));
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.output-monitor-box-size {
+  font-size: 0.5625rem;
+  line-height: 1.1;
+  color: var(--color-text-muted, rgba(242, 245, 249, 0.7));
+  /* A narrow display, or a wide arrangement, can leave a box too small
+     for this. Clipping it is right — the same figure is in the picker
+     beneath, spelled out. */
+  white-space: nowrap;
+}
+
+/* Dimmed rather than hidden: a display that already has an output is
+   still part of the arrangement, and leaving a hole where it sits
+   would misdescribe the desk. */
+.output-monitor-box.is-occupied {
+  opacity: 0.45;
+}
+
+/* Reinforcement, never the statement — the picker's option text is
+   what actually says "primary", so this survives being unseen. */
+.output-monitor-box.is-primary {
+  border-color: var(--color-accent, #4aa3ff);
+}
+
+.output-monitor-box.is-selected {
+  border-color: var(--color-accent, #4aa3ff);
+  border-width: 2px;
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.14));
+}
+
+.output-monitor-box.is-selected .output-monitor-box-size {
+  color: var(--color-text, #f2f5f9);
+}
+
 .output-add-btn,
 .output-item-remove {
   font: inherit;
