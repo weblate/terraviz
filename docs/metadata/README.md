@@ -320,9 +320,12 @@ The recommended model is:
 | Non-Earth visualization | Excluded initially | Requires a deliberate Solar System coordinate policy |
 
 A practical first version can create one Collection per eligible D1 dataset.
-Static and indivisible assets receive one Item. Frame sequences and recurring
-workflow outputs can gain multiple Items as immutable identity and revision
-metadata become available.
+Static and indivisible assets receive one Item whose ID reuses the dataset's
+immutable ULID; the Collection ID adds the stable node namespace. This needs
+no invented revision identity or new revision storage. Frame sequences and
+recurring workflow outputs can gain multiple Items as persisted immutable
+frame and revision identities become available; do not mint those identities
+from slugs or pretend that a mutable output already has revision history.
 
 ### Eligibility policy
 
@@ -384,9 +387,10 @@ native grid; they do not change the GeoJSON coordinate system.
 |---|---|---|
 | `node_identity.node_id` | Root Catalog `id` | Stable node identity |
 | `node_identity.display_name` | Root Catalog `title` | Direct |
-| `node_identity.description` | Root Catalog `description` | Prefer the existing public description; fall back through approved profile prose as specified below |
+| `node_identity.description` | Root Catalog `description` | Intended public node description, read directly from D1 without a profile-approval gate; not currently emitted by `WellKnownDoc`. Give operators notice before first publication, as specified below |
 | Dataset `id` | Collection `id` input | Prefix the immutable ULID with a stable node namespace for global uniqueness |
-| Immutable revision or frame identity | Item `id` | Use a persisted source identity; do not derive it from a mutable slug |
+| Dataset `id` for a one-Item product | Item `id` | Reuse the immutable dataset ULID directly; the namespaced Collection ID remains distinct |
+| Immutable revision or frame identity for a multi-Item product | Item `id` | Use a persisted source identity once available; do not invent one or derive it from a mutable slug |
 | Dataset `slug` | Collection alias URL input | Keep human-readable discovery URLs separate from canonical identity |
 | `title` | Collection `title`; Item `properties.title` | Direct |
 | `abstract` | Collection `description`; Item `properties.description` | Collection description must be non-empty |
@@ -433,11 +437,34 @@ actually hosts that Collection's data, listed last and at most once. It does
 not imply `producer`, `processor`, or `licensor`. An index-only mirror keeps
 the origin's provider facts instead of replacing them with local branding.
 
-Proposed description precedence, taking the first non-empty approved value:
-the existing public `node_identity.description`, published `mission`, a
-bounded plain-text summary of published `about_md`, then a deterministic
+**Node description decision:** treat `node_identity.description` as intended
+public node metadata, not as a private profile field requiring a publication
+snapshot. It is set by an administrator through `terraviz init-node
+--description` or the self-hosting bootstrap SQL. It is **not currently
+published** by the [well-known route](../../functions/.well-known/terraviz.json.ts):
+`WellKnownDoc` includes `display_name`, `base_url`, `public_key`, endpoints,
+policy, and `contact`, but no description. Reading the existing D1 column
+directly into the STAC projection needs no native protocol change. Adding
+`description` to the well-known document would be a separate, reviewed wire
+contract/schema change and is not required for this projection.
+
+Before the first public route exposes that column, explicitly describe its
+public purpose in both the `init-node --description` CLI help and
+[the self-hosting guide](../SELF_HOSTING.md). Include an upgrade notice telling
+existing operators to review and replace or clear any internal prose before
+enabling the publishing release. The current help and guide do not give that
+warning; this is a publication prerequisite, not a claim that they already do.
+Do not silently expose old values on upgrade. This notice is separate from
+the approval machinery for private `node_profile` fields.
+
+Proposed description precedence, taking the first non-empty value:
+`node_identity.description` directly, explicitly published `mission`, a bounded
+plain-text summary of explicitly published `about_md`, then a deterministic
 generic description naming the node and, when available, its public
-organization name. No profile is a supported state, not a publication error.
+organization name. Only the profile prose requires approval. Phase 1 can build
+the root description from node identity or the generic fallback without any
+profile snapshot machinery; mission/about publication is a later, optional
+enhancement. No profile is a supported state, not a publication error.
 
 Before enabling the richer mapping, add an operator-reviewed public profile
 selection with a preview and explicit publish/unpublish action. Prefer a
@@ -453,7 +480,9 @@ public revision without them; it does not delete the authoring row or restore
 an older snapshot that might disclose a previously withdrawn value. Operators
 explicitly assign link purposes in the preview; no URL-pattern or label-based
 heuristic infers an organization/about relation. These selections and their
-publication permissions require new storage and portal work in Phase 0/1.
+publication permissions require policy design in Phase 0 and separate storage
+and portal implementation before the optional richer profile mapping is
+enabled; they do not block the identity-only Phase 1 projection.
 The current profile row does not store a logo MIME type: the resolver must
 provide verified asset metadata or omit the optional link `type`, not guess.
 
@@ -463,9 +492,10 @@ any rendered Markdown without executing embedded HTML. About/icon links must
 resolve anonymously before they are advertised. Unpublishing a field must
 remove it from the root, derived provider metadata, and any public about
 resource, and invalidate their independent STAC caches. ETags depend on the
-public profile revision, not private draft changes. Cache deletion alone is
-not sufficient for revocation: define a bounded public-cache lifetime and
-test both CDN and application-cache behavior.
+public profile revision, not private draft changes; the serialized node
+identity, including its description, is an independent ETag input. Cache
+deletion alone is not sufficient for revocation: define a bounded public-cache
+lifetime and test both CDN and application-cache behavior.
 
 ### Spatial and temporal fields
 
@@ -773,7 +803,7 @@ shape, not generated output from a current record.
     },
     {
       "rel": "item",
-      "href": "https://example.org/api/v1/stac/collections/zyra-project-01JXYZ/items/01KREV",
+      "href": "https://example.org/api/v1/stac/collections/zyra-project-01JXYZ/items/01JXYZ",
       "type": "application/geo+json"
     }
   ]
@@ -787,7 +817,7 @@ shape, not generated output from a current record.
   "type": "Feature",
   "stac_version": "1.1.0",
   "stac_extensions": [],
-  "id": "01KREV",
+  "id": "01JXYZ",
   "collection": "zyra-project-01JXYZ",
   "bbox": [-180, -90, 180, 90],
   "geometry": {
@@ -808,7 +838,7 @@ shape, not generated output from a current record.
   "links": [
     {
       "rel": "self",
-      "href": "https://example.org/api/v1/stac/collections/zyra-project-01JXYZ/items/01KREV",
+      "href": "https://example.org/api/v1/stac/collections/zyra-project-01JXYZ/items/01JXYZ",
       "type": "application/geo+json"
     },
     {
@@ -855,6 +885,11 @@ shape, not generated output from a current record.
 }
 ```
 
+This one-Item example uses `01JXYZ` as shorthand for the same persisted dataset
+ULID in the native URL and Item ID. Its Collection ID is
+`zyra-project-01JXYZ`, with the stable node namespace prepended; there is no
+separate revision ID to source from D1 in this case.
+
 The Item is deliberately core-only: it does not declare the proposed
 Terraviz extension or include `terraviz:*` fields because that schema URL is
 not published yet. Add those fields and the version-pinned extension URI
@@ -895,9 +930,10 @@ not expose. `StacItemSource` should distinguish a one-asset product, frame,
 workflow publication, or immutable revision.
 
 Extend this sketch with a separate `StacNodeContext` passed to Catalog and
-Collection builders: stable node identity, the approved public profile
-snapshot, validated extension registrations, and applicable vocabulary
-references. Its profile is not a raw `NodeProfileRow` or the portal's
+Collection builders: stable node identity (including its description), an
+optional approved public profile snapshot, validated extension registrations,
+and applicable vocabulary references. The identity-only path needs no profile
+snapshot. If present, its profile is not a raw `NodeProfileRow` or the portal's
 `NodeProfilePublic`. Dataset-specific custom values and source vocabulary
 provenance belong in the dataset read model. Build these inputs once per
 request/snapshot rather than fetching the node profile for each Item.
@@ -948,6 +984,23 @@ The later STAC API phase adds and tests, at minimum:
 
 ## Migration roadmap
 
+**Implementation PR boundary:** one phase per PR, never two phases in one PR.
+A phase may take several PRs. Documentation-only design and review fixes may
+be bundled, but this rule applies once Phase 0 work becomes code. In
+particular, Phase 1 publishes nothing: its read models, pure builders, local
+schemas, and fixtures are reviewed for mapping correctness only. Phase 2 is
+the first externally visible STAC publication, including public extension
+schemas and discovery links; do not combine it with Phase 1.
+
+**Scope clarification (2026-09-11):** the
+[issue #428 follow-up](https://github.com/zyra-project/terraviz/issues/428#issuecomment-5638228801)
+and [PR #425 review](https://github.com/zyra-project/terraviz/pull/425#issuecomment-5638216155)
+confirm that `node_identity.description` is to be published, not held behind
+profile approval. The initial projection uses that existing D1 field; public
+profile snapshots for `mission` and `about_md` are a later enhancement, not
+part of Phase 1's critical path. This is a plan decision, not a claim that the
+field is already public or that publication code exists.
+
 ### Phase 0: policy and remediation
 
 1. Add explicit metadata provenance for bounding boxes: measured, declared
@@ -955,36 +1008,63 @@ The later STAC API phase adds and tests, at minimum:
 2. Distinguish represented time from publication time and workflow schedule.
 3. Validate SPDX expressions and require a usable license link/text for
    `other`.
-4. Assign stable product/Collection identities separate from Item revisions.
+4. Assign namespaced dataset ULIDs to Collections and reuse the dataset ULID
+  for one-Item products; require persisted frame/revision identities before
+  splitting a product into multiple Items.
 5. Inventory non-Earth and presentation-only records and document exclusion
    reasons.
 6. Replace title-based enrichment joins with stable IDs during legacy cleanup.
 7. Ratify public-profile selection/permissions, node-extension ownership and
   unknown-field handling, and vocabulary declaration/mapping policy (issue
-  #428). Keep unapproved profile fields private until this gate is complete.
+  #428). Keep unapproved profile fields private until the richer mapping is
+  implemented and reviewed. This gate covers private `node_profile` prose,
+  not `node_identity.description` or the identity-only root description;
+  profile snapshot implementation is not a prerequisite for Phase 1.
+8. Document the public purpose of `node_identity.description` in the CLI help
+  and self-hosting guide, and provide upgrade review/clear instructions before
+  Phase 2 exposes existing values. Do not add a profile-approval gate or bundle
+  a well-known wire-format change into this decision.
 
 ### Phase 1: pure projection
 
 1. Add STAC TypeScript types or a small standards-tested type dependency.
 2. Add a D1 read model containing core rows, decorations, renditions, media
    intrinsics, and checksums.
-    Add the approved node context separately, including any newly designed
-    profile publication, extension registration, and vocabulary storage; do not
-    imply that those mechanisms already exist in the native catalog.
+  Add node identity, including its description, as separate node context.
+  Keep approved profile snapshots optional; exercise richer profile,
+  extension, and vocabulary inputs with fixtures without requiring their
+  storage/portal publication mechanisms or implying they already exist.
 3. Implement deterministic Catalog, Collection, Item, geometry, temporal, link,
    provider, license, and asset builders.
-4. Publish the Terraviz extension schema and mapping documentation.
+4. Author and validate the Terraviz extension schema locally with mapping
+  documentation; do not serve its public URL or expose STAC routes yet.
 5. Add table-driven unit tests for every eligibility and mapping branch.
+
+**Exit criterion:** the pure root Catalog builder and its tests work with
+node identity alone, without profile snapshot storage, publication controls,
+or approval state. A non-empty identity description is used directly; an
+absent description uses the deterministic generic fallback without reading
+private mission/about prose. No STAC route or new public field is exposed.
 
 ### Phase 2: browsable core resources
 
-1. Add the STAC routes and independent KV/ETag caching.
+Publish `node_identity.description` as the root Catalog description using the
+Phase 1 builder, after the notice and upgrade prerequisites in Phase 0 item 8.
+No per-node profile approval or well-known schema change is required. Richer
+profile publication remains optional and must not delay this initial surface.
+
+1. After the node-description operator notices are in place, add the STAC
+  routes and independent KV/ETag caching. Publish any extension schema before
+  emitting fields that declare its URI, and advertise discovery links only
+  for routes that exist.
 2. Emit only public, published, non-hidden, non-retracted, eligible records.
 3. Add a machine-readable operator report for excluded records and reasons.
 4. Add route tests for media types, absolute links, pagination, and cache
    invalidation.
-    Include profile publish/unpublish, logo changes, extension registry changes,
-    and vocabulary revisions in STAC ETag dependencies and cache invalidation.
+    Include node-description and public-logo changes in STAC ETag dependencies
+    and cache invalidation. When richer mappings are enabled, also cover profile
+    publish/unpublish, extension registry changes, and vocabulary revisions;
+    defer those mappings until their storage, permissions, and tests are ready.
 5. Add link traversal and asset reachability checks in CI or scheduled audit.
 
 ### Phase 3: atomic history
@@ -1026,9 +1106,15 @@ origin and identity after both contracts are stable.
 - Local and mirrored origin metadata.
 - Static product, sequence frame, workflow revision, tour, and non-Earth
   classification.
+- One-Item products reuse the dataset ULID, have a distinct namespaced
+  Collection ID, and keep IDs and links stable after a slug change; split
+  products require persisted frame/revision identities rather than fabricated
+  ones.
 - Deterministic output and ETag input for identical source state.
 - No profile, public name/logo only, and explicitly published prose; test the
-  description fallback order and prove private tone/audit fields never emit.
+  description fallback order, including an identity description with no
+  approved profile and an empty identity description with only private prose
+  (use the generic fallback). Prove private tone/audit fields never emit.
 - Selected-field withdrawal removes cached prose without deleting drafts;
   unsafe Markdown and link schemes cannot execute, unresolved logos are
   omitted, and neither raw `r2:` references nor authenticated URLs emit.
@@ -1060,6 +1146,9 @@ origin and identity after both contracts are stable.
   workflow publication.
 - Exclusion counts and reasons are observable without exposing private record
   details.
+- The CLI help, self-hosting guide, and upgrade notice explain description
+  publication before the first public route ships; changing or clearing the
+  identity description invalidates STAC output without changing `WellKnownDoc`.
 
 ## Risks and decisions
 
@@ -1075,6 +1164,7 @@ origin and identity after both contracts are stable.
 | Non-Earth coordinates in WGS 84 fields | Invalid or misleading GeoJSON | Exclude until a Solar System profile is reviewed |
 | Mutable workflow output under one Item ID | Cached history changes meaning | Mint immutable revision Items and link versions |
 | One giant node Collection | Mixed licenses and providers become ambiguous | Use product-level Collections |
+| Publishing old node descriptions without notice | Internal installation prose becomes public unexpectedly | Warn in CLI help, self-hosting guidance, and upgrade instructions before first exposure; let operators review, replace, or clear values |
 | Publishing the full stored node profile | Private authoring context and audit identity leak | Explicit public snapshot, preview, allowlist, and revocation tests |
 | Node extensions collide or pass through unchecked | Fields change meaning or bypass validation | Owner/schema-qualified registration; reserved prefixes; report unknown fields |
 | Treating local facets or keywords as universal | Misleading cross-node filters and aggregation | Versioned vocabulary provenance and explicit curated concept mappings |
@@ -1113,8 +1203,10 @@ The first STAC release is complete when:
 - every Item has defensible represented temporal metadata;
 - every asset has a retrievable URL, truthful media type, and appropriate role;
 - licenses and providers are represented without overclaiming;
-- node-profile publication boundaries and revocation are tested, including a
-  node with no profile and an index-only mirror;
+- node descriptions have operator-facing publication notices and work without
+  profile approval; no-profile and index-only mirror behavior is tested;
+- private profile fields remain omitted unless the optional reviewed snapshot
+  enhancement and its publication-boundary/revocation tests are implemented;
 - extension ownership and vocabulary decisions are recorded before Phase 1;
   any emitted custom fields and descriptors validate, unknown-field omissions
   are visible to operators, and local terms are not silently equated;
