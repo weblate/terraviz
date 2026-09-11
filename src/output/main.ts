@@ -98,6 +98,7 @@ async function boot(): Promise<void> {
     // useful answer is what is on the glass.
     datasetId: mirror.currentDataset()?.id ?? null,
     driftS: lastSync?.driftS ?? null,
+    syncKind: lastSync?.kind ?? null,
     fps,
     gpu: gpuName(),
     framebuffer: scene.size,

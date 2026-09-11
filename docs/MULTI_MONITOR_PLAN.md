@@ -1358,6 +1358,76 @@ capture where a fifth-of-a-frame seek left three siblings at
 `HAVE_METADATA` for five seconds. Import that too rather than
 inventing an epsilon.
 
+#### A seek is not free — found on hardware, rung 9 step 13
+
+The threshold above is the *right* number for a sibling panel,
+and it is not sufficient on its own for an output. A seek stalls
+the element while the primary plays on, so a seek that takes
+`C` seconds of wall clock leaves the output roughly `C x rate`
+behind **the moment it lands**. Seeking to correct an error
+smaller than that is arithmetically guaranteed to end further
+from the target than it started — and the correction runs once
+per rendered frame, so it does it again, and again.
+
+`OUTPUT_SEEK_SETTLE_MS` was the first answer to this and it
+covers only the case it assumed: a seek that finishes inside a
+second and leaves less than `SETTLING_SEEK_THRESHOLD_S` (0.40 s)
+behind. It is a **timeout**, and it expires whether or not the
+seek it was covering has been paid for. A slower seek outlives
+it, the threshold drops back to 150 ms while the error is still
+measured in seconds, and the loop closes.
+
+Simulated at 60 Hz against an element that stalls for the length
+of its seek, twenty seconds per run, starting five seconds out:
+
+| Seek cost | Seeks, settle window only | Frames mid-seek | Seeks, with the floor |
+|---|---|---|---|
+| 20 ms | 1 | 0% | 1 |
+| 200 ms | 1 | 1% | 1 |
+| 300 ms | 20 | 29% | 1 |
+| 500 ms | 40 | **97%** | 1 |
+| 1200 ms | 17 | **99%** | 1 |
+| 3000 ms | 7 | **99%** | 1 |
+
+Two things to read off that table. The loop starts at any cost
+above the 150 ms threshold, not at 400 ms — 300 ms just produces
+a tidier one-seek-per-second version of it. And above ~400 ms
+the element is mid-seek on essentially every frame, which is a
+decoder flushing and re-decoding from a keyframe continuously
+rather than playing. That is the "playback seems to struggle"
+of the first hardware pass; it is also why the debug HUD read a
+permanent dash, since a seeking element has no honest drift to
+report and every 2 Hz sample landed on one.
+
+The fix is to **measure the seek rather than assume it**.
+`createPlayheadSync` already holds when it last seeked; it now
+also notices when `seeking` goes false and records what that
+cost, and `seekCostFloorS` raises the threshold to that cost
+times the primary's rate times a margin. Unlike the settle
+window this floor does not expire, because the cost is a
+standing property of the asset, the decoder and the machine
+rather than an event. It is inert where seeks are cheap: a
+20 ms seek yields a floor below 0.15 s and `Math.max` discards
+it, which is the whole table's first two rows.
+
+The margin exists because the loop re-arms on a single
+under-estimate — one seek running slightly long puts the output
+back outside the threshold and earns another — while an
+over-estimate costs only a slower convergence that the rate trim
+still completes. 1.5 covers ordinary variance between two seeks
+on the same asset.
+
+The field case was a bbox data-encoded forecast
+(`north-america-smoke`, RRFS smoke over North America).
+Data-encoded video is published **as uploaded** rather than
+transcoded — that is why
+`src/ui/publisher/components/mp4-frame-rate.ts` exists — so
+these assets carry whatever keyframe spacing the producer wrote,
+and every seek decodes from a distant one. Nothing about that is
+wrong; it is simply an asset class whose seeks are expensive,
+and the correction has to be robust to it rather than assume it
+away.
+
 #### The `readyState` gate
 
 Steer from `readyState >= SIBLING_MIN_READY_STATE`, importing
@@ -3635,14 +3705,25 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     primary plays on, so a seek that takes longer than the
     threshold leaves the output far enough behind to earn
     another one, once per rendered frame. `outputSync` closes
-    that loop by not steering a seeking element and by raising
-    the threshold for `OUTPUT_SEEK_SETTLE_MS` after each seek,
-    so the trim gets a chance to converge. If the field still
-    parks above the threshold once it is *smooth*, that is a
-    real measurement of an output's floor — a second window, a
-    second decoder, an IPC hop — and the case for an
-    output-specific threshold, which does not exist yet and
-    should not be invented without it.
+    that loop three ways: it does not steer a seeking element,
+    it raises the threshold for `OUTPUT_SEEK_SETTLE_MS` after
+    each seek so the trim gets a chance to converge, and it
+    holds the threshold at the *measured* cost of the last seek
+    for as long as that measurement stands (see "A seek is not
+    free"). If the field still parks above the threshold once it
+    is *smooth*, that is a real measurement of an output's floor
+    — a second window, a second decoder, an IPC hop — and the
+    case for an output-specific threshold, which does not exist
+    yet and should not be invented without it.
+12c. **A dash is a reading too.** With no number, the sync field
+    prints why. `— not-ready` against a still image is the
+    correct answer and needs nothing. `— seeking` on most
+    samples is the loop above: the element is mid-seek almost
+    every frame, which is a decoder re-decoding from a keyframe
+    rather than playing, and it reads on the sphere as playback
+    that struggles. Record which one you see — the first pass
+    could only report "sync just shows a dash", and the two want
+    opposite responses.
 12a. **A dataset with no time axis.** Load one of the SOS
     looping animations — Air Traffic is the canonical case:
     global video, no `startTime`/`endTime`, a 24-hour loop
@@ -3681,6 +3762,20 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     near the centre of focus and almost none at the edges —
     enough to catch gross misplacement, never enough to support
     the ≤1 px claim above.
+
+13b. **A bbox *video*, which is the harder case.** Step 13 asks
+    for an image because the bbox alignment is easier to judge
+    on a still. Run a bbox video as well — a data-encoded
+    forecast is the canonical one, since those are published as
+    uploaded rather than transcoded and so carry whatever
+    keyframe spacing the producer wrote. That makes their seeks
+    expensive, which is what the seek-cost floor exists for, and
+    it is what the first hardware pass hit
+    (`north-america-smoke`). Watch for three things together:
+    the picture stuttering rather than playing, the sync field
+    reading `— seeking`, and the **control** window's own
+    playback slowing while the output is up. Those are one
+    symptom, not three.
 
 **Multi-layer:**
 
