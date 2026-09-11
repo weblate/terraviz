@@ -32,6 +32,7 @@ import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS, latLonToDirection } from './equirec
 import { getSunPosition } from '../utils/time'
 import { until } from '../test-utils'
 import { DECORATION_UNIFORMS } from './layerStack'
+import { NADIR_LUT_SIZE } from './atmosphereNadir'
 import { DEFAULT_FRAMEBUFFER_WIDTH } from '../services/multiOutput/protocol'
 
 describe('resolveFramebufferSize', () => {
@@ -767,6 +768,61 @@ describe('the sphere texture binding', () => {
       expect(u[DECORATION_UNIFORMS.cloudMap].value).toBe(base)
       expect(u[DECORATION_UNIFORMS.hasLights].value).toBe(0)
       expect(u[DECORATION_UNIFORMS.hasCloud].value).toBe(0)
+    })
+
+    it('builds the scattering table eagerly and switches it on', async () => {
+      // Unlike the two samplers above, this one has nothing to wait
+      // for: the table is a function of the shared constants alone, so
+      // there is no asset arrival that would flip the flag later. If it
+      // is not on at construction it is never on.
+      const three = fakeThree()
+      const earth = fakeEarth({ id: 'base' } as FakeTexture)
+
+      await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: earth.createEarth },
+      )
+
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.hasAtmosphere].value).toBe(1)
+      const lut = u[DECORATION_UNIFORMS.atmosphereLut].value as {
+        data: Uint8Array
+        width: number
+        height: number
+      }
+      expect(lut.width).toBe(NADIR_LUT_SIZE)
+      expect(lut.height).toBe(1)
+      expect(lut.data.length).toBe(NADIR_LUT_SIZE * 4)
+    })
+
+    it('falls back to the base texture, not null, if the table fails', async () => {
+      // Same never-bind-null rule as the two samplers above, and the
+      // one place it is reachable: the table is built inside a
+      // try/catch because a Three build without `DataTexture` would
+      // otherwise take down the whole scene for a decoration.
+      const three = fakeThree()
+      const base = { id: 'base' } as FakeTexture
+      const earth = fakeEarth(base)
+      const broken = {
+        ...(three.THREE_ as Record<string, unknown>),
+        DataTexture: class {
+          constructor() {
+            throw new Error('no DataTexture')
+          }
+        },
+      }
+
+      await createOutputScene(
+        { canvas: canvas() },
+        {
+          loadThree: async () => broken as unknown as typeof three.THREE_,
+          createEarth: earth.createEarth,
+        },
+      )
+
+      const u = three.uniformsSeen[0]
+      expect(u[DECORATION_UNIFORMS.hasAtmosphere].value).toBe(0)
+      expect(u[DECORATION_UNIFORMS.atmosphereLut].value).toBe(base)
     })
 
     it('takes the night lights when they land, and reports itself dirty', async () => {

@@ -74,6 +74,7 @@ import {
 import { getSunPosition } from '../utils/time'
 import { getCloudTextureUrl } from '../utils/deviceCapability'
 import { logger } from '../utils/logger'
+import { NADIR_LUT_SIZE, buildNadirScatterLut } from './atmosphereNadir'
 import {
   DECORATION_UNIFORMS,
   MAX_OUTPUT_LAYERS,
@@ -431,6 +432,27 @@ export async function createOutputScene(
     includeShadow: false,
   })
 
+  // Static by construction (see the uniform's note below), so this is
+  // the one texture built eagerly rather than on an asset arriving.
+  // A failure costs the ocean its colour, not the render loop.
+  let atmosphereLut: TextureLike | null = null
+  try {
+    const api = THREE_ as unknown as {
+      DataTexture: new (d: Uint8Array, w: number, h: number, f: unknown) => TextureLike
+      RGBAFormat: unknown
+    }
+    atmosphereLut = new api.DataTexture(
+      buildNadirScatterLut(),
+      NADIR_LUT_SIZE,
+      1,
+      api.RGBAFormat,
+    )
+    atmosphereLut.needsUpdate = true
+  } catch (err) {
+    logger.warn('[outputScene] atmosphere LUT unavailable', err)
+    atmosphereLut = null
+  }
+
   const uniforms: Record<string, { value: unknown }> = {
     // `baseEarthTexture` is loaded unconditionally and is never null,
     // so the sampler is bound from the first frame. A `null` here
@@ -467,6 +489,19 @@ export async function createOutputScene(
     [DECORATION_UNIFORMS.hasLights]: { value: earth.nightLightsTexture ? 1 : 0 },
     [DECORATION_UNIFORMS.cloudMap]: { value: earth.baseEarthTexture },
     [DECORATION_UNIFORMS.hasCloud]: { value: 0 },
+    // Atmospheric scattering, reduced to a static 1 KiB table. It is
+    // indexed by the *sun cosine*, which the shader derives per
+    // fragment from `uSunDir` — the sun's position never enters the
+    // table, so unlike every other texture here it is built once and
+    // never rebuilt, not even as the sun moves. See `atmosphereNadir`.
+    // Falls back to the base texture rather than `null` for the reason
+    // the two samplers above do: a null sampler is undefined behaviour
+    // that some drivers answer with black, and black here would tint
+    // the whole sphere rather than fail visibly.
+    [DECORATION_UNIFORMS.atmosphereLut]: {
+      value: atmosphereLut ?? earth.baseEarthTexture,
+    },
+    [DECORATION_UNIFORMS.hasAtmosphere]: { value: atmosphereLut ? 1 : 0 },
   }
   if (earth.nightLightsTexture) {
     uniforms[DECORATION_UNIFORMS.lightsMap].value = earth.nightLightsTexture
@@ -718,6 +753,7 @@ export async function createOutputScene(
       disposed = true
       unsubscribeLights()
       cloudTexture?.dispose()
+      atmosphereLut?.dispose()
       earth.dispose()
       quad.geometry.dispose()
       material.dispose()

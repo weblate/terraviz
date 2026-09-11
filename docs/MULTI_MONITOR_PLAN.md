@@ -677,36 +677,94 @@ output is in fact showing. Rescaling the curve to end at the cap
 is the tempting fix, and it would put a second cloud calibration in
 the repo — the trap immediately above, in a new place.
 
-**Verified on a real GL implementation (2026-09-09).** The decoration
+**Verified on a real GL implementation (2026-09-11).** The decoration
 GLSL is a hand transcription of tested TypeScript, which is the
 weakest guard in this module — a transcription error compiles fine and
-fails only on a GPU. It has now been rendered: `output.html`, and a
-throwaway harness driving `outputScene.setParams`, run headless in
-Chromium over ANGLE/SwiftShader, and both the terminator and the fade
-were measured back out of the pixels.
+fails only on a GPU. It has now been rendered headless in Chromium
+over ANGLE/SwiftShader and the numbers measured back out of the
+pixels. Two harnesses, and the difference between them is worth
+keeping: the first drives `outputScene.setParams` through
+`output.html`, which exercises the real scene and therefore reads
+through the equirect camera's pixel→lat/lon mapping; the second
+compiles `buildOutputFragmentShader` against a **uniform** base
+texture in a bare WebGL context, which removes that mapping from the
+comparison entirely. The second exists because the first produced an
+unresolvable reading on the atmosphere — a lit band that would not
+line up with the subsolar longitude — and the way out was to stop
+measuring two things at once rather than to keep staring at the one
+number.
 
 | Check | Method | Result |
 |---|---|---|
 | Terminator position | render at four frozen UTC instants, divide by the same frame with `dayNight` off to cancel albedo, least-squares fit the subsolar point | fitted longitude within **1.5°** of `getSunPosition`'s at 00/06/12/18 UTC, tracking −15°/h in the correct direction |
 | Terminator frame | 06:00 and 18:00 specifically | fitted **+91°** and **−91°**; the borrowed-vector bug mirrors longitude, so it would read −90 and +90 here — and would agree at 00:00/12:00, which is why it hid at those two hours |
 | Cloud zoom fade | flat cloud field, alpha recovered from a paired render with clouds off, compared against the ray length's own prediction | worst deviation **0.0020** over the frame at zoom 0 and zoom 5 — 8-bit quantisation |
+| Grade + atmosphere | the composed shader compiled against a *uniform* base texture, so the pixel→lat/lon mapping drops out of the comparison, then every sampled fragment checked against `gradeEarthBase`/`decorateEarth`/`applyAtmosphere` run in TypeScript | worst deviation **0.499 of one byte**, mean 0.046, over 176 fragments spanning the whole sun sweep — rounding and nothing else. The measured ocean: raw `rgb(2, 5, 20)` → graded `rgb(0, 0, 12)` → `rgb(2, 5, 29)` at the subsolar point, the +18 blue matching `SUN_INTENSITY`'s own docstring calibration |
 
-**One real gap this turned up: the ocean.** The output's base diffuse
-is `photorealEarth`'s `earth_diffuse_*.jpg`, whose water is
-`rgb(2, 5, 20)` — very nearly black, because that stack paints ocean
-colour with the specular and atmosphere passes this surface cannot
-carry. The control globe's base is *not* that texture at all: it is
-GIBS `BlueMarble_NextGeneration` raster tiles, which carry their own
-blue water. So a day-side ocean that reads blue on the control globe
-reads black on an output, which is what "the main application window
-is much more blue" was reporting. It is not scattering, and it will
-not be fixed by adding any effect from the table above. The fix is a
-choice about the base texture — a bathymetry-coloured diffuse, an
-ocean tint applied where the diffuse is water, or sampling the same
-GIBS product the control globe does — and is deliberately left open
-here rather than picked in passing, because it changes a committed
-18.5 MB asset set or adds a network dependency to a window that is
-meant to work air-gapped.
+**One real gap this turned up: the ocean — and the first diagnosis of
+it was wrong twice.** The output's day-side sea read near-black beside
+a blue one, which is what "the main application window is much more
+blue" was reporting. It was first attributed to scattering, then
+"corrected" to a claim that the control globe's GIBS
+`BlueMarble_NextGeneration` tiles "carry their own blue water" and
+that scattering therefore had nothing to do with it. Measured rather
+than asserted, a BMNG tile's ocean is `rgb(2, 5, 20)` and
+`earth_diffuse_2048.jpg`'s is `rgb(2, 5, 20)` — **byte-identical, the
+same product.** Blue Marble's blue is not in Blue Marble. The second
+claim was the wrong one, and the original instinct was right.
+
+The blue comes from two passes the output was not running, both of
+which cross to an unwrap:
+
+- **Pass 0, the colour grade.** Contrast 1.10 ("a slight S-curve to
+  deepen ocean blues") and saturation 1.20 ("push the Blue Marble
+  greens/blues a touch"), applied to the raw tiles before anything
+  composites on them. Purely per-pixel: no geometry, no viewer, no
+  silhouette, nothing for an unwrap to reinterpret. On the real ocean
+  value it clips red and green to black and leaves blue standing.
+- **Pass 5, atmospheric scattering.** The shell sits at
+  `ATMOSPHERE_RADIUS_FACTOR` (~1.0157), so it covers the whole visible
+  **disc**, not a limb ring, compositing
+  `scattered + background x viewTransmittance`. Rayleigh beta scatters
+  blue ~5.7x harder than red, so over a near-black ocean the
+  in-scattered term *is* the water's colour.
+
+**The table's "atmosphere shells → meaningless" row was right about
+the limb and wrong about the disc tint.** Pin the view to nadir —
+the one choice an unwrap can make without inventing a viewer — and
+every term of `computeAtmosphereScattering` collapses onto a single
+scalar: with the ray from the top of atmosphere at `-P`,
+`normalize(samplePos)` is `P` at every step, so the sun-transmittance
+lookup's `mu` is `dot(P, sunDir)` *constant down the column*; the
+view-side optical depths depend only on altitude; and both phase
+functions key on that same scalar negated. Exact rather than
+approximate, because the shared ray-march is single-scatter with no
+ground-albedo coupling. So it is a **256x1 RGBA LUT** — RGB the
+in-scatter, alpha the transmittance — indexed by the value
+`earthNightFactor` is already handed, and it is *static*: the sun's
+position never enters the table, only its cosine, which the shader
+derives per fragment. Built once, never rebuilt. `src/output/
+atmosphereNadir.ts`.
+
+**This sharpens the table's rule rather than breaking it.** The test
+is not "does the effect depend on a viewer" but *what does it become
+at nadir*: scattering becomes a smooth global function of sun angle,
+meaningful everywhere; specular becomes a fixed bright spot at the
+subsolar point, which is the glare artifact this section rules out,
+reached by another route. Specular, ground shadow and the sun sprite
+stay out on that sharper test, and now for a stated reason rather than
+by category.
+
+Two limits are stated rather than hidden. It is **single-scatter**, so
+it reads dark at high sun-zenith angles — the control globe shares
+that limitation, which is the point: the two agree because they share
+these constants, not because either is right. And **nadir is a
+choice**: the control globe shows one viewer's scattering, so the two
+match near its sub-viewer point and diverge toward its limb. An unwrap
+has no viewer to match. The same reasoning keeps the shared 16-step
+tier even though this table is built once on the CPU and could afford
+any step count — integrating more finely would render an ocean
+measurably bluer than the globe it exists to agree with.
 
 The four that do not cross are not blocked; they are
 **incoherent on this surface**. An equirectangular unwrap shows

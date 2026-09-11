@@ -19,6 +19,9 @@ import {
   EARTH_DECORATION_GLSL,
   MAX_OUTPUT_LAYERS,
   decorateEarth,
+  gradeEarthBase,
+  applyAtmosphere,
+  EARTH_ATMOSPHERE_GLSL,
   localZoomAt,
   cloudZoomFade,
   nightFactor,
@@ -601,5 +604,137 @@ describe('the composed shader wires the fade to the ray march', () => {
     expect(EARTH_DECORATION_GLSL).toContain('/ 3.0')
     // Applied to the mixed alpha, after the night boost.
     expect(EARTH_DECORATION_GLSL).toContain('* cloudFade;')
+  })
+})
+
+describe('the base colour grade', () => {
+  // The ocean both surfaces actually start from — GIBS Blue Marble and
+  // earth_diffuse are the same product and both read this exact value.
+  const OCEAN = { r: 2 / 255, g: 5 / 255, b: 20 / 255 }
+
+  it('crushes the ocean to blue, which is what it was tuned for', () => {
+    // Contrast 1.10 pivots about 0.5, so values this far below it are
+    // pushed further down and red/green clip to black; saturation 1.20
+    // then pushes what survives away from the luma. The result is the
+    // "deepen ocean blues" the setting's docstring claims.
+    const g = gradeEarthBase(OCEAN)
+    expect(g.r).toBe(0)
+    expect(g.g).toBe(0)
+    expect(g.b).toBeGreaterThan(0)
+    expect(g.b).toBeGreaterThan(OCEAN.b * 0.5)
+  })
+
+  it('cannot invent colour in a grey', () => {
+    // Saturation mixes toward the luma, so a neutral input stays
+    // neutral however hard it is pushed. Guards against a channel
+    // swap or a botched luma.
+    const g = gradeEarthBase({ r: 0.6, g: 0.6, b: 0.6 })
+    expect(g.r).toBeCloseTo(g.g, 12)
+    expect(g.g).toBeCloseTo(g.b, 12)
+  })
+
+  it('pushes away from mid grey rather than toward it', () => {
+    expect(gradeEarthBase({ r: 0.8, g: 0.8, b: 0.8 }).r).toBeGreaterThan(0.8)
+    expect(gradeEarthBase({ r: 0.2, g: 0.2, b: 0.2 }).r).toBeLessThan(0.2)
+  })
+
+  it('stays inside the display range', () => {
+    for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+      const g = gradeEarthBase({ r: v, g: 0, b: 1 - v })
+      for (const c of [g.r, g.g, g.b]) {
+        expect(c).toBeGreaterThanOrEqual(0)
+        expect(c).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+})
+
+describe('the atmosphere composite', () => {
+  it('is the raster path\'s own blend, surface dimmed then scatter added', () => {
+    // `scattered + bg x viewTransmittance`, which earthTileLayer gets
+    // from blendFunc(ONE, SRC_ALPHA).
+    const out = applyAtmosphere(
+      { r: 0.4, g: 0.5, b: 0.6 },
+      { r: 0.01, g: 0.02, b: 0.07, transmittance: 0.88 },
+    )
+    expect(out.r).toBeCloseTo(0.4 * 0.88 + 0.01, 12)
+    expect(out.g).toBeCloseTo(0.5 * 0.88 + 0.02, 12)
+    expect(out.b).toBeCloseTo(0.6 * 0.88 + 0.07, 12)
+  })
+
+  it('is the identity for a transparent atmosphere', () => {
+    const colour = { r: 0.3, g: 0.4, b: 0.5 }
+    expect(applyAtmosphere(colour, { r: 0, g: 0, b: 0, transmittance: 1 })).toEqual(colour)
+  })
+
+  it('turns a near-black ocean bluer rather than merely darker', () => {
+    // The whole point, end to end: grade the real ocean value, then
+    // composite a noon-zenith atmosphere over it, and check blue has
+    // gained while red and green have not run away with it.
+    const graded = gradeEarthBase({ r: 2 / 255, g: 5 / 255, b: 20 / 255 })
+    const out = applyAtmosphere(graded, { r: 0.007, g: 0.021, b: 0.072, transmittance: 0.884 })
+    expect(out.b).toBeGreaterThan(20 / 255)
+    expect(out.b).toBeGreaterThan(out.g * 2)
+    expect(out.g).toBeGreaterThan(out.r)
+  })
+})
+
+describe('EARTH_ATMOSPHERE_GLSL', () => {
+  it('reads the LUT at texel centres', () => {
+    // 255.0 and 256.0 rather than a bare 0.5/+0.5 mapping; see
+    // `nadirLutU`. Asserted as text because the GLSL cannot be run.
+    expect(EARTH_ATMOSPHERE_GLSL).toContain('* 255.0 + 0.5)')
+    expect(EARTH_ATMOSPHERE_GLSL).toContain('/ 256.0')
+  })
+
+  it('holds the sun overhead when day/night is off', () => {
+    // Otherwise the scattering gradient would draw a terminator in
+    // blue on a globe whose terminator was explicitly turned off.
+    expect(EARTH_ATMOSPHERE_GLSL).toContain('dayNight == 1 ? dot(hit, sunDir) : 1.0')
+  })
+
+  it('composites surface-times-alpha plus scatter', () => {
+    expect(EARTH_ATMOSPHERE_GLSL).toContain('colour * s.a + s.rgb')
+  })
+
+  it('is inert when no LUT is bound', () => {
+    expect(EARTH_ATMOSPHERE_GLSL).toContain('if (hasAtmosphere == 0) return colour;')
+  })
+})
+
+describe('the composed shader runs the passes in earthTileLayer\'s order', () => {
+  const src = buildOutputFragmentShader(1)
+  // Order has to be read inside `main()`. Every helper is *defined*
+  // above it — GLSL ES 1.00 has no forward declarations — so searching
+  // the whole source finds definitions, not call sites, and compares
+  // the preamble's order instead of the pipeline's.
+  const body = src.slice(src.indexOf('void main()'))
+
+  it('grades the base before anything composites onto it', () => {
+    // Pass 0 runs first over there, on the raw tiles.
+    expect(body).toContain('gradeEarthBase(texture2D(uSphereTexture, sphereUv).rgb)')
+    expect(body.indexOf('gradeEarthBase(texture2D')).toBeLessThan(
+      body.indexOf('colour = decorateEarth('),
+    )
+  })
+
+  it('applies the atmosphere after the decoration and before the layers', () => {
+    // Pass 5 is drawn last over there, over the clouds — and it must
+    // land under the dataset, or a blue wash reads as a value.
+    const decorate = body.indexOf('colour = decorateEarth(')
+    const atmosphere = body.indexOf('colour = applyEarthAtmosphere(')
+    const layer = body.indexOf('sampleOverlayLayer(')
+    expect(decorate).toBeGreaterThan(0)
+    expect(decorate).toBeLessThan(atmosphere)
+    expect(atmosphere).toBeLessThan(layer)
+  })
+
+  it('declares the atmosphere uniforms it samples', () => {
+    expect(src).toContain('uniform sampler2D uAtmosphereLut;')
+    expect(src).toContain('uniform int uHasAtmosphere;')
+  })
+
+  it('defines the helper before main, as GLSL ES 1.00 requires', () => {
+    expect(src.indexOf('vec3 applyEarthAtmosphere(')).toBeLessThan(src.indexOf('void main()'))
   })
 })

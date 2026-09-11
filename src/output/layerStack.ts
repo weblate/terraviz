@@ -51,6 +51,8 @@
  */
 
 import type { DatasetOverlayOptions } from '../types'
+import { SHADER_DEFAULTS } from '../services/shaderSettingsService'
+import { NADIR_LUT_SIZE } from './atmosphereNadir'
 import { EQUIRECT_FRAGMENT_SHADER } from './equirectRtt'
 
 /**
@@ -120,6 +122,28 @@ const CLOUD_NIGHT_ALPHA_BOOST = 2.5
  */
 const CLOUD_FADE_START_ZOOM = 3
 const CLOUD_FADE_END_ZOOM = 6
+
+/**
+ * The base colour grade, `earthTileLayer`'s pass 0.
+ *
+ * **Imported, not copied** — unlike the four decoration scalars
+ * above, whose home pulls MapLibre. `shaderSettingsService` imports
+ * one type and nothing else, so taking its defaults costs the output
+ * bundle nothing and removes two numbers that would otherwise drift.
+ *
+ * The *defaults*, deliberately, not the live values: the dev shader
+ * tuner can change them at runtime on the control window and nothing
+ * mirrors that over the link, so reading live state here would make
+ * an output disagree with a globe nobody else can reproduce. If those
+ * ever become an operator-facing control they belong on the wire.
+ */
+const BASE_CONTRAST = SHADER_DEFAULTS.contrast
+const BASE_SATURATION = SHADER_DEFAULTS.saturation
+
+/** Rec. 709 luma, the weights every pass in both renderers uses. */
+const LUMA_R = 0.299
+const LUMA_G = 0.587
+const LUMA_B = 0.114
 
 /**
  * How far past the geometric terminator the night side reaches full
@@ -256,6 +280,71 @@ export function decorateEarth(d: EarthDecoration): { r: number; g: number; b: nu
   }
 }
 
+/**
+ * The base colour grade — `earthTileLayer`'s pass 0, which runs
+ * **first**, on the raw Blue Marble tiles, before night / lights /
+ * clouds / atmosphere composite on top.
+ *
+ * Its two constants were tuned for exactly the thing this fixes:
+ * contrast 1.10 is "a slight S-curve to deepen ocean blues" and
+ * saturation 1.20 "pushes the Blue Marble greens/blues a touch". An
+ * output that skipped it would show an ungraded base beside a graded
+ * one, which is the same class of mismatch as the missing scattering
+ * and was found alongside it.
+ *
+ * Purely per-pixel — no geometry, no viewer, no silhouette — so
+ * unlike the four effects the plan rules out, there is nothing here
+ * that an unwrap has to reinterpret.
+ */
+export function gradeEarthBase(c: { r: number; g: number; b: number }): {
+  r: number
+  g: number
+  b: number
+} {
+  const r = (c.r - 0.5) * BASE_CONTRAST + 0.5
+  const g = (c.g - 0.5) * BASE_CONTRAST + 0.5
+  const b = (c.b - 0.5) * BASE_CONTRAST + 0.5
+  const luma = r * LUMA_R + g * LUMA_G + b * LUMA_B
+  const clamp = (v: number): number => Math.min(1, Math.max(0, v))
+  return {
+    r: clamp(luma + (r - luma) * BASE_SATURATION),
+    g: clamp(luma + (g - luma) * BASE_SATURATION),
+    b: clamp(luma + (b - luma) * BASE_SATURATION),
+  }
+}
+
+/** One entry of `atmosphereNadir`'s LUT, as the shader reads it. */
+export interface AtmosphereSample {
+  r: number
+  g: number
+  b: number
+  transmittance: number
+}
+
+/**
+ * Composite the atmosphere, `earthTileLayer`'s pass 5.
+ *
+ * The same `scattered + surface x viewTransmittance` the raster path
+ * blends with `(ONE, SRC_ALPHA)`. Applied **after** the decoration,
+ * because that is where it sits over there — the shell is drawn last,
+ * over the clouds — and **before** the dataset layers, for the reason
+ * the decoration is: a blue wash over a measured field is a rendering
+ * artifact indistinguishable from a value.
+ *
+ * Where the sample comes from is `atmosphereNadir`'s business; this
+ * only knows it is indexed by the sun cosine.
+ */
+export function applyAtmosphere(
+  colour: { r: number; g: number; b: number },
+  sample: AtmosphereSample,
+): { r: number; g: number; b: number } {
+  return {
+    r: colour.r * sample.transmittance + sample.r,
+    g: colour.g * sample.transmittance + sample.g,
+    b: colour.b * sample.transmittance + sample.b,
+  }
+}
+
 /** Uniform names for the Earth decoration. Same anti-typo reason as
  *  `overlayUniformNames`. */
 export const DECORATION_UNIFORMS = {
@@ -265,6 +354,8 @@ export const DECORATION_UNIFORMS = {
   hasLights: 'uHasNightLights',
   cloudMap: 'uCloudMap',
   hasCloud: 'uHasCloud',
+  atmosphereLut: 'uAtmosphereLut',
+  hasAtmosphere: 'uHasAtmosphere',
 } as const
 
 /**
@@ -279,6 +370,14 @@ export const DECORATION_UNIFORMS = {
  * deferred here; they are incoherent here.
  */
 export const EARTH_DECORATION_GLSL = `
+// earthTileLayer pass 0, which runs before everything else on the
+// raw tiles. Tuned to deepen ocean blues; see \`gradeEarthBase\`.
+vec3 gradeEarthBase(vec3 c) {
+  c = (c - 0.5) * ${BASE_CONTRAST.toFixed(2)} + 0.5;
+  float luma = dot(c, vec3(${LUMA_R}, ${LUMA_G}, ${LUMA_B}));
+  return clamp(mix(vec3(luma), c, ${BASE_SATURATION.toFixed(2)}), 0.0, 1.0);
+}
+
 float earthNightFactor(vec3 hit, vec3 sunDir, int dayNight) {
   if (dayNight == 0) return 0.0;
   // Ascending edges, unlike the older shaders' reversed form: GLSL
@@ -306,6 +405,34 @@ vec3 decorateEarth(vec3 base, vec3 lights, float cloudLuma, float night, float c
   float alpha = mix(cloudAlpha, min(cloudAlpha * ${CLOUD_NIGHT_ALPHA_BOOST.toFixed(2)}, 1.0), night)
     * cloudFade;
   return mix(colour, mix(vec3(1.0), vec3(0.0), night), alpha);
+}
+`.trim()
+
+/**
+ * The GLSL mirror of `applyAtmosphere`, plus the LUT lookup.
+ *
+ * Its own string rather than part of the decoration block because it
+ * is a different pass at a different point in the order: pass 5,
+ * after the clouds, where the raster path draws its shell.
+ *
+ * **Day/night off samples at overhead, not off.** Turning the
+ * terminator off means "do not show where the sun is"; an atmosphere
+ * that still varied with sun angle would draw a terminator in blue
+ * instead of in darkness. Holding it at the subsolar value gives a
+ * uniformly-lit Earth that still has an ocean, which is what that
+ * toggle is asking for.
+ */
+export const EARTH_ATMOSPHERE_GLSL = `
+vec3 applyEarthAtmosphere(
+  vec3 colour, vec3 hit, vec3 sunDir, sampler2D lut, int hasAtmosphere, int dayNight
+) {
+  if (hasAtmosphere == 0) return colour;
+  float sunCos = dayNight == 1 ? dot(hit, sunDir) : 1.0;
+  // Texel centres, not edges — see \`nadirLutU\`.
+  float u = (clamp(sunCos * 0.5 + 0.5, 0.0, 1.0) * ${(NADIR_LUT_SIZE - 1).toFixed(1)} + 0.5)
+    / ${NADIR_LUT_SIZE.toFixed(1)};
+  vec4 s = texture2D(lut, vec2(u, 0.5));
+  return colour * s.a + s.rgb;
 }
 `.trim()
 
@@ -494,6 +621,8 @@ export function buildOutputFragmentShader(layerCount: number): string {
     `uniform int ${D.hasLights};`,
     `uniform sampler2D ${D.cloudMap};`,
     `uniform int ${D.hasCloud};`,
+    `uniform sampler2D ${D.atmosphereLut};`,
+    `uniform int ${D.hasAtmosphere};`,
   ]
   const composites: string[] = []
   for (let slot = 0; slot < count; slot++) {
@@ -529,7 +658,9 @@ export function buildOutputFragmentShader(layerCount: number): string {
   }
 
   const tail = [
-    '  vec3 colour = texture2D(uSphereTexture, sphereUv).rgb;',
+    // Pass 0 first, on the raw sample, exactly where the raster path
+    // runs it — everything below composites onto the graded base.
+    '  vec3 colour = gradeEarthBase(texture2D(uSphereTexture, sphereUv).rgb);',
     // `hit` is the ray-march's landing point on the *unit* sphere, so
     // it is already the surface normal — the one line the plan's
     // decoration table promised the terminator would cost.
@@ -548,6 +679,10 @@ export function buildOutputFragmentShader(layerCount: number): string {
     // once.
     '  float cloudFade = earthCloudZoomFade(t);',
     '  colour = decorateEarth(colour, nightLights, cloudLuma, night, cloudFade);',
+    // Pass 5 last, over the clouds, before any dataset layer — a blue
+    // wash over a measured field would read as a value.
+    `  colour = applyEarthAtmosphere(colour, hit, ${D.sunDir}, ${D.atmosphereLut},`,
+    `    ${D.hasAtmosphere}, ${D.dayNight});`,
     // Emitted only when something samples them, so a zero-layer shader
     // does not declare two unread floats.
     ...(count > 0
@@ -565,9 +700,8 @@ export function buildOutputFragmentShader(layerCount: number): string {
   // Appending it after the body type-checks fine in TypeScript and
   // fails only on a GPU, which is nowhere this repo's tests run — so
   // the ordering is asserted in `layerStack.test.ts`.
-  const helpers = count > 0
-    ? `${EARTH_DECORATION_GLSL}\n\n${OVERLAY_SAMPLE_GLSL}`
-    : EARTH_DECORATION_GLSL
+  const decoration = `${EARTH_DECORATION_GLSL}\n\n${EARTH_ATMOSPHERE_GLSL}`
+  const helpers = count > 0 ? `${decoration}\n\n${OVERLAY_SAMPLE_GLSL}` : decoration
   const preamble = `${declarations.join('\n')}\n\n${helpers}\n`
   return body.replace('void main() {', `${preamble}\nvoid main() {`)
 }
