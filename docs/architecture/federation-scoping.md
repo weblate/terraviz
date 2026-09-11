@@ -817,7 +817,7 @@ In the same PR(s) that land the federation routes:
 | `scripts/build-protocol-schemas.ts` | new | Generates JSON Schema from the `WireDataset`, `FederationFeed`, and `WellKnownDoc` TypeScript types (use `ts-json-schema-generator` or equivalent — no new runtime dep). |
 | `docs/protocol/v1/feed.schema.json` | new | Generated, committed, served at a stable URL (`https://terraviz.zyra-project.org/schema/v1/feed.json`). |
 | `docs/protocol/v1/well-known.schema.json` | new | Same treatment for `/.well-known/terraviz.json`. |
-| `docs/protocol/v1/dataset.schema.json` | new | Same treatment for `WireDataset` (with the STAC profile mapping baked in — see Directive 3). |
+| `docs/protocol/v1/dataset.schema.json` | new | Same treatment for the native `WireDataset`; STAC uses separate routes and schemas (see amended Directive 3). |
 | `docs/protocol/CHANGELOG.md` | new | Opens with the Phase 4 entry. Promised at `CATALOG_FEDERATION_PROTOCOL.md:387-390`; create the file with the first entry rather than as a follow-up. |
 | `npm run check:protocol-schemas` | new | CI job that regenerates the schemas and fails the build if they drift from the committed copy. Same pattern as `check:privacy-page` (`package.json:21`). |
 | Optional: OpenAPI 3.1 spec | `docs/protocol/v1/openapi.yaml` | Generated from the route handlers via `tsoa` or hand-written; less critical than the JSON Schemas but a meaningful win for non-TS implementers. |
