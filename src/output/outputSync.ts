@@ -268,14 +268,33 @@ export function syncVideoToState(
   // was covering has been paid for — while the floor is a standing
   // property of this asset on this machine, and the field case is
   // precisely the one where the timeout runs out first.
-  const settlingThresholdS =
-    sinceLastSeekMs < OUTPUT_SEEK_SETTLE_MS
-      ? SETTLING_SEEK_THRESHOLD_S
-      : SIBLING_HARD_SEEK_THRESHOLD_S
-  const hardSeekThresholdS = Math.max(
-    settlingThresholdS,
-    seekCostFloorS(lastSeekCostS, playback.playbackRate),
-  )
+  //
+  // **Neither applies while the primary is paused,** and that is the
+  // premise rather than an exception. Both raised bounds exist because
+  // the target keeps moving: the floor because a seek costing `C`
+  // leaves the output `C x rate` behind by the time it lands, the
+  // settle window because the trim needs time to close what the last
+  // seek left. Against a *stationary* target a seek manufactures no
+  // error at all — it lands exactly where it aimed — and there is no
+  // trim to wait for, because a paused element has no rate to trim.
+  // Raising the bound there only strands the output: the paused branch
+  // below declines the seek, nothing converges it, and the sphere holds
+  // a frame up to a floor's width from the operator's until they press
+  // play. On a forecast that is an hour of model time on the wrong
+  // frame, in front of an audience, silently.
+  //
+  // Nor can the plain threshold thrash here, which is the fear that
+  // motivated both bounds: the seek lands on a target that has not
+  // moved, so the next call measures ~0 and issues nothing. One seek,
+  // converged.
+  const hardSeekThresholdS = playback.paused
+    ? SIBLING_HARD_SEEK_THRESHOLD_S
+    : Math.max(
+        sinceLastSeekMs < OUTPUT_SEEK_SETTLE_MS
+          ? SETTLING_SEEK_THRESHOLD_S
+          : SIBLING_HARD_SEEK_THRESHOLD_S,
+        seekCostFloorS(lastSeekCostS, playback.playbackRate),
+      )
 
   const date = instant(playback.date)
   const sibStart = instant(dataset?.startTime)

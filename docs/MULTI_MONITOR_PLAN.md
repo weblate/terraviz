@@ -1417,6 +1417,30 @@ over-estimate costs only a slower convergence that the rate trim
 still completes. 1.5 covers ordinary variance between two seeks
 on the same asset.
 
+**Both bounds are lifted while the primary is paused**, and the
+reason is the premise they share rather than a special case.
+Each exists because the target keeps moving during the stall:
+the floor because a seek costing `C` leaves the output `C x rate`
+behind by the time it lands, the settle window because the trim
+needs time to close what the last seek left. Against a
+*stationary* target neither holds — a seek lands exactly where it
+aimed and manufactures no error — and the sentence about the trim
+is worse than unnecessary, because a paused element has no rate
+to trim at all. So a raised bound there is not conservative, it
+is terminal: the paused branch declines the seek, nothing
+converges it, and the sphere holds a frame up to a floor's width
+from the operator's until someone presses play. On a forecast
+that is an hour of model time on the wrong frame, silently, in
+front of an audience.
+
+The thrash that motivated both bounds cannot happen on a
+stationary target either: the seek lands where it aimed, the next
+call measures ~0, and nothing more is issued. One seek,
+converged. This was caught in review rather than on hardware,
+which is worth recording — the floor's own justification names
+the moving target in its first sentence, and the paused path
+still read the value it produced.
+
 The field case was a bbox data-encoded forecast
 (`north-america-smoke`, RRFS smoke over North America).
 Data-encoded video is published **as uploaded** rather than

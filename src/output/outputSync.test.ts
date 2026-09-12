@@ -762,3 +762,72 @@ describe('the measurement belongs to one element', () => {
     expect(second.currentTime).toBeCloseTo(50)
   })
 })
+
+/**
+ * A paused primary is a stationary target.
+ *
+ * Both raised bounds — the settle window and the seek-cost floor —
+ * exist because the target keeps moving while a seek is being served.
+ * Against a stationary one they are not merely unnecessary, they strand
+ * the output: the paused branch declines the seek and there is no rate
+ * trim to close what is left, so the sphere holds the wrong frame until
+ * someone presses play. Caught in review on this PR.
+ */
+describe('a paused primary is a stationary target', () => {
+  const pausedAt50: SyncInputs = inputs({
+    playback: { date: dateAt(50), positionRatio: 0.5, paused: true, playbackRate: 1 },
+  })
+
+  it('seeks a drift the seek-cost floor would otherwise strand', () => {
+    // A 1.2 s seek was measured while playing, so the floor is 1.8 s.
+    // The operator then pauses one second out. Nothing here can trim,
+    // so declining this seek leaves the output a second from the
+    // control globe — on a forecast, an hour of model time — with no
+    // event that will ever correct it.
+    const video = target({ paused: true, currentTime: 51 })
+
+    const out = syncVideoToState(video, pausedAt50, Number.POSITIVE_INFINITY, 1.2)
+
+    expect(out.kind).toBe('paused')
+    expect(out.seeked).toBe(true)
+    expect(video.currentTime).toBeCloseTo(50)
+  })
+
+  it('seeks a drift the settle window would otherwise strand', () => {
+    // Same argument, the other bound: 0.3 s sits under
+    // SETTLING_SEEK_THRESHOLD_S and over the sibling threshold. While
+    // playing that is right — the trim closes it inside the window.
+    // Paused, there is no trim.
+    const video = target({ paused: true, currentTime: 50.3 })
+
+    const out = syncVideoToState(video, pausedAt50, 100)
+
+    expect(out.seeked).toBe(true)
+    expect(video.currentTime).toBeCloseTo(50)
+  })
+
+  it('still leaves a paused output alone when it is already in step', () => {
+    // The positive anchor for the two above: dropping the bounds must
+    // not make every paused frame a seek. Inside the sibling threshold
+    // nothing is issued, which is what stops a paused sphere flickering.
+    const video = target({ paused: true, currentTime: 50.05 })
+
+    const out = syncVideoToState(video, pausedAt50, Number.POSITIVE_INFINITY, 1.2)
+
+    expect(out.seeked).toBe(false)
+    expect(video.currentTime).toBe(50.05)
+  })
+
+  it('converges in one seek, because the target does not move', () => {
+    // The fear that motivated both bounds is thrash, and it cannot
+    // happen here: the seek lands where it aimed, so the next call
+    // measures nothing to correct. One seek, not a loop.
+    let clock = 0
+    const playhead = createPlayheadSync(() => clock)
+    const video = target({ paused: true, currentTime: 55 })
+
+    expect(playhead.sync(video, pausedAt50).seeked).toBe(true)
+    clock += 1000
+    expect(playhead.sync(video, pausedAt50).seeked).toBe(false)
+  })
+})
