@@ -120,6 +120,20 @@ export interface OutputWindowHandle {
 /** Everything the manager needs from the host platform. */
 export interface MultiOutputHost {
   availableMonitors(): Promise<OutputMonitor[]>
+  /**
+   * The display the platform calls primary, or `null` when it will not
+   * say.
+   *
+   * A separate call because `availableMonitors()` does not carry the
+   * flag, and **asked rather than inferred** because the obvious
+   * inference is wrong often enough to matter: the primary is at the
+   * origin on Windows by definition, usually at the origin on macOS,
+   * and on X11 is whatever `xrandr --primary` marks — which can sit
+   * anywhere. A guess that is usually right and silently wrong is the
+   * same failure the name-only monitor match was rejected for. `null`
+   * is a real answer, and the panel simply marks nothing.
+   */
+  primaryMonitor(): Promise<OutputMonitor | null>
   /** Create the window **hidden and undecorated**, navigated to `url`.
    *  Placement is the manager's job, not the constructor's. */
   createWindow(label: string, url: string): Promise<OutputWindowHandle>
@@ -286,6 +300,20 @@ export class MultiOutputManager {
 
   listMonitors(): Promise<OutputMonitor[]> {
     return this.host.availableMonitors()
+  }
+
+  /**
+   * Which of those the platform calls primary, or `null`.
+   *
+   * Passed straight through rather than folded into `listMonitors()`,
+   * because `OutputMonitor` is **persisted** on every `OutputRecord`:
+   * a field added to it is a field written into an operator's stored
+   * config, where a stale "this one was primary last launch" is worse
+   * than no answer at all. The panel asks for both and joins them on
+   * `monitorKey`.
+   */
+  primaryMonitor(): Promise<OutputMonitor | null> {
+    return this.host.primaryMonitor()
   }
 
   outputs(): OutputRecord[] {
@@ -823,17 +851,25 @@ export async function createTauriHost(): Promise<MultiOutputHost> {
     import('@tauri-apps/api/window'),
     import('@tauri-apps/api/event'),
   ])
-  const { PhysicalPosition, PhysicalSize, availableMonitors } = windowApi
+  const { PhysicalPosition, PhysicalSize, availableMonitors, primaryMonitor } = windowApi
+
+  type TauriMonitor = Awaited<ReturnType<typeof primaryMonitor>>
+  const toOutputMonitor = (m: NonNullable<TauriMonitor>): OutputMonitor => ({
+    name: m.name,
+    position: { x: m.position.x, y: m.position.y },
+    size: { width: m.size.width, height: m.size.height },
+    scaleFactor: m.scaleFactor,
+  })
 
   return {
     async availableMonitors() {
       const monitors = await availableMonitors()
-      return monitors.map(m => ({
-        name: m.name,
-        position: { x: m.position.x, y: m.position.y },
-        size: { width: m.size.width, height: m.size.height },
-        scaleFactor: m.scaleFactor,
-      }))
+      return monitors.map(toOutputMonitor)
+    },
+
+    async primaryMonitor() {
+      const monitor = await primaryMonitor()
+      return monitor ? toOutputMonitor(monitor) : null
     },
 
     async createWindow(label, url) {

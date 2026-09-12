@@ -172,6 +172,66 @@ type _StateKeysAreExhaustive = AssertNoneMissing<
   Exclude<keyof OutputGlobeState, (typeof STATE_KEYS)[number]>
 >
 
+/**
+ * The keys whose change can put a different pixel on the glass.
+ *
+ * Everything the output composites: the dataset's own media, the
+ * operator's palette, the stacked layers, the camera and illumination,
+ * and the simulation clock the sun will one day be read from. `layers`
+ * and `simulationDate` are listed even though nothing composites them
+ * yet — a key that arrives wired but unlisted would be applied and then
+ * held back by the 1 Hz static floor, which reads as "that setting
+ * takes a moment" rather than as a bug.
+ */
+export const PICTURE_KEYS = [
+  'dataset',
+  'display',
+  'layers',
+  'simulationDate',
+  'view',
+] as const satisfies readonly StateKey[]
+
+/**
+ * The keys read only by the playhead correction.
+ *
+ * These two describe where the *control window's* video is, and they
+ * change on every frame the operator's globe plays — sixty diffs a
+ * second, each one previously worth a redraw of a 4096x2048
+ * ray-marched sphere. Neither one changes a pixel here. What this
+ * output shows moves when its own decoder advances, which
+ * `contentKindFor` already paces at 30 fps, or when the correction
+ * seeks, which the render loop notices by comparing `currentTime`
+ * across the call. Redrawing on the diff as well doubled the output's
+ * GPU load for the exact content the 30 fps cap exists to bound — on a
+ * machine whose webview may be on the iGPU, and whose control window is
+ * decoding the same video in the next process.
+ */
+export const PLAYHEAD_KEYS = ['primary', 'playback'] as const satisfies readonly StateKey[]
+
+/** Compile-time proof the two lists above partition `StateKey`: every
+ *  key is classified, and none is classified twice. A key added to the
+ *  schema and left out of both would silently never earn a frame. */
+type _EveryKeyIsClassified = AssertNoneMissing<
+  Exclude<StateKey, (typeof PICTURE_KEYS)[number] | (typeof PLAYHEAD_KEYS)[number]>
+>
+type _NoKeyIsClassifiedTwice = AssertNoneMissing<
+  Extract<(typeof PICTURE_KEYS)[number], (typeof PLAYHEAD_KEYS)[number]>
+>
+
+/**
+ * Did this diff change anything the output draws?
+ *
+ * Exported as a predicate rather than leaving the call site to test the
+ * list, because the answer decides whether a frame is drawn and the
+ * wrong answer is invisible in both directions: too eager burns a GPU
+ * budget silently, too lazy leaves a stale picture that looks like a
+ * dropped upload.
+ */
+export function changesPicture(changed: readonly StateKey[]): boolean {
+  const picture: readonly StateKey[] = PICTURE_KEYS
+  return changed.some(key => picture.includes(key))
+}
+
 export function createOutputStateStore(mode: OutputMode = OUTPUT_MODE): OutputStateStore {
   let held = outputInitialState(mode)
   let seq = -1

@@ -66,6 +66,9 @@ import type { OutputViewSettings } from '../services/multiOutput/stateAggregator
 export interface OutputPanelManager {
   start(): Promise<void>
   listMonitors(): Promise<OutputMonitor[]>
+  /** Which of those the platform calls primary, or `null` when it will
+   *  not say. Asked rather than inferred — see `MultiOutputHost`. */
+  primaryMonitor(): Promise<OutputMonitor | null>
   outputs(): OutputRecord[]
   addOutput(options: AddOutputOptions): Promise<OutputRecord>
   removeOutput(label: string): Promise<void>
@@ -119,6 +122,90 @@ export interface OutputPanelSource {
  */
 export function monitorKey(monitor: OutputMonitor): string {
   return `${monitor.name ?? ''}@${monitor.position.x},${monitor.position.y}`
+}
+
+/** One monitor's place in the arrangement, as fractions of the whole. */
+export interface MonitorLayoutBox {
+  /** Index into the array passed in, so a box can be tied back to the
+   *  option that selects it. */
+  index: number
+  /** Left and top edges, 0..1 of the arrangement's bounding box. */
+  x: number
+  y: number
+  /** Extent, 0..1 of the same box. */
+  width: number
+  height: number
+}
+
+export interface MonitorLayout {
+  boxes: MonitorLayoutBox[]
+  /** Width over height of the whole arrangement, for the container. */
+  aspect: number
+}
+
+/**
+ * The monitor arrangement, normalised for drawing (rung 9 step 5).
+ *
+ * An operator adding an output is answering a question about *physical
+ * space* — which of these displays is the projector — and a list of
+ * names cannot answer it. `\\.\DISPLAY1` and `\\.\DISPLAY2` say nothing
+ * about which is on the left, and the resolution only helps when the
+ * panels differ. The diagram is the part that does, and it is why an
+ * output landing on the wrong display is something to notice before
+ * clicking Add rather than after a fullscreen window covers the screen
+ * the operator was reading.
+ *
+ * Pure and exported so the arithmetic is tested without a DOM, the same
+ * reason `monitorKey` is. Fractions rather than pixels because the
+ * element it fills has a size only the browser knows; the caller sets
+ * percentages and one aspect ratio, and CSS does the scaling.
+ *
+ * Signed origins are the whole difficulty and are handled by
+ * subtracting the minimum: the hardware spike behind this feature found
+ * a primary-left arrangement whose secondary sat at `x = -1680`, and a
+ * layout that assumed a non-negative origin would have drawn it off the
+ * left edge of its own container.
+ *
+ * Returns `null` rather than an empty layout when there is nothing to
+ * draw — no monitors, or an arrangement with no extent. A diagram of
+ * nothing is a broken-looking box, and the panel simply omits it.
+ */
+export function monitorLayout(monitors: readonly OutputMonitor[]): MonitorLayout | null {
+  const drawable = monitors
+    .map((monitor, index) => ({ monitor, index }))
+    // A monitor the platform describes with a zero, negative or
+    // non-finite extent cannot be drawn, and one bad entry must not
+    // cost the diagram: it is dropped and the rest are still placed,
+    // the same per-entry tolerance rung 10's persistence parse uses.
+    .filter(
+      ({ monitor }) =>
+        monitor.size.width > 0 &&
+        monitor.size.height > 0 &&
+        Number.isFinite(monitor.size.width) &&
+        Number.isFinite(monitor.size.height) &&
+        Number.isFinite(monitor.position.x) &&
+        Number.isFinite(monitor.position.y),
+    )
+  if (drawable.length === 0) return null
+
+  const left = Math.min(...drawable.map(d => d.monitor.position.x))
+  const top = Math.min(...drawable.map(d => d.monitor.position.y))
+  const right = Math.max(...drawable.map(d => d.monitor.position.x + d.monitor.size.width))
+  const bottom = Math.max(...drawable.map(d => d.monitor.position.y + d.monitor.size.height))
+  const spanX = right - left
+  const spanY = bottom - top
+  if (!(spanX > 0) || !(spanY > 0)) return null
+
+  return {
+    aspect: spanX / spanY,
+    boxes: drawable.map(({ monitor, index }) => ({
+      index,
+      x: (monitor.position.x - left) / spanX,
+      y: (monitor.position.y - top) / spanY,
+      width: monitor.size.width / spanX,
+      height: monitor.size.height / spanY,
+    })),
+  }
 }
 
 /** A monitor's display name, falling back to its 1-based position in the
@@ -260,8 +347,20 @@ async function refresh(body: HTMLElement): Promise<void> {
   }
 
   let monitors: OutputMonitor[]
+  let primary: OutputMonitor | null
   try {
-    monitors = await mgr.listMonitors()
+    // Together, because they are two round trips to the same subsystem
+    // and the panel is already waiting. The primary is settled
+    // separately though: a platform that will not answer it costs a
+    // marker, while one that cannot enumerate at all costs the panel,
+    // so a rejection here must not take the enumeration down with it.
+    ;[monitors, primary] = await Promise.all([
+      mgr.listMonitors(),
+      mgr.primaryMonitor().catch(err => {
+        logger.warn('[outputUI] could not identify the primary monitor:', err)
+        return null
+      }),
+    ])
   } catch (err) {
     logger.warn('[outputUI] could not enumerate monitors:', err)
     if (token === refreshToken) {
@@ -274,7 +373,7 @@ async function refresh(body: HTMLElement): Promise<void> {
   const records = mgr.outputs()
   replace(
     body,
-    buildAdder(mgr, monitors, records, body),
+    buildAdder(mgr, monitors, records, primary, body),
     buildList(mgr, records, monitors, body),
     buildLaunchSection(mgr),
   )
@@ -317,10 +416,129 @@ function buildLaunchSection(mgr: OutputPanelManager): HTMLElement {
   return section
 }
 
+/**
+ * One display's line in the picker.
+ *
+ * Four keys rather than one template plus composed fragments, because
+ * composition is where the punctuation and the word order stop being
+ * translatable: "(primary, already in use)" is one phrase in English
+ * and two clauses joined differently elsewhere. Each state is a
+ * sentence a translator can read whole.
+ *
+ * The primary marker lives **here**, in text, rather than only in the
+ * diagram: that is what makes it survive a screen reader, a colour
+ * vision deficiency and a monochrome projector preview, and the
+ * diagram's accent is reinforcement rather than the statement.
+ */
+function monitorOptionLabel(
+  monitor: OutputMonitor,
+  index: number,
+  state: { primary: boolean; inUse: boolean },
+): string {
+  const params = {
+    name: monitorName(monitor, index),
+    width: monitor.size.width,
+    height: monitor.size.height,
+  }
+  if (state.primary && state.inUse) return t('outputs.monitor.optionPrimaryInUse', params)
+  if (state.primary) return t('outputs.monitor.optionPrimary', params)
+  if (state.inUse) return t('outputs.monitor.optionInUse', params)
+  return t('outputs.monitor.option', params)
+}
+
+/**
+ * The position diagram (rung 9 step 5).
+ *
+ * A scale picture of the displays as the platform reports them, with
+ * the primary accented, the ones that already have an output dimmed,
+ * and the currently picked one highlighted. It answers the question a
+ * list of names cannot — *which* of these is the projector — and it is
+ * live: changing the picker moves the highlight, so the operator
+ * confirms the choice against the desk before a fullscreen window
+ * appears somewhere they were not expecting.
+ *
+ * **Presentational, deliberately.** Every fact it draws is already in
+ * the option text the select carries, so it is `aria-hidden` rather
+ * than a second reading of the same choice — and it is not a second
+ * *control*, which would be worse: two tab stops writing one value,
+ * one of them a grid of unlabelled rectangles.
+ *
+ * Returns `null` when there is nothing to draw. An empty framed box
+ * reads as a failure; an absent diagram reads as a machine with one
+ * display, which is what it is.
+ */
+function buildMonitorMap(
+  monitors: readonly OutputMonitor[],
+  occupied: ReadonlySet<string>,
+  primaryKey: string | null,
+  select: HTMLSelectElement,
+): HTMLElement | null {
+  const layout = monitorLayout(monitors)
+  if (!layout) return null
+
+  const map = document.createElement('div')
+  map.className = 'output-monitor-map'
+  map.setAttribute('aria-hidden', 'true')
+  // The one number the stylesheet cannot derive. Everything else about
+  // the sizing — how tall the diagram may get, and the width that keeps
+  // the ratio under that cap — stays in CSS, where it can be said in
+  // rem against the panel's own scale.
+  map.style.setProperty('--output-map-aspect', String(layout.aspect))
+
+  const boxes = layout.boxes.map(box => {
+    const monitor = monitors[box.index]
+    const el = document.createElement('div')
+    el.className = 'output-monitor-box'
+    el.dataset.index = String(box.index)
+    // Physical `left` / `top` / `width` / `height`, set here rather
+    // than in the stylesheet, and that is the point rather than an
+    // oversight: this is a picture of a desk. A display on the
+    // operator's left is on the left in every locale, so the diagram is
+    // the one part of this panel that must **not** flip under
+    // `dir="rtl"` — which is exactly what the logical properties the
+    // rest of the app uses would do to it.
+    el.style.left = `${box.x * 100}%`
+    el.style.top = `${box.y * 100}%`
+    el.style.width = `${box.width * 100}%`
+    el.style.height = `${box.height * 100}%`
+
+    const isPrimary = primaryKey !== null && monitorKey(monitor) === primaryKey
+    if (isPrimary) el.classList.add('is-primary')
+    if (occupied.has(monitorKey(monitor))) el.classList.add('is-occupied')
+    // The same sentence the option carries, for a hover. The element is
+    // `aria-hidden`, so this is for a pointer rather than for AT, which
+    // reads the option itself.
+    el.title = monitorOptionLabel(monitor, box.index, {
+      primary: isPrimary,
+      inUse: occupied.has(monitorKey(monitor)),
+    })
+
+    const size = document.createElement('span')
+    size.className = 'output-monitor-box-size'
+    size.textContent = t('outputs.monitor.mapSize', {
+      width: monitor.size.width,
+      height: monitor.size.height,
+    })
+    el.appendChild(size)
+    map.appendChild(el)
+    return el
+  })
+
+  const markSelected = (): void => {
+    for (const el of boxes) {
+      el.classList.toggle('is-selected', el.dataset.index === select.value)
+    }
+  }
+  markSelected()
+  select.addEventListener('change', markSelected)
+  return map
+}
+
 function buildAdder(
   mgr: OutputPanelManager,
   monitors: OutputMonitor[],
   records: OutputRecord[],
+  primary: OutputMonitor | null,
   body: HTMLElement,
 ): HTMLElement {
   const section = document.createElement('section')
@@ -344,6 +562,11 @@ function buildAdder(
   }
 
   const occupied = new Set(records.map(r => monitorKey(r.monitor)))
+  // Joined on the same identity the restore matching uses, rather than
+  // on the array index: `primaryMonitor()` is a second call and nothing
+  // guarantees the platform enumerates in a stable order between the
+  // two.
+  const primaryKey = primary ? monitorKey(primary) : null
 
   const row = document.createElement('div')
   row.className = 'output-add-row'
@@ -359,16 +582,11 @@ function buildAdder(
   monitors.forEach((monitor, index) => {
     const opt = document.createElement('option')
     opt.value = String(index)
-    const params = {
-      name: monitorName(monitor, index),
-      width: monitor.size.width,
-      height: monitor.size.height,
-    }
     const inUse = occupied.has(monitorKey(monitor))
-    opt.textContent = t(
-      inUse ? 'outputs.monitor.optionInUse' : 'outputs.monitor.option',
-      params,
-    )
+    opt.textContent = monitorOptionLabel(monitor, index, {
+      primary: primaryKey !== null && monitorKey(monitor) === primaryKey,
+      inUse,
+    })
     // Two fullscreen windows on one monitor means one of them is
     // invisible, and the operator has no way to tell which. The manager
     // does not refuse this — `addOutput` takes any index — so the guard
@@ -395,6 +613,11 @@ function buildAdder(
   addBtn.addEventListener('click', () => {
     void add(mgr, Number(select.value), addBtn, section, body)
   })
+
+  // Before the row, not after: the diagram is what the choice is made
+  // *from*, and the select is where it is recorded.
+  const map = buildMonitorMap(monitors, occupied, primaryKey, select)
+  if (map) section.appendChild(map)
 
   row.append(label, select, addBtn)
   section.appendChild(row)

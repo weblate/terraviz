@@ -677,6 +677,38 @@ output is in fact showing. Rescaling the curve to end at the cap
 is the tempting fix, and it would put a second cloud calibration in
 the repo — the trap immediately above, in a new place.
 
+**The decoration is idle-only — found on hardware, rung 9 step 13.**
+The first Windows pass reported that a regional dataset rendered
+correctly placed but wrongly lit: *"once a dataset loads the globe
+should revert to a diffuse unlit globe … however, on the generated 2:1
+outputs the data is still shown with day night lighting."* That is
+right, and the control globe already does it — `earthTileLayer` gates
+its entire pass chain on `datasetActive` and returns before pass 0,
+with the comment "no earth effects when dataset is active". So a
+control globe showing a dataset is unlit **and ungraded**, and a
+bbox-clipped dataset `discard`s to raw Blue Marble tiles outside its
+box.
+
+This path had composited the decoration *under* the layers instead, on
+the reasoning recorded in §"What the equirect path does to the Earth
+decoration": under-compositing was supposed to mean day/night could
+never tint a dataset. **That holds only for opaque global coverage.**
+A data-encoded overlay is translucent by construction — its alpha *is*
+the measurement — so the terminator showed through the night-side
+smoke plume the argument used as its own example, and outside the bbox
+the two globes disagreed outright.
+
+The gate is the slot count, decided at build time because the shader
+text is already a function of it: no layers means the idle Earth and
+its full treatment, any layer means the raw sample and nothing on top.
+It costs nothing at runtime, and it is a *tighter* test than the
+control side's — `main.ts` fills a slot only when the mirror holds
+decoded media, whereas `datasetActive` is set when the dataset is
+assigned. Measured through the real composed shader: a lit land sample
+`rgb(181, 150, 103)` renders `rgb(172, 139, 96)` on an idle output and
+`rgb(181, 150, 103)` — byte-identical to the raw tile — once a layer
+exists.
+
 **Verified on a real GL implementation (2026-09-11).** The decoration
 GLSL is a hand transcription of tested TypeScript, which is the
 weakest guard in this module — a transcription error compiles fine and
@@ -1325,6 +1357,124 @@ The out-of-range boundary pin uses `SIBLING_SEEK_EPS_S = 0.02`
 capture where a fifth-of-a-frame seek left three siblings at
 `HAVE_METADATA` for five seconds. Import that too rather than
 inventing an epsilon.
+
+#### A seek is not free — found on hardware, rung 9 step 13
+
+The threshold above is the *right* number for a sibling panel,
+and it is not sufficient on its own for an output. A seek stalls
+the element while the primary plays on, so a seek that takes
+`C` seconds of wall clock leaves the output roughly `C x rate`
+behind **the moment it lands**. Seeking to correct an error
+smaller than that is arithmetically guaranteed to end further
+from the target than it started — and the correction runs once
+per rendered frame, so it does it again, and again.
+
+`OUTPUT_SEEK_SETTLE_MS` was the first answer to this and it
+covers only the case it assumed: a seek that finishes inside a
+second and leaves less than `SETTLING_SEEK_THRESHOLD_S` (0.40 s)
+behind. It is a **timeout**, and it expires whether or not the
+seek it was covering has been paid for. A slower seek outlives
+it, the threshold drops back to 150 ms while the error is still
+measured in seconds, and the loop closes.
+
+Simulated at 60 Hz against an element that stalls for the length
+of its seek, twenty seconds per run, starting five seconds out:
+
+| Seek cost | Seeks, settle window only | Frames mid-seek | Seeks, with the floor |
+|---|---|---|---|
+| 20 ms | 1 | 0% | 1 |
+| 200 ms | 1 | 1% | 1 |
+| 300 ms | 20 | 29% | 1 |
+| 500 ms | 40 | **97%** | 1 |
+| 1200 ms | 17 | **99%** | 1 |
+| 3000 ms | 7 | **99%** | 1 |
+
+Two things to read off that table. The loop starts at any cost
+above the 150 ms threshold, not at 400 ms — 300 ms just produces
+a tidier one-seek-per-second version of it. And above ~400 ms
+the element is mid-seek on essentially every frame, which is a
+decoder flushing and re-decoding from a keyframe continuously
+rather than playing. That is the "playback seems to struggle"
+of the first hardware pass; it is also why the debug HUD read a
+permanent dash, since a seeking element has no honest drift to
+report and every 2 Hz sample landed on one.
+
+The fix is to **measure the seek rather than assume it**.
+`createPlayheadSync` already holds when it last seeked; it now
+also notices when `seeking` goes false and records what that
+cost, and `seekCostFloorS` raises the threshold to that cost
+times the primary's rate times a margin. Unlike the settle
+window this floor does not expire, because the cost is a
+standing property of the asset, the decoder and the machine
+rather than an event. It is inert where seeks are cheap: a
+20 ms seek yields a floor below 0.15 s and `Math.max` discards
+it, which is the whole table's first two rows.
+
+The margin exists because the loop re-arms on a single
+under-estimate — one seek running slightly long puts the output
+back outside the threshold and earns another — while an
+over-estimate costs only a slower convergence that the rate trim
+still completes. 1.5 covers ordinary variance between two seeks
+on the same asset.
+
+**Both bounds are lifted while the primary is paused**, and the
+reason is the premise they share rather than a special case.
+Each exists because the target keeps moving during the stall:
+the floor because a seek costing `C` leaves the output `C x rate`
+behind by the time it lands, the settle window because the trim
+needs time to close what the last seek left. Against a
+*stationary* target neither holds — a seek lands exactly where it
+aimed and manufactures no error — and the sentence about the trim
+is worse than unnecessary, because a paused element has no rate
+to trim at all. So a raised bound there is not conservative, it
+is terminal: the paused branch declines the seek, nothing
+converges it, and the sphere holds a frame up to a floor's width
+from the operator's until someone presses play. On a forecast
+that is an hour of model time on the wrong frame, silently, in
+front of an audience.
+
+The thrash that motivated both bounds cannot happen on a
+stationary target either: the seek lands where it aimed, the next
+call measures ~0, and nothing more is issued. One seek,
+converged. This was caught in review rather than on hardware,
+which is worth recording — the floor's own justification names
+the moving target in its first sentence, and the paused path
+still read the value it produced.
+
+The field case was a bbox data-encoded forecast
+(`north-america-smoke`, RRFS smoke over North America).
+Data-encoded video is published **as uploaded** rather than
+transcoded — that is why
+`src/ui/publisher/components/mp4-frame-rate.ts` exists — so
+these assets carry whatever keyframe spacing the producer wrote,
+and every seek decodes from a distant one. Nothing about that is
+wrong; it is simply an asset class whose seeks are expensive,
+and the correction has to be robust to it rather than assume it
+away.
+
+#### A playhead diff is not a frame
+
+Related, and found reading the same report. The output's loop
+paces itself: 30 fps while its own video is advancing, 1 Hz for
+anything static, and immediately whenever something changed.
+`applyState` marked *every* state diff as a change.
+
+`playback` and `primary` change on every frame the operator's
+globe plays, so an output redrew a 4096x2048 ray-marched sphere
+at the control window's frame rate instead of 30 fps — double
+the GPU for an identical picture, on a machine whose webview may
+be on the iGPU (see Risks) and whose control window is decoding
+the same video in the next process. Neither key changes a pixel
+here: the output's own frame advance is what `contentKindFor`
+paces, and a seek is caught by the render loop comparing
+`currentTime` across the steer.
+
+`PICTURE_KEYS` / `PLAYHEAD_KEYS` in `outputLink.ts` partition
+`StateKey` between the two, with compile-time proofs that every
+key is classified and none is classified twice. Keys that are
+composited but not yet published — `layers`, `simulationDate` —
+stay on the picture side, so the 1 Hz floor never holds one back
+once it is wired.
 
 #### The `readyState` gate
 
@@ -3546,6 +3696,23 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 4. Tools menu shows an "Outputs" entry.
 5. Outputs panel opens; lists both monitors with name,
    resolution, position diagram. Primary clearly marked.
+   Check all four: the picker's option text carries the name,
+   the pixel size, and `(primary)` on exactly one display; the
+   diagram above it draws one rectangle per display, to scale
+   and in the arrangement the desk has them. Changing the
+   picker must move the diagram's highlight — that is the
+   confirmation the step is really for, since an output opens
+   fullscreen and an operator has one chance to notice it is
+   about to land on the wrong display.
+5a. **Nothing marked primary is a pass, on X11.** The primary
+   is asked of the platform rather than inferred, and X11 can
+   leave no display marked at all; the panel then marks none
+   rather than guessing at the one nearest the origin. On
+   Windows and macOS a missing marker *is* a failure. If the
+   arrangement is primary-left — the spike's secondary sat at
+   `x = -1680` — check the diagram is not drawn with a display
+   hanging off its left edge, which is what an assumed
+   non-negative origin looks like.
 6. **Single-monitor guard.** Disconnect the secondary monitor.
    Add Output button is hidden / disabled. Reconnect:
    the button reappears.
@@ -3603,14 +3770,25 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     primary plays on, so a seek that takes longer than the
     threshold leaves the output far enough behind to earn
     another one, once per rendered frame. `outputSync` closes
-    that loop by not steering a seeking element and by raising
-    the threshold for `OUTPUT_SEEK_SETTLE_MS` after each seek,
-    so the trim gets a chance to converge. If the field still
-    parks above the threshold once it is *smooth*, that is a
-    real measurement of an output's floor — a second window, a
-    second decoder, an IPC hop — and the case for an
-    output-specific threshold, which does not exist yet and
-    should not be invented without it.
+    that loop three ways: it does not steer a seeking element,
+    it raises the threshold for `OUTPUT_SEEK_SETTLE_MS` after
+    each seek so the trim gets a chance to converge, and it
+    holds the threshold at the *measured* cost of the last seek
+    for as long as that measurement stands (see "A seek is not
+    free"). If the field still parks above the threshold once it
+    is *smooth*, that is a real measurement of an output's floor
+    — a second window, a second decoder, an IPC hop — and the
+    case for an output-specific threshold, which does not exist
+    yet and should not be invented without it.
+12c. **A dash is a reading too.** With no number, the sync field
+    prints why. `— not-ready` against a still image is the
+    correct answer and needs nothing. `— seeking` on most
+    samples is the loop above: the element is mid-seek almost
+    every frame, which is a decoder re-decoding from a keyframe
+    rather than playing, and it reads on the sphere as playback
+    that struggles. Record which one you see — the first pass
+    could only report "sync just shows a dash", and the two want
+    opposite responses.
 12a. **A dataset with no time axis.** Load one of the SOS
     looping animations — Air Traffic is the canonical case:
     global video, no `startTime`/`endTime`, a 24-hour loop
@@ -3649,6 +3827,20 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     near the centre of focus and almost none at the edges —
     enough to catch gross misplacement, never enough to support
     the ≤1 px claim above.
+
+13b. **A bbox *video*, which is the harder case.** Step 13 asks
+    for an image because the bbox alignment is easier to judge
+    on a still. Run a bbox video as well — a data-encoded
+    forecast is the canonical one, since those are published as
+    uploaded rather than transcoded and so carry whatever
+    keyframe spacing the producer wrote. That makes their seeks
+    expensive, which is what the seek-cost floor exists for, and
+    it is what the first hardware pass hit
+    (`north-america-smoke`). Watch for three things together:
+    the picture stuttering rather than playing, the sync field
+    reading `— seeking`, and the **control** window's own
+    playback slowing while the output is up. Those are one
+    symptom, not three.
 
 **Multi-layer:**
 

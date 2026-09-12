@@ -18,7 +18,11 @@
  *   signed. Positive is ahead. This is the number that says whether an
  *   installation is in step, and it comes straight from the value that
  *   *steered*, never recomputed here — a second implementation would be
- *   free to disagree with the one doing the work.
+ *   free to disagree with the one doing the work. When there is no
+ *   number the reason is printed beside the dash, because the reasons
+ *   are not equivalent: `not-ready` on a still image is the correct
+ *   answer and `seeking` on every sample is a correction fighting
+ *   itself.
  * - **fps** — measured over a wall-clock window, never a frame counter
  *   divided by an assumed interval. The spike behind the decoder budget
  *   found that a cumulative count taken a fixed time after playback
@@ -55,6 +59,7 @@
  */
 
 import { logger } from '../utils/logger'
+import type { SyncKind } from './outputSync'
 
 /** How often the HUD re-reads and repaints. */
 export const OVERLAY_REFRESH_MS = 500
@@ -65,6 +70,14 @@ export interface DebugOverlayReading {
   /** Signed seconds; positive means this output is ahead. `null` when
    *  nothing is steering — an image, or no dataset. */
   driftS: number | null
+  /** What the correction did on the last steered frame, or `null` when
+   *  it has never run. Shown only when there is no number: a dash on
+   *  its own cannot separate "this is a still image" from "this element
+   *  has been seeking for the last ten seconds", and those want opposite
+   *  responses from whoever is standing in front of the sphere. It was
+   *  a bare dash that made the first hardware pass record a bbox
+   *  forecast as "sync just shows a dash" with no way to tell which. */
+  syncKind: SyncKind | null
   fps: number
   gpu: string | null
   framebuffer: { width: number; height: number }
@@ -79,10 +92,10 @@ export interface DebugOverlayReading {
  * hunting a lead output that is actually late.
  */
 export function formatOverlay(reading: DebugOverlayReading): string[] {
-  const { datasetId, driftS, fps, gpu, framebuffer } = reading
+  const { datasetId, driftS, fps, gpu, framebuffer, syncKind } = reading
   const sync =
     driftS === null
-      ? 'sync  —'
+      ? `sync  —${syncKind ? ` ${syncKind}` : ''}`
       : // Signed and in ms: `+` reads as "ahead of the control window".
         // Rounded to whole ms because the hard-seek threshold is 150 ms
         // and sub-millisecond precision is noise a reader must ignore.

@@ -34,6 +34,7 @@ function fakeHost(): MultiOutputHost & {
 } {
   return {
     availableMonitors: vi.fn(async () => []),
+    primaryMonitor: vi.fn(async () => null),
     createWindow: vi.fn(async () => ({}) as never),
     emitTo: vi.fn(async () => {}),
     listen: vi.fn(async () => () => {}),

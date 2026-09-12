@@ -31,6 +31,7 @@ import { createDatasetMirror } from './datasetMirror'
 import { OVERLAY_REFRESH_MS, createDebugOverlay, createFpsMeter } from './debugOverlay'
 import {
   STATE_KEYS,
+  changesPicture,
   connectOutputLink,
   createTauriLinkHost,
   type StateKey,
@@ -98,6 +99,7 @@ async function boot(): Promise<void> {
     // useful answer is what is on the glass.
     datasetId: mirror.currentDataset()?.id ?? null,
     driftS: lastSync?.driftS ?? null,
+    syncKind: lastSync?.kind ?? null,
     fps,
     gpu: gpuName(),
     framebuffer: scene.size,
@@ -167,10 +169,17 @@ async function boot(): Promise<void> {
           // is looking, `dayNight` is whether the Earth is lit.
           scene.setDayNight(state.view.dayNight)
         }
-        // Anything that changed is worth a frame — including the keys
-        // this loop does not yet composite, so the 1 Hz floor never
-        // holds a change back once they are wired.
-        dirty = true
+        // Anything that changed the *picture* is worth a frame —
+        // including the keys this loop does not yet composite, so the
+        // 1 Hz floor never holds a change back once they are wired.
+        // `playback` and `primary` are not among them: they say where
+        // the control window's playhead is, they arrive on every frame
+        // the operator's globe plays, and nothing here draws from them.
+        // This output's own frame advance is paced by `contentKindFor`
+        // and its seeks are caught below by comparing `currentTime`
+        // across the steer, so drawing on the diff as well was double
+        // the GPU for an identical picture.
+        if (changesPicture(changed)) dirty = true
       }
       link.onChange(applyState)
       // The same race the render config below handles, and a worse
