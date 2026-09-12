@@ -3940,7 +3940,16 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
     hatch). F11 again: title bar disappears.
 29. **Kiosk launch.** Quit. Launch with `--kiosk` (or
     `TERRAVIZ_KIOSK=1` env). Control window is fullscreen +
-    decorationless from first paint. Cmd/Ctrl+Q exits cleanly.
+    decorationless from first paint. Ctrl+Q exits cleanly (Cmd+Q
+    on macOS, which the system menu already provides — Ctrl+Q is
+    bound on all three platforms and Cmd+Q is deliberately left
+    to the OS rather than handled twice). The first pass recorded
+    this as a failure — "Ctrl-Q doesn't seem to do anything,
+    Alt-F4 does" — and it was right: the step asserted the
+    shortcut as if it existed and nothing bound it. Alt+F4 is the
+    Windows answer and there is no portable one, which is why a
+    kiosk window with no close button, no title bar and no menu
+    bar needed this.
     Then open Tools: the fullscreen button must already read
     "Exit fullscreen" — that is `queryFullscreen()` seeding the
     controller from a window Rust made fullscreen before any of
