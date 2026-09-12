@@ -91,6 +91,18 @@ Small, anonymous events about the health of the app:
   how long each task held attention
 - When you enter or exit VR / AR mode — duration and exit reason,
   approximate frame rate
+- **Desktop app only** — when you open or close one of the
+  multi-monitor projection windows used to drive a Science On a
+  Sphere display, a dome, or a projector array: which projection
+  geometry it used, which framebuffer size *class* it ran at (a
+  rung name like `4k`, never an exact pixel count), and the
+  **position** of the monitor in your system's display list (a
+  number like 0 or 2 — never the display's name, make, or model).
+  If one of those windows crashes or is refused, we record that it
+  happened and a one-word category for why. The projection windows
+  themselves send nothing at all: they are usually being filmed by
+  a capture card in front of an audience, so nothing runs in them
+  that does not need to
 - When something goes wrong — a classification of the error (tile
   fetch, video stream, AI model, uncaught exception, browser-console
   message, or native crash on desktop), a short sanitized summary of

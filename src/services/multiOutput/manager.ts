@@ -92,6 +92,12 @@ import {
   type CrashStormGuard,
   type OutputDeparture,
 } from './outputHealth'
+import {
+  removalReasonFor,
+  reportOutputAdded,
+  reportOutputFailure,
+  reportOutputRemoved,
+} from './outputTelemetry'
 import { maxVideoPanels } from '../../utils/deviceCapability'
 import { logger } from '../../utils/logger'
 
@@ -376,6 +382,7 @@ export class MultiOutputManager {
     const record = await this.spawn(
       outputLabel(this.nextIndex++),
       monitor,
+      options.monitorIndex,
       options.mode ?? 'sos-equirect',
       { ...DEFAULT_VIEW_SETTINGS, ...definedOnly(options.view) },
       { ...defaultRenderConfig(), ...definedOnly(options.render) },
@@ -400,6 +407,7 @@ export class MultiOutputManager {
   private async spawn(
     label: string,
     monitor: OutputMonitor,
+    monitorIndex: number,
     mode: OutputMode,
     view: OutputViewSettings,
     render: OutputRenderConfig,
@@ -414,6 +422,12 @@ export class MultiOutputManager {
     // because they were configured when it could. `restoreOutputs`
     // already treats a throwing spawn as one lost output rather than a
     // lost set, so this needs nothing there.
+    //
+    // Deliberately *not* reported as an `output_removed`: the decided
+    // reason enum has no value for it, and rightly — the panel already
+    // shows "N of M in use" and disables Add, so a spent budget is an
+    // affordance the operator can see rather than a failure they need
+    // told about after the fact.
     const { used, budget } = this.decoderLoad()
     if (used + 1 > budget) {
       throw new Error(
@@ -429,6 +443,14 @@ export class MultiOutputManager {
     // "Restore outputs on launch" ticked — and bringing the window
     // straight back is how a bad display turns into a boot loop.
     if (this.crashStorm.isBlocked(monitorKeyOf(monitor))) {
+      // Reported as a *removal* rather than a failure, which reads odd
+      // for a window that never existed and is right for the case that
+      // matters: a restore. The config says four outputs and three came
+      // back, so from every side but the manager's there is a
+      // configured output that stopped running, and the reason is the
+      // guard. An interactive Add refused here is the same sentence
+      // with a shorter gap in it.
+      reportOutputRemoved({ mode, reason: 'rejected-by-storm-guard' })
       throw new Error(
         `monitor ${monitor.name ?? 'unnamed'} is refusing outputs this session ` +
           '(it crashed three of them in a minute; relaunch to reset)',
@@ -475,6 +497,11 @@ export class MultiOutputManager {
     await handle.onDestroyed(() => this.handleDeparture(label))
     this.records.set(label, record)
     this.handles.set(label, handle)
+    // Here rather than in `addOutput`, so a restore reports too. The
+    // event describes an output existing, not an operator gesture, and
+    // an installation that brings four back every launch is exactly
+    // the population the Tier A choice was made for.
+    reportOutputAdded({ mode, framebufferWidth: render.framebufferWidth, monitorIndex })
     return record
   }
 
@@ -501,6 +528,15 @@ export class MultiOutputManager {
     }
     this.handles.delete(label)
     this.records.delete(label)
+    // Only for a label that was actually here: this method is
+    // documented safe to call twice (the panel's Remove and a hand
+    // close race), and a second call must not report a second removal.
+    //
+    // `closeAll()` funnels through here, so a future shutdown path that
+    // calls it would report one `operator-close` per output. Nothing
+    // calls it outside tests today; when something does, it wants its
+    // own reason rather than this one.
+    if (record) reportOutputRemoved({ mode: record.mode, reason: 'operator-close' })
     this.persist()
   }
 
@@ -611,6 +647,7 @@ export class MultiOutputManager {
           await this.spawn(
             output.label,
             monitors[index],
+            index,
             output.mode,
             { trackCamera: output.trackOperatorCamera, split: output.split },
             renderConfigFrom(output),
@@ -874,6 +911,7 @@ export class MultiOutputManager {
 
     this.handles.delete(label)
     this.records.delete(label)
+    reportOutputRemoved({ mode: record.mode, reason: removalReasonFor(departure) })
     if (departure === 'crashed') {
       // Counted against the *monitor*, not the output: the next window
       // put there is the one at risk, and it will carry a new label.
@@ -882,6 +920,14 @@ export class MultiOutputManager {
         `[multiOutput] ${label} crashed on ${record.monitor.name ?? 'an unnamed monitor'} ` +
           `(dataset ${record.lastEvent?.type ?? 'unknown'}) — removed`,
       )
+      // A second event beside the removal, not instead of it: the
+      // removal answers "how many outputs stopped and why", the failure
+      // answers "how healthy is this installation", and a dashboard
+      // wants to ask those separately. `retries: 0` and
+      // `recovered: false` are the honest values — §3's table gives a
+      // crash no auto-recovery at all, and the operator re-adds by
+      // hand.
+      reportOutputFailure({ kind: 'crash', retries: 0, recovered: false })
     } else {
       logger.info(`[multiOutput] ${label} was closed from its own window — removed`)
     }
