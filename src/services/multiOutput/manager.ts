@@ -86,6 +86,7 @@ import {
   type OutputConfigStore,
 } from './outputPersistence'
 import {
+  OUTPUT_CLOSING_GRACE_MS,
   classifyDeparture,
   createCrashStormGuard,
   monitorKeyOf,
@@ -459,26 +460,6 @@ export class MultiOutputManager {
 
     const handle = await this.host.createWindow(label, OUTPUT_ENTRY_URL)
 
-    try {
-      // Order is load-bearing — see the module header.
-      await handle.setPosition(monitor.position.x, monitor.position.y)
-      await handle.setSize(monitor.size.width, monitor.size.height)
-      await handle.setFullscreen(true)
-      await handle.show()
-    } catch (err) {
-      // The window already exists but never reached `records`/`handles`,
-      // so nothing else can ever reach it — `closeAll()` included. On an
-      // installation that is a hidden, undecorated window the operator
-      // cannot get rid of without killing the app. Close it here, then
-      // let the caller see the original failure.
-      try {
-        await handle.close()
-      } catch (closeErr) {
-        logger.warn(`[multiOutput] could not close half-spawned ${label}:`, closeErr)
-      }
-      throw err
-    }
-
     const record: OutputRecord = {
       label,
       mode,
@@ -490,13 +471,51 @@ export class MultiOutputManager {
       departing: false,
       announcedClosing: false,
     }
-    // After the record, so the callback cannot fire against a label the
-    // manager does not yet know. A host that cannot report destroys
-    // simply never calls back, and the manager behaves as it did before
-    // rung 13 rather than failing to spawn.
-    await handle.onDestroyed(() => this.handleDeparture(label))
+    // **Before the window can speak, not after it is shown.** The
+    // webview starts loading at `createWindow`, so the output's own
+    // boot runs concurrently with everything below — and it announces
+    // `output_ready` the moment its listeners are up.
+    // `handleOutputEvent` drops an event whose label has no record, so
+    // an announcement that arrives before this line is *lost*: the
+    // record stays `ready: false` for the life of the window, the
+    // manager never sends the first snapshot or the render config, and
+    // the operator gets an output stuck on the idle Earth with no error
+    // anywhere. The placement sequence is four awaited IPC calls and
+    // `onDestroyed` is a fifth, so that gap was never small.
     this.records.set(label, record)
     this.handles.set(label, handle)
+
+    try {
+      // Registered before placement rather than after, because a window
+      // can die at any point in it, and a host whose registration
+      // rejects should take the cleanup path below rather than throwing
+      // past it.
+      await handle.onDestroyed(() => this.handleDeparture(label))
+      // Order is load-bearing — see the module header.
+      await handle.setPosition(monitor.position.x, monitor.position.y)
+      await handle.setSize(monitor.size.width, monitor.size.height)
+      await handle.setFullscreen(true)
+      await handle.show()
+    } catch (err) {
+      // Dropped from the maps *before* the close, so the destroy this
+      // triggers finds no record and is ignored as the manager's own
+      // teardown rather than classified as a crash — the same ordering
+      // `removeOutput` gets from `departing`.
+      //
+      // Closing it is not optional: the window exists, and a spawn that
+      // threw leaves nothing else able to reach it — `closeAll()`
+      // included. On an installation that is a hidden, undecorated
+      // window the operator cannot get rid of without killing the app.
+      this.records.delete(label)
+      this.handles.delete(label)
+      try {
+        await handle.close()
+      } catch (closeErr) {
+        logger.warn(`[multiOutput] could not close half-spawned ${label}:`, closeErr)
+      }
+      throw err
+    }
+
     // Here rather than in `addOutput`, so a restore reports too. The
     // event describes an output existing, not an operator gesture, and
     // an installation that brings four back every launch is exactly
@@ -897,17 +916,46 @@ export class MultiOutputManager {
    * manager's own close. There is nothing to classify and nothing to
    * report.
    */
-  private handleDeparture(label: string): void {
-    const record = this.records.get(label)
-    if (!record) return
+  private async handleDeparture(label: string): Promise<void> {
+    const departure = this.readDeparture(label)
+    if (!departure) return
+    // Anything but a crash is unambiguous — act now.
+    if (departure !== 'crashed') {
+      this.commitDeparture(label, departure)
+      return
+    }
 
+    // A crash is an *absence*, and an absence is only evidence once the
+    // announcement has had time to arrive. The output fires
+    // `output_closing` and lets its window go without waiting, so on an
+    // Alt+F4 the two are in flight together; reading absence
+    // immediately makes the winner of that race decide whether a
+    // healthy monitor collects a strike. See
+    // `OUTPUT_CLOSING_GRACE_MS`. Only this branch waits, and the wait
+    // is invisible: the window is already gone.
+    await this.sleep(OUTPUT_CLOSING_GRACE_MS)
+    const settled = this.readDeparture(label)
+    if (!settled) return
+    this.commitDeparture(label, settled)
+  }
+
+  /** Classify a departure, or `null` when there is nothing to act on —
+   *  the record is already gone (the manager's own close finished
+   *  first) or `removeOutput` is mid-flight and doing its own
+   *  bookkeeping, and touching `records` here would race it. */
+  private readDeparture(label: string): OutputDeparture | null {
+    const record = this.records.get(label)
+    if (!record) return null
     const departure = classifyDeparture({
       managerInitiated: record.departing,
       sawClosing: record.announcedClosing,
     })
-    // `removeOutput` is mid-flight and will do its own bookkeeping.
-    // Touching `records` here would race it.
-    if (departure === 'removed') return
+    return departure === 'removed' ? null : departure
+  }
+
+  private commitDeparture(label: string, departure: OutputDeparture): void {
+    const record = this.records.get(label)
+    if (!record) return
 
     this.handles.delete(label)
     this.records.delete(label)

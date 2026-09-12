@@ -28,10 +28,24 @@
  * That asymmetry is deliberate rather than tolerated. A crash misread
  * as a close is invisible: the record disappears, the operator is told
  * nothing, and an installation that is quietly dying looks tidy. A
- * close misread as a crash costs one wrong line in the panel and one
- * telemetry event with the wrong `reason`. The plan's whole policy for
- * this feature is "never auto-recover silently", and a detector that
- * fails toward silence would undo it.
+ * close misread as a crash is loud by comparison. The plan's whole
+ * policy for this feature is "never auto-recover silently", and a
+ * detector that fails toward silence would undo it.
+ *
+ * **But the cost of guessing wrong is not symmetric in the way an
+ * earlier draft of this comment claimed.** It said a close misread as
+ * a crash costs "one wrong line in the panel and one telemetry
+ * `reason`". That was true before the crash-storm guard existed and is
+ * not true now: three of them inside a minute *blocklist the monitor
+ * for the session*, so an operator who closed three outputs by hand
+ * with Alt+F4 could find a perfectly healthy display refusing new ones
+ * until they relaunch. Raised in review on the telemetry PR.
+ *
+ * That is why the announcement gets `OUTPUT_CLOSING_GRACE_MS` to
+ * arrive before absence is believed — see below. It does not make the
+ * detector symmetric, and it should not: a crash still has to read as
+ * a crash. It removes the case where the two events are in flight
+ * together and the wrong one is read first.
  */
 
 /**
@@ -102,6 +116,35 @@ export function classifyDeparture(signals: DepartureSignals): OutputDeparture {
   if (signals.managerInitiated) return 'removed'
   return signals.sawClosing ? 'closed' : 'crashed'
 }
+
+/**
+ * How long a destroy waits for a late `output_closing` before it counts
+ * as a crash.
+ *
+ * The output fires its announcement from a close-requested handler and
+ * does **not** hold the window open for it — a hook that can block is a
+ * hook that can strand an undecorated window with no way to close it.
+ * So the announcement and the destroy are in flight together, and
+ * nothing orders them: the emit reaches the IPC channel first, but
+ * whether this window's JS *processes* it before the destroy callback
+ * is not something either side can guarantee.
+ *
+ * The manager is the side that can afford to wait, so it does. Waiting
+ * costs nothing anyone can see — the window is already gone, and all
+ * that is deferred is a panel repaint and a decoder slot — while not
+ * waiting costs a healthy monitor its blocklist entry three closes
+ * later.
+ *
+ * Only a departure that would read as a *crash* waits. A close the
+ * manager asked for, or one whose announcement already landed, is not
+ * ambiguous and is handled immediately.
+ *
+ * A quarter second is the same order as `OUTPUT_RESTORE_STAGGER_MS` and
+ * far below the point a person notices a list refreshing. It is not a
+ * substitute for the announcement: a genuinely crashed output waits
+ * this out and is then correctly reported.
+ */
+export const OUTPUT_CLOSING_GRACE_MS = 250
 
 /** Crashes on one monitor within `CRASH_STORM_WINDOW_MS` that trip the
  *  guard. The plan's number. */

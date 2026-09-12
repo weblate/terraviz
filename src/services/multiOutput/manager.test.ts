@@ -128,6 +128,11 @@ interface FakeOptions {
   /** What the platform calls primary. Omit for "the first enumerated
    *  display"; pass `null` for a platform that will not say. */
   primary?: OutputMonitor | null
+  /** Announce `output_ready` from this point in the spawn sequence, as
+   *  a real output does — its webview starts loading at
+   *  `createWindow`, so its boot runs concurrently with everything the
+   *  manager does afterwards. */
+  announceReadyAt?: 'setPosition' | 'setSize' | 'setFullscreen' | 'show'
 }
 
 function createFakeHost(options: FakeOptions = {}) {
@@ -136,8 +141,13 @@ function createFakeHost(options: FakeOptions = {}) {
   const emitted: Emitted[] = []
   const registrations: Registration[] = []
   const closed: string[] = []
-  /** Per-label destroy handlers, so a test can fire one. */
-  const destroyers = new Map<string, () => void>()
+  /** Per-label destroy handlers, so a test can fire one. The value is
+   *  `unknown` rather than `void` because the manager's handler is
+   *  async — a departure that would read as a crash waits out
+   *  `OUTPUT_CLOSING_GRACE_MS` for a late announcement — and `destroy`
+   *  hands that promise back so a test awaits the real chain instead
+   *  of guessing how many turns it takes. */
+  const destroyers = new Map<string, () => unknown>()
 
   const host: MultiOutputHost = {
     availableMonitors: async () => monitors,
@@ -153,6 +163,7 @@ function createFakeHost(options: FakeOptions = {}) {
       calls.push(`create:${label}:${url}`)
       const step = async (name: string, note: string) => {
         calls.push(note)
+        if (options.announceReadyAt === name) send(ready(label))
         if (options.failAt === name) throw new Error(`${name} rejected`)
       }
       const handle: OutputWindowHandle = {
@@ -197,8 +208,11 @@ function createFakeHost(options: FakeOptions = {}) {
     calls,
     emitted,
     closed,
-    /** Destroy a window the way the OS does. */
-    destroy: (label: string) => destroyers.get(label)?.(),
+    /** Destroy a window the way the OS does. Await it: the manager's
+     *  handler is async for the grace window above. */
+    destroy: async (label: string) => {
+      await destroyers.get(label)?.()
+    },
     send,
     /** How many subscriptions are currently live. */
     activeListeners: () => registrations.filter(r => r.active).length,
@@ -316,6 +330,44 @@ describe('spawn sequence', () => {
     // A reused label would collide with an output the OS has not
     // finished tearing down, and with any state still in flight to it.
     expect(next.label).toBe('output-2')
+  })
+
+  it('hears an output that announces itself mid-placement', async () => {
+    // The webview starts loading at `createWindow`, so the output's
+    // boot runs concurrently with the placement sequence — four awaited
+    // IPC calls, plus the destroy registration. An `output_ready` that
+    // lands in that gap used to be dropped by `handleOutputEvent` for
+    // an unknown label, and nothing ever retried: the record stayed
+    // `ready: false` for the life of the window, the first snapshot and
+    // the render config were never sent, and the operator got an output
+    // stuck on the idle Earth with no error anywhere.
+    const fake = createFakeHost({ announceReadyAt: 'setPosition' })
+    const manager = makeManager(fake.host)
+    await manager.start()
+
+    await manager.addOutput({ monitorIndex: 0 })
+
+    expect(manager.outputs()[0].ready).toBe(true)
+    // And it was actually served: config first, then the snapshot.
+    expect(configEmits(fake.emitted)).toHaveLength(1)
+    expect(stateEmits(fake.emitted)).toHaveLength(1)
+  })
+
+  it('leaves nothing behind when placement fails after registration', async () => {
+    // The record now goes in before the window is placed, so the
+    // failure path has to take it out again — otherwise a spawn that
+    // threw leaves a phantom output holding a decoder slot and listed
+    // in the panel.
+    const fake = createFakeHost({ failAt: 'setFullscreen' })
+    const manager = makeManager(fake.host, { controlPanels: () => 1 })
+
+    await expect(manager.addOutput({ monitorIndex: 0 })).rejects.toThrow(/setFullscreen/)
+
+    expect(manager.outputs()).toEqual([])
+    // The control window's own panel and nothing else — the phantom
+    // gave its slot back.
+    expect(manager.decoderLoad().used).toBe(1)
+    expect(fake.calls).toContain('close:output-1')
   })
 
   it('rejects a monitor index that is not there, without creating a window', async () => {
@@ -1309,7 +1361,7 @@ describe('an output window that goes away', () => {
     expect(manager.outputs()).toHaveLength(1)
 
     // Destroyed having said nothing — a killed webview process.
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(manager.outputs()).toHaveLength(0)
   })
@@ -1326,7 +1378,7 @@ describe('an output window that goes away', () => {
     await manager.addOutput({ monitorIndex: 0 })
     expect(manager.decoderLoad().used).toBe(2)
 
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(manager.decoderLoad().used).toBe(1)
   })
@@ -1337,7 +1389,7 @@ describe('an output window that goes away', () => {
     await manager.addOutput({ monitorIndex: 0 })
     fake.emitted.length = 0
 
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
     await manager.applyState({ simulationDate: '2026-01-01T00:00:00.000Z' })
 
     expect(fake.emitted).toHaveLength(0)
@@ -1361,7 +1413,7 @@ describe('an output window that goes away', () => {
     for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
       const record = await manager.addOutput({ monitorIndex: 0 })
       fake.send({ type: 'output_closing', label: record.label })
-      fake.destroy(record.label)
+      await fake.destroy(record.label)
       expect(manager.outputs()).toHaveLength(0)
     }
 
@@ -1381,7 +1433,7 @@ describe('an output window that goes away', () => {
       // The destroy arrives after the close resolves, as it does in
       // Tauri — the record is already gone and there is nothing to
       // classify.
-      fake.destroy(record.label)
+      await fake.destroy(record.label)
     }
 
     // Removing three outputs is not a storm. If it were, an operator
@@ -1395,7 +1447,7 @@ describe('an output window that goes away', () => {
 
     for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
       const record = await manager.addOutput({ monitorIndex: 0 })
-      fake.destroy(record.label)
+      await fake.destroy(record.label)
     }
 
     await expect(manager.addOutput({ monitorIndex: 0 })).rejects.toThrow(/refusing outputs/)
@@ -1407,7 +1459,7 @@ describe('an output window that goes away', () => {
 
     for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
       const record = await manager.addOutput({ monitorIndex: 0 })
-      fake.destroy(record.label)
+      await fake.destroy(record.label)
     }
 
     // The other display is fine and must stay usable — the whole point
@@ -1429,7 +1481,7 @@ describe('an output window that goes away', () => {
     await manager.addOutput({ monitorIndex: 0 })
     expect(store.current().outputs).toHaveLength(1)
 
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(manager.outputs()).toHaveLength(0)
     expect(store.current().outputs.map(o => o.label)).toEqual(['output-1'])
@@ -1447,9 +1499,73 @@ describe('an output window that goes away', () => {
     expect(store.current().outputs).toHaveLength(1)
 
     fake.send({ type: 'output_closing', label: 'output-1' })
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(store.current().outputs).toEqual([])
+  })
+
+  it('honours an output_closing that lands just after the destroy', async () => {
+    // The output fires its announcement from a close-requested handler
+    // and lets the window go without waiting for it — a hook that can
+    // block is a hook that can strand an undecorated window. So on an
+    // Alt+F4 the announcement and the destroy are in flight together
+    // and nothing orders them. Reading absence immediately would let
+    // the winner of that race decide, which is how a healthy monitor
+    // collects a strike.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    vi.mocked(emit).mockClear()
+
+    const destroyed = fake.destroy('output-1')
+    // Synchronously after the destroy handler has started, which is
+    // exactly the ordering the grace window exists for.
+    fake.send({ type: 'output_closing', label: 'output-1' })
+    await destroyed
+
+    expect(manager.outputs()).toHaveLength(0)
+    expect(reported('output_removed')).toEqual([
+      { event_type: 'output_removed', mode: 'sos-equirect', reason: 'operator-close' },
+    ])
+    expect(reported('output_failure')).toEqual([])
+  })
+
+  it('does not blocklist a monitor for three late-announced closes', async () => {
+    // The harm the grace window is actually for. Without it, three
+    // Alt+F4 closes whose announcements lose the race read as three
+    // crashes and the display refuses new outputs for the session —
+    // with nothing on screen to say why, and no way back but a
+    // relaunch.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+
+    for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
+      const record = await manager.addOutput({ monitorIndex: 0 })
+      const destroyed = fake.destroy(record.label)
+      fake.send({ type: 'output_closing', label: record.label })
+      await destroyed
+    }
+
+    await expect(manager.addOutput({ monitorIndex: 0 })).resolves.toBeTruthy()
+  })
+
+  it('still calls a silent destroy a crash once the grace window passes', async () => {
+    // The grace window must not soften the detector. Absence is still
+    // the signal; it is only believed a beat later.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    vi.mocked(emit).mockClear()
+
+    await fake.destroy('output-1')
+
+    expect(reported('output_removed')).toEqual([
+      { event_type: 'output_removed', mode: 'sos-equirect', reason: 'crash' },
+    ])
+    expect(reported('output_failure')).toHaveLength(1)
   })
 
   it('notifies a listener so an open panel can repaint', async () => {
@@ -1460,7 +1576,7 @@ describe('an output window that goes away', () => {
     const seen = vi.fn()
     manager.onOutputsChanged(seen)
 
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(seen).toHaveBeenCalledTimes(1)
   })
@@ -1473,7 +1589,7 @@ describe('an output window that goes away', () => {
       throw new Error('panel exploded')
     })
 
-    expect(() => fake.destroy('output-1')).not.toThrow()
+    await expect(fake.destroy('output-1')).resolves.toBeUndefined()
     expect(manager.outputs()).toHaveLength(0)
   })
 })
@@ -1543,7 +1659,7 @@ describe('telemetry', () => {
     // The destroy lands afterwards, as Tauri delivers it. The record is
     // already gone, so there is nothing left to classify — and nothing
     // to report a second time.
-    fake.destroy(record.label)
+    await fake.destroy(record.label)
 
     expect(reported('output_removed')).toEqual([
       { event_type: 'output_removed', mode: 'sos-equirect', reason: 'operator-close' },
@@ -1574,7 +1690,7 @@ describe('telemetry', () => {
     await manager.addOutput({ monitorIndex: 0 })
 
     fake.send({ type: 'output_closing', label: 'output-1' })
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(reported('output_removed')).toEqual([
       { event_type: 'output_removed', mode: 'sos-equirect', reason: 'operator-close' },
@@ -1590,7 +1706,7 @@ describe('telemetry', () => {
     const manager = makeManager(fake.host)
     await manager.addOutput({ monitorIndex: 0 })
 
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     expect(reported('output_removed')).toEqual([
       { event_type: 'output_removed', mode: 'sos-equirect', reason: 'crash' },
@@ -1605,7 +1721,7 @@ describe('telemetry', () => {
     const manager = makeManager(fake.host)
     for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
       const record = await manager.addOutput({ monitorIndex: 0 })
-      fake.destroy(record.label)
+      await fake.destroy(record.label)
     }
     vi.mocked(emit).mockClear()
 
@@ -1645,7 +1761,7 @@ describe('telemetry', () => {
     const fake = createFakeHost()
     const manager = makeManager(fake.host)
     await manager.addOutput({ monitorIndex: 1 })
-    fake.destroy('output-1')
+    await fake.destroy('output-1')
 
     const payloads = JSON.stringify(vi.mocked(emit).mock.calls)
     expect(payloads).not.toContain('DISPLAY')
