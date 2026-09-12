@@ -3680,6 +3680,79 @@ occurrence (verify via `VITE_TELEMETRY_CONSOLE=true`).
 > `datasetMirror` actually uses. Nothing client-side changes
 > either fact.
 
+### Results: first pass — Windows, 2026-09-11
+
+**This is not the qualification.** The preamble above says a
+dual-monitor Linux workstation gates it; this pass ran on
+Windows, which is **step 46**, parity. It happened first
+because that is the hardware that existed, which is a
+reasonable thing to do and a bad thing to forget: the Linux
+gate is still open, and nothing below should be read as
+clearing it.
+
+Setup, from step 1: control window on display 3, output
+3840x2160 on display 2, rendered 2:1. Telemetry on Essential.
+Devtools reachable with F12.
+
+**What ran.** Numbered steps 1-4, 7-8, 10-13a, 15-20 and 22-30,
+plus supplementary S1, S2, S6 and S7. Twenty-eight of those
+passed. Five failed: **5**, **13**, **29**, **S1** and **S2**.
+
+**Not run, and why.** Step 6 and step 21 both need the
+secondary physically disconnected, which the session did not
+do. Step 9's health badge and S4's stale-frame reporting are
+rung 13, which is not built. Step 14 is blocked on a control
+window that can stack datasets at all (see 14a). S3, S5 and
+S5b were not reached.
+
+**Measurements worth keeping.** Step 12b read a sync delta
+ranging -1 ms to about -30 ms at 30 fps against a 4096x2048
+framebuffer, on a global video over sixty seconds — comfortably
+inside the 200 ms p95 the acceptance criteria ask for, and the
+number to compare the next pass against. Step 12a passed, so
+`syncByRatio` carries a dataset with no time axis on real
+hardware. Step 13a passed, so a bbox lands where it should:
+the failure in step 13 was lighting and playback, not
+placement.
+
+**The five failures, and what came of them.** All are fixed in
+code and **none is confirmed on hardware** — that is what the
+next pass is for.
+
+| Step | Reported | Cause | Fixed by |
+|---|---|---|---|
+| 5 | No position diagram; nothing marked primary | Never built; the step described an intent | `880ba315` — the diagram, and primary asked of the platform rather than inferred |
+| 13 | Dataset still lit with day/night on the output | The decoration composited *under* the layers, which only hides it for opaque global coverage | `64256a1c` — the Earth treatment is idle-only |
+| 13 | "Playback seems to struggle", sync a permanent dash | Seek loop: a seek slower than the settle window earns another, and the element is mid-seek on ~99% of frames | `fa7a29ee` + `d5516a3e` — the seek-cost floor, and the bounds lifted while paused |
+| 18 | Closing the output restored normal playback on the **control** window | Same loop, plus a playhead diff forcing a redraw at the control window's frame rate | `fa7a29ee`, `9c139d22` |
+| 29 | Ctrl+Q did nothing | Never bound; the step asserted it as if it existed | `e7b021db` |
+| S1, S2 | "Sync seems to break" / shows a dash | The same seek loop, seen through a HUD that could not say why | `fa7a29ee`, plus the HUD naming the reason beside the dash |
+
+Step 18 is worth reading twice. It is recorded as a *pass* —
+the output closed cleanly — and the sentence that matters is
+the aside about the control window recovering. A checklist step
+passing while its note describes a defect is the shape of thing
+to watch for in the next pass.
+
+**S7 and step 13 are the same bug from two sides,** which is
+the most useful thing this pass produced. S7 passed: a Mars
+dataset showed no terminator, no night lights, no clouds. It
+passed for exactly the reason step 13 failed — under-composited
+decoration *is* invisible beneath an opaque global texture, and
+a Mars dataset is one. The rule only broke for the translucent
+bbox overlay in step 13. A pass and a failure agreeing on the
+mechanism is stronger evidence than either alone, and it is why
+`64256a1c` gates on the slot count rather than tuning the
+blend.
+
+**What the next pass has to cover**, beyond re-running 5, 13,
+18, 29, S1 and S2 against the fixes: the steps this one did not
+reach (6, 21, S3), and then the Linux run that actually
+qualifies. Steps 12c and 13b were added afterwards to make the
+sync field and the bbox-video case answerable rather than
+ambiguous; 5a was added because "nothing marked primary" is a
+pass on X11 and a failure on the other two.
+
 ### Commit 9 — Tools → Outputs panel (first user-reachable)
 
 **Pre-flight:**

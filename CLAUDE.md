@@ -963,10 +963,14 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > sphere** through `layerStack`'s unrolled overlay slots. So the path is
 > now end to end in code: an operator loading a dataset on the control
 > window should see it on the output, at the right longitude, in the
-> right palette, in step. **None of that has run on a second monitor** —
-> rung 9's smoke checklist is still the first thing that needs hardware,
-> and it is now the thing standing between this and a claim that it
-> works. So the modules above are description,
+> right palette, in step. **It has now run on a second monitor once** —
+> a Windows pass of rung 9's smoke checklist on 2026-09-11, logged in
+> `docs/MULTI_MONITOR_PLAN.md` Appendix B under "Results: first pass".
+> Twenty-eight steps passed and five failed; all five are fixed in code
+> and **none of the fixes is confirmed on hardware**. That pass is
+> **step 46 parity, not the qualification** — Appendix B gates on a
+> dual-monitor Linux workstation and that run has not happened, so the
+> gate is still open. So the modules above are description,
 > not intent, and the feature is reachable: on desktop an operator can
 > add an output on a chosen monitor, toggle its camera tracking and
 > sphere split, pick its framebuffer resolution, put a debug HUD on it,
@@ -1010,11 +1014,14 @@ The desktop app shares 100% of the TypeScript source. Desktop-only behaviour is 
 > 1 globe to 4 while outputs are up can still cross it; that needs
 > `viewportManager` to consult the manager, which is cross-cutting and
 > its own commit), health badges and noticing an output the operator
-> closed by hand (13), calibration (14). **Nothing here has run on a second monitor** — rung
-> 9's smoke checklist is the first that needs real hardware, and the
-> debug HUD (rung 11) exists to make that checklist answerable: dataset
-> id, signed sync delta, fps, framebuffer, and the renderer string the
-> app cannot choose for itself. Rung 12's kiosk flag has a narrower gap:
+> closed by hand (13), calibration (14). **One hardware pass has
+> happened and the Linux gate is still open** — see the Appendix B
+> results log. The debug HUD (rung 11) is what made that pass
+> answerable, and it earned itself: step 12b's `-1 ms to -30 ms at
+> 30 fps, buffer 4096x2048` is the baseline the next pass compares
+> against, and the *absence* of a reason beside a dashed sync field is
+> what left "sync just shows a dash" ambiguous for a week — which is
+> why the field now names why it has no number. Rung 12's kiosk flag has a narrower gap:
 > it **compiles** — `desktop.yml` builds `src-tauri/` on macOS, Windows
 > and Ubuntu on every PR, and CodeQL analyses the Rust — and its
 > argument and environment *parsing* is unit-tested, but `apply_kiosk`'s
