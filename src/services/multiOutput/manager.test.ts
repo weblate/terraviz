@@ -39,6 +39,7 @@ import {
   type OutputConfigStore,
   type PersistedOutputConfig,
 } from './outputPersistence'
+import { CRASH_STORM_LIMIT } from './outputHealth'
 
 /** A three-monitor desk shaped like the spike's: the primary at the
  *  origin, one to its **left** at a negative x, one to its right. */
@@ -119,6 +120,8 @@ function createFakeHost(options: FakeOptions = {}) {
   const emitted: Emitted[] = []
   const registrations: Registration[] = []
   const closed: string[] = []
+  /** Per-label destroy handlers, so a test can fire one. */
+  const destroyers = new Map<string, () => void>()
 
   const host: MultiOutputHost = {
     availableMonitors: async () => monitors,
@@ -146,6 +149,12 @@ function createFakeHost(options: FakeOptions = {}) {
           if (options.failClose) throw new Error('close rejected')
           closed.push(label)
         },
+        // Captured rather than ignored so a test can destroy a window
+        // the way the OS would — which is the only way to reach the
+        // crash path at all.
+        onDestroyed: async handler => {
+          destroyers.set(label, handler)
+        },
       }
       return handle
     },
@@ -172,6 +181,8 @@ function createFakeHost(options: FakeOptions = {}) {
     calls,
     emitted,
     closed,
+    /** Destroy a window the way the OS does. */
+    destroy: (label: string) => destroyers.get(label)?.(),
     send,
     /** How many subscriptions are currently live. */
     activeListeners: () => registrations.filter(r => r.active).length,
@@ -1100,6 +1111,7 @@ describe('restoreOutputs', () => {
         setFullscreen: async () => {},
         show: async () => {},
         close: async () => { fake.closed.push(label) },
+        onDestroyed: async () => {},
       }
     })
 
@@ -1262,5 +1274,142 @@ describe('restoreOutputs', () => {
     // they find out it moved.
     expect(store.current().outputs.map(o => o.label)).toEqual(['output-1'])
     expect(store.current().autoRestoreOnLaunch).toBe(true)
+  })
+})
+
+/**
+ * Departures (rung 13, failure recovery case 1).
+ *
+ * Before this the manager recorded output events and acted on none, so
+ * a window that went away stayed in `records` — still receiving diffs,
+ * still holding a decoder slot, still listed in the panel. Every case
+ * here is a way that shows up in front of an audience.
+ */
+describe('an output window that goes away', () => {
+  it('drops a crashed output from the records', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.addOutput({ monitorIndex: 0 })
+    expect(manager.outputs()).toHaveLength(1)
+
+    // Destroyed having said nothing — a killed webview process.
+    fake.destroy('output-1')
+
+    expect(manager.outputs()).toHaveLength(0)
+  })
+
+  it('frees the crashed output’s decoder slot', async () => {
+    // The reason a lingering record is not merely untidy: it counts
+    // against the budget, so an operator replacing a crashed output can
+    // be refused on behalf of a window that no longer exists.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      machineDecoderBudget: () => 2,
+      controlPanels: () => 1,
+    })
+    await manager.addOutput({ monitorIndex: 0 })
+    expect(manager.decoderLoad().used).toBe(2)
+
+    fake.destroy('output-1')
+
+    expect(manager.decoderLoad().used).toBe(1)
+  })
+
+  it('stops broadcasting to a window that is gone', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.addOutput({ monitorIndex: 0 })
+    fake.emitted.length = 0
+
+    fake.destroy('output-1')
+    await manager.applyState({ simulationDate: '2026-01-01T00:00:00.000Z' })
+
+    expect(fake.emitted).toHaveLength(0)
+  })
+
+  it('tells an operator’s own close apart from a crash', async () => {
+    // An output closed with Alt+F4 announces itself first. Both end in
+    // a destroy, and only the announcement separates them — which is
+    // why the output emits `output_closing` at all.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.addOutput({ monitorIndex: 0 })
+
+    fake.send({ type: 'output_closing', label: 'output-1' })
+    fake.destroy('output-1')
+
+    expect(manager.outputs()).toHaveLength(0)
+    // Not counted as a crash: three deliberate closes must not blocklist
+    // a perfectly good monitor.
+    await expect(manager.addOutput({ monitorIndex: 0 })).resolves.toBeTruthy()
+  })
+
+  it('does not treat its own close as a crash', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+
+    for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
+      const record = await manager.addOutput({ monitorIndex: 0 })
+      await manager.removeOutput(record.label)
+      // The destroy arrives after the close resolves, as it does in
+      // Tauri — the record is already gone and there is nothing to
+      // classify.
+      fake.destroy(record.label)
+    }
+
+    // Removing three outputs is not a storm. If it were, an operator
+    // rearranging their displays would lock themselves out.
+    await expect(manager.addOutput({ monitorIndex: 0 })).resolves.toBeTruthy()
+  })
+
+  it('refuses a monitor that crashed three outputs in a minute', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+
+    for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
+      const record = await manager.addOutput({ monitorIndex: 0 })
+      fake.destroy(record.label)
+    }
+
+    await expect(manager.addOutput({ monitorIndex: 0 })).rejects.toThrow(/refusing outputs/)
+  })
+
+  it('blocks only the monitor that did it', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+
+    for (let i = 0; i < CRASH_STORM_LIMIT; i++) {
+      const record = await manager.addOutput({ monitorIndex: 0 })
+      fake.destroy(record.label)
+    }
+
+    // The other display is fine and must stay usable — the whole point
+    // of keying the guard.
+    await expect(manager.addOutput({ monitorIndex: 1 })).resolves.toBeTruthy()
+  })
+
+  it('notifies a listener so an open panel can repaint', async () => {
+    // Without this a crash is invisible until the panel is reopened.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.addOutput({ monitorIndex: 0 })
+    const seen = vi.fn()
+    manager.onOutputsChanged(seen)
+
+    fake.destroy('output-1')
+
+    expect(seen).toHaveBeenCalledTimes(1)
+  })
+
+  it('survives a listener that throws', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.addOutput({ monitorIndex: 0 })
+    manager.onOutputsChanged(() => {
+      throw new Error('panel exploded')
+    })
+
+    expect(() => fake.destroy('output-1')).not.toThrow()
+    expect(manager.outputs()).toHaveLength(0)
   })
 })

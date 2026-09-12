@@ -1737,6 +1737,25 @@ recurring crashes and obscures installation health.
 
 #### 1. Output webview crashes
 
+> **Landed.** `outputHealth.ts` (classification + crash-storm
+> guard), `OutputWindowHandle.onDestroyed`, the manager's
+> `handleDeparture`, and the output's `output_closing`
+> announcement. What is *not* here yet is the toast — the app has
+> no toast primitive, so the panel learns through
+> `onOutputsChanged` and an open panel repaints; a toast is its
+> own change. The `output_failure` / `output_removed` telemetry
+> below is also still to come, so step 31's telemetry half cannot
+> be checked yet.
+>
+> One thing the build clarified about the detection rule. The
+> plan says the absence of a graceful ping distinguishes a crash
+> from an operator close, which is right, but it leaves out that
+> **the manager's own close produces both signals at once**:
+> Remove in the panel calls `close()`, which fires the output's
+> close-requested handler, which emits `output_closing`. So the
+> manager's intent has to be checked *before* the announcement,
+> not after, or every removal is logged as a hand-close.
+
 **Detection.** Manager listens for `WebviewWindow` close
 events. A crash arrives as a `WindowEvent::Destroyed`
 without a corresponding `output_closing` graceful-shutdown
