@@ -98,11 +98,16 @@ Small, anonymous events about the health of the app:
   rung name like `4k`, never an exact pixel count), and the
   **position** of the monitor in your system's display list (a
   number like 0 or 2 — never the display's name, make, or model).
-  If one of those windows crashes or is refused, we record that it
-  happened and a one-word category for why. The projection windows
-  themselves send nothing at all: they are usually being filmed by
-  a capture card in front of an audience, so nothing runs in them
-  that does not need to
+  Every one of those windows going away is recorded with a
+  one-word category for why — including the ordinary case where
+  you closed it yourself. If one crashes or is refused, we
+  additionally record a one-word category for the kind of failure,
+  how many times the app retried before giving up (a count, `0`
+  when it did not try), and whether the window carried on
+  afterwards (yes or no). The projection windows themselves send
+  nothing at all: they are usually being filmed by a capture card
+  in front of an audience, so nothing runs in them that does not
+  need to
 - When something goes wrong — a classification of the error (tile
   fetch, video stream, AI model, uncaught exception, browser-console
   message, or native crash on desktop), a short sanitized summary of

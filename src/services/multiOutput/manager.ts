@@ -930,12 +930,31 @@ export class MultiOutputManager {
       reportOutputFailure({ kind: 'crash', retries: 0, recovered: false })
     } else {
       logger.info(`[multiOutput] ${label} was closed from its own window — removed`)
+      // Persisted only for a *deliberate* close. An output the operator
+      // shut by hand must not come back on the next launch just because
+      // "Restore outputs" is ticked — that would make the close look
+      // broken rather than honoured.
+      //
+      // A **crash is the opposite case** and must not persist. The
+      // operator still wants that output; the display or the driver
+      // took it away. Rewriting the config without it turns a
+      // four-projector installation into a three-projector one
+      // silently, with nothing on any screen to say which one went or
+      // why — the invisible failure this whole module is written
+      // against. Leaving it configured means the next launch tries
+      // again, and if the display is still bad the storm guard stops
+      // the loop where an operator can see it.
+      //
+      // This is also what keeps a shutdown cheap. `quit_app` is
+      // `app.exit(0)`, not a per-window close, so if Tauri delivers
+      // each output's destroy to this window before the process goes,
+      // every one of them reads as a crash — no `output_closing`
+      // precedes them. Unverified either way on hardware. With this
+      // rule the worst that costs is some telemetry; without it, an
+      // installation would lose its entire output configuration on
+      // every ordinary quit.
+      this.persist()
     }
-    // Persisted so the departure survives a relaunch. An output the
-    // operator closed by hand must not come back on the next launch
-    // just because "Restore outputs" is ticked — that would make the
-    // close look broken rather than honoured.
-    this.persist()
     this.notifyChange()
   }
 

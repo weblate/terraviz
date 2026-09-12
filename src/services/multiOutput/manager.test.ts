@@ -1415,6 +1415,43 @@ describe('an output window that goes away', () => {
     await expect(manager.addOutput({ monitorIndex: 1 })).resolves.toBeTruthy()
   })
 
+  it('keeps a crashed output in the config, so a relaunch brings it back', async () => {
+    // The operator still wants that output — the display took it away.
+    // Dropping it turns a four-projector installation into a
+    // three-projector one silently, which is the invisible failure this
+    // module is written against. It also bounds what an ordinary quit
+    // can cost: `quit_app` is `app.exit(0)`, so if Tauri delivers the
+    // destroys here first they all read as crashes, and without this
+    // rule every shutdown would wipe the restore config.
+    const fake = createFakeHost()
+    const store = memoryStore({ autoRestoreOnLaunch: true })
+    const manager = makeManager(fake.host, { store })
+    await manager.addOutput({ monitorIndex: 0 })
+    expect(store.current().outputs).toHaveLength(1)
+
+    fake.destroy('output-1')
+
+    expect(manager.outputs()).toHaveLength(0)
+    expect(store.current().outputs.map(o => o.label)).toEqual(['output-1'])
+  })
+
+  it('drops an output the operator closed by hand from the config', async () => {
+    // The other half, and the reason the rule is a split rather than
+    // "never persist a departure": a deliberate close that came back
+    // next launch would look broken rather than honoured.
+    const fake = createFakeHost()
+    const store = memoryStore({ autoRestoreOnLaunch: true })
+    const manager = makeManager(fake.host, { store })
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    expect(store.current().outputs).toHaveLength(1)
+
+    fake.send({ type: 'output_closing', label: 'output-1' })
+    fake.destroy('output-1')
+
+    expect(store.current().outputs).toEqual([])
+  })
+
   it('notifies a listener so an open panel can repaint', async () => {
     // Without this a crash is invisible until the panel is reopened.
     const fake = createFakeHost()

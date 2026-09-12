@@ -1751,6 +1751,21 @@ recurring crashes and obscures installation health.
 > false because this case's own row in the summary table gives a
 > crash no auto-recovery at all.
 >
+> One rule this case needs that the plan did not state: a
+> departure is persisted **only when it was deliberate**. A
+> hand-close rewrites the stored config without that output; a
+> crash leaves it in. The operator still wants a crashed output —
+> the display or the driver took it away — so dropping it would
+> turn a four-projector installation into a three-projector one
+> at the next launch, silently. It also bounds what an ordinary
+> quit can cost: `quit_app` is `app.exit(0)`, not a per-window
+> close, so if Tauri delivers each output's destroy to the
+> control window before the process goes, every one reads as a
+> crash (no `output_closing` precedes them). Unverified either
+> way on hardware — **worth a step in the next Appendix B pass:
+> quit with three outputs up, relaunch, confirm all three come
+> back.** With the split the worst that costs is some telemetry.
+>
 > One thing the build clarified about the detection rule. The
 > plan says the absence of a graceful ping distinguishes a crash
 > from an operator close, which is right, but it leaves out that
@@ -3445,6 +3460,27 @@ renderer somewhere" — which we don't. Direct RTT.
    an affordance the operator can see beats a report after the
    fact. Only `kind: 'crash'` has a detector today; the other
    four arrive with cases 2-5, one `emit()` each.
+
+   > **Re-identification, considered and accepted.** Review
+   > raised the one thing here that is not settled by the
+   > per-field invariants. `monitor_index` and
+   > `framebuffer_bucket` are each low-entropy and correctly
+   > bucketed, but on a *restore* they are read out of the
+   > persisted config and re-emitted **identically at every
+   > launch** — the output count, their indices and their rungs
+   > form a launch-stable tuple, on a population of
+   > multi-monitor desktop installs that is small. No new
+   > persistent identifier was added, so no escalation trigger
+   > in `ANALYTICS_CONTRIBUTING.md` fires, and the rotating
+   > in-memory session id is unchanged. The decision is that
+   > this is proportionate: it describes an *installation*
+   > rather than a person, and it adds a couple of bits over
+   > `os` / `screen_class` / `country`, which are already
+   > stable across launches for the same machine. Recorded here
+   > rather than left to be inferred from a module header,
+   > because the next person to add a field to these events
+   > should be adding it to a tuple whose shape someone has
+   > already looked at.
    The output window itself emits
    nothing. Telemetry from a capture-clean LED-sphere
    surface would also be a capture-clean policy violation
@@ -3454,8 +3490,21 @@ renderer somewhere" — which we don't. Direct RTT.
    - `output_added` — fields: `mode` (`'sos-equirect'`),
      `framebuffer_bucket` (`'1k' | '2k' | '4k' | '8k'`
      bucketed to avoid identifying exact resolutions),
-     `monitor_index` (0 = primary, 1+ = secondaries — never
-     the OS-reported monitor name).
+     `monitor_index` (the position in the monitor
+     enumeration — never the OS-reported monitor name).
+     **Corrected from "0 = primary, 1+ = secondaries",
+     which is not what shipped and would mislead an
+     analyst.** Index 0 is the first display
+     `availableMonitors()` returns, which is the primary on
+     Windows by definition and usually on macOS, but on X11
+     is whatever the enumeration happens to list first —
+     `xrandr --primary` can mark any of them. `outputUI`
+     asks the platform which is primary rather than
+     inferring it, for exactly that reason, and no
+     telemetry field carries the answer: a "primary vs
+     secondary" slice over this field would be quietly
+     wrong on the installations most likely to be running
+     a sphere.
    - `output_removed` — fields: `mode`, `reason`
      (`'operator-close' | 'crash' | 'monitor-gone' |
      'gpu-loss-timeout' | 'rejected-by-storm-guard'`).
