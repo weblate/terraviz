@@ -85,6 +85,106 @@ stays silent until something crosses a threshold. A fresh date is
 necessary but not sufficient: the "Revisit when" triggers are
 prose and still need judgement.
 
+### Review agents
+
+`.claude/agents/` holds a review team: the repo's own
+`analytics-reviewer`, plus 23 agents installed from the
+[agency-agents catalog](https://github.com/Hackshaven/agency-agents/blob/hackshaven/strategy/runbooks/scenario-terraviz.md)
+by its TerraViz runbook, which carries the reasoning behind each
+row below. `GOVERNANCE.md` §Review of AI-assisted changes calls AI
+review a partial measure. This team is that measure, not a
+substitute for a reviewer outside the loop that wrote the change.
+
+**When to run them.** Before reporting a change done or opening a
+PR, route it by the paths it touches and run each matching reviewer
+through the Agent tool, with `subagent_type` set to the name in the
+table exactly as written. Not after every edit: one run rereads the
+diff and every doc it cites, which is a large share of a session.
+Every code change gets at least one reviewer: the specialist for
+each row it matches, or the `Code Reviewer` when no row matches.
+Rows overlap (`src/types/color-scale.ts` and
+`src/services/llmProvider.ts` each sit in two), and a change that
+matches several runs every one of them rather than picking a
+winner; few need more than two. A change only to plan docs needs
+none, unless a row names the doc. When the maintainer names an
+agent, run that one.
+
+- **High-scrutiny paths get two.** The five areas `GOVERNANCE.md`
+  names (`functions/api/v1/publish/**`, the analytics ingest path,
+  authentication and Access configuration, D1 migrations, and
+  federation identity and signing) get their specialist plus the
+  `Code Reviewer`, and the PR says whether a human outside the
+  original loop has reviewed it.
+- **Reviewers report; they don't edit.** Each returns findings with
+  `file:line`. You fix, and the maintainer decides what stands.
+- **The repo wins.** Where a doc here sets a rule (this file,
+  `CONTRIBUTING.md`, `GOVERNANCE.md`, `docs/ANALYTICS_CONTRIBUTING.md`,
+  `docs/protocol/`), it beats an agent's general advice. Where a doc
+  describes the code and the code disagrees, the code wins and the
+  mismatch is a finding.
+- **Don't hand-edit the catalog agents.** The Agency Agents app
+  recognises each installed file by its exact content, and its next
+  Update backs up an edited file and puts the catalog's copy back.
+  Change them in the catalog. `analytics-reviewer` is the repo's
+  own: edit it here.
+
+| If the change touches… | Run |
+|---|---|
+| Telemetry: `src/analytics/**`, `functions/api/ingest.ts`, the `TelemetryEvent` union, any `emit()` call site, `grafana/dashboards/**` | `analytics-reviewer`, before any other reviewer |
+| `functions/api/v1/_lib/dataset-serializer.ts` and the types it reaches (`src/types/color-scale.ts`), the inbound copy in `src/services/dataService.ts`, `functions/api/v1/catalog.ts`, `functions/api/v1/_lib/catalog-store.ts`, `functions/.well-known/**`, `public/schema/v1/**`, `docs/protocol/**`, `docs/CATALOG_FEDERATION_PROTOCOL.md`, `scripts/build-protocol-schemas.ts`, node identity (`scripts/gen-node-key.ts`, `functions/api/v1/publish/node-identity.ts`, `cli/init-node.ts`), `functions/api/v1/federation/**` once Phase 4 adds it, a migration on `datasets`, `node_identity` or a federation table, `docs/EMBED_URL_GRAMMAR.md` and its readers (`src/utils/{embedMode,catalogMode,posterDeepLinks}.ts`, `src/services/deepLinkService.ts`) | `TerraViz Federation Reviewer` |
+| `src/types/color-scale.ts`, `src/services/colorScaleDisplay.ts`, `src/ui/colorbarUI.ts`, `src/ui/analyzeCharts.ts`, palette handling in `cli/zyra-publish-from-dispatch.ts` and `src/ui/publisher/workflow-templates.ts`, `poster/**` figures | `Scientific Visualization Reviewer` |
+| Dataset text (`src/ui/publisher/components/dataset-form.ts`), tours (`src/ui/tourAuthoring/`), Orbit's prompt (`src/services/docentContext.ts`), `locales/en.json`, `poster/**` text | `Science Communicator` |
+| `src/ui/**`, `src/styles/**`, `tokens/**`, `STYLE_GUIDE.md` | `Section 508 Accessibility Specialist` |
+| `src/services/hlsService.ts`, `cli/transcode-from-dispatch.ts`, `src/output/datasetMirror.ts`, `.github/workflows/transcode-hls.yml` | `Video Streaming Engineer`. For data-encoded video, pair it with the `terraviz-data-video` skill and `npm run check:luma-range`: it knows delivery, not what lossy encoding does to luma |
+| `src/services/mapRenderer.ts`, `src/services/earthTileLayer.ts`, `src/services/tilePreloader.ts`, `src/services/photorealEarth.ts` | `Web GIS Developer` |
+| `src/i18n/`, non-English `locales/`, CSS that could break RTL | `Internationalization Engineer` |
+| `functions/api/v1/publish/**`, `src/types/publisher-roles.ts`, `functions/api/v1/_lib/{access-auth,preview-token}.ts`, `wrangler.toml`, `public/_headers`, `.github/workflows/**` not routed elsewhere | `Application Security Engineer` |
+| `functions/api/chat/**`, `functions/api/models.ts`, `functions/api/_lib/workers-ai-*.ts`, `functions/api/v1/_lib/{blog-generate,events-enrich,event-tour}.ts`, `src/services/{llmProvider,docentService,docentEngine,docentAnalysisTools,appleIntelligenceProvider}.ts`, any new `import.meta.env.VITE_*` | `AI-Generated Code Security Auditor` |
+| `src-tauri/**`, `src/services/multiOutput/**`, `src/services/windowChrome.ts`, `.github/workflows/{release,desktop}.yml` | `Desktop App Engineer` |
+| `src/output/projectorWarp.ts`, `src/services/multiOutput/{warpImport,storedZip,warpStorage}.ts`, `src/ui/outputWarpUI.ts` | `Code Reviewer`, and check sphere-sim's `sphere-sim/projector-layout@1`: no agent reviews projector optics |
+| `src/services/{voiceCloudEngines,voiceWsStreaming,llmProvider}.ts`, `functions/api/voice/`, `functions/api/feedback*.ts`, `functions/api/general-feedback*.ts`, `functions/api/_feedback-helpers.ts`, `functions/api/_standalone-feedback.ts`, `functions/api/v1/publish/{feedback,analytics,analytics-export}.ts`, `src/ui/publisher/pages/users.ts`, `docs/PRIVACY.md` | `Privacy Engineer` |
+| `functions/api/v1/publish/**` request or response shapes, `src/ui/orbitPostMessageBridge.ts`, `functions/api/v1/stac/**`, `functions/schema/stac/**` | `API Platform Engineer` |
+| `migrations/**`, `schema/catalog-schema.sql` | `Code Reviewer`, migration first: CI applies migrations to the remote D1 on every push to `main` |
+| `.github/workflows/zyra-run.yml` (the image digest), `src/types/zyra-workflow-constants.ts`, `src/types/zyra-pipeline-args.ts`, `functions/api/v1/_lib/workflow-validators.ts`, `src/ui/publisher/workflow-templates.ts`, `docs/DATASET_SOURCE_PRESETS_DRAFT.md`, `.claude/skills/terraviz-data-video/assets/**` | `Zyra Workflow Author`, then the `Code Reviewer` for code |
+| `docs/metadata/**`, `functions/api/v1/_lib/metadata-{policy,readiness}.ts`, `functions/api/v1/publish/stac-{lineage,report}.ts`, `cli/metadata-audit.ts`, `scripts/audit-stac.ts`, `CITATION.cff` | `Scientific Data Steward` |
+| `docs/SELF_HOSTING.md`, `docs/MULTI_MONITOR_OPERATIONS.md`, `docs/MACOS_INSTALL.md`, `CONTRIBUTING-TRANSLATIONS.md` | `Technical Writer` |
+| Any other code or config under `src/`, `functions/`, `cli/`, `src-tauri/`, `scripts/`, `public/`, `tokens/`, or `schema/` | `Code Reviewer` |
+
+Paths are as of October 2026. When a row names a path that has
+moved, route by what the code does and fix the row. A change to
+`functions/api/v1/publish/**` shapes, `docs/EMBED_URL_GRAMMAR.md`
+or `public/schema/v1/**` also needs a check in the WordPress
+plugin: its `src/Api/PublishClient.php`, its `src/Embed/UrlBuilder.php`,
+and a regeneration of its `src/Contract/*`.
+
+**Some routes follow the content, not the path.**
+
+| When… | Run |
+|---|---|
+| A blog post or event pairing is about to go live, or Orbit's system prompt changes | `Communications Clearance Officer`: on a NOAA node, each one speaks for the agency |
+| A post, event pairing, dataset description, or tour narration makes a **weather** claim (an active hazard, a forecast, what happened on a date) | `Meteorologist`, then the `Communications Clearance Officer` for anything public |
+| The same surfaces make a **climate** claim (a trend, an anomaly or its baseline, a record, a projection, or a link between an event and climate change), including the description or palette of an anomaly or projection dataset and any pairing that puts one beside an event | `Climatologist`, then the `Communications Clearance Officer` for anything public |
+| Hosting moves onto federal infrastructure | `FedRAMP & RMF Compliance Engineer`, before the move |
+
+**When a person decides.** The domain agents check science claims;
+none of them owns one. Stop and go to a person (the node's named
+science reviewer, the dataset's producer, or the clearance
+official) when a draft attributes an event to climate change
+without a published study that covers it, states something more
+certainly than an agent rated it, when two agents disagree on a
+science question, or when the node derives a value its producer
+never published (an anomaly against a baseline the node chose, a
+unit change that alters values). A hazard post makes no claim that
+needs a scientist: it points to the official warning and shows the
+dataset. Record who decided, on what exact text, and when. A
+relayed "the scientist said it's fine" is a claim, not a sign-off.
+
+**Not per change.** The `Codebase Onboarding Engineer` (guides for
+the candidate maintainer areas in `MAINTAINERS.md`) and the
+`Codebase Archaeologist` (drift between plan docs, skills, and
+code) run quarterly. The `WordPress Performance Engineer` is for
+the plugin repo; no path here routes to it.
+
 ---
 
 ## Codebase Overview
