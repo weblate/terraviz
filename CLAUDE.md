@@ -96,20 +96,24 @@ review a partial measure. This team is that measure, not a
 substitute for a reviewer outside the loop that wrote the change.
 
 **When to run them.** Before reporting a change done or opening a
-PR, route it by the paths it touches and run the matching reviewer
+PR, route it by the paths it touches and run each matching reviewer
 through the Agent tool, with `subagent_type` set to the name in the
 table exactly as written. Not after every edit: one run rereads the
 diff and every doc it cites, which is a large share of a session.
-Every code change gets one reviewer, the matching specialist or the
-`Code Reviewer` when no row matches, and few need more than two. A
-plan-doc change needs none. When the maintainer names an agent, run
-that one.
+Every code change gets at least one reviewer: the specialist for
+each row it matches, or the `Code Reviewer` when no row matches.
+Rows overlap (`src/types/color-scale.ts` and
+`src/services/llmProvider.ts` each sit in two), and a change that
+matches several runs every one of them rather than picking a
+winner; few need more than two. A change only to plan docs needs
+none, unless a row names the doc. When the maintainer names an
+agent, run that one.
 
 - **High-scrutiny paths get two.** The five areas `GOVERNANCE.md`
   names (`functions/api/v1/publish/**`, the analytics ingest path,
   authentication and Access configuration, D1 migrations, and
   federation identity and signing) get their specialist plus the
-  `Code Reviewer`, and the PR says that no human outside the
+  `Code Reviewer`, and the PR says whether a human outside the
   original loop has reviewed it.
 - **Reviewers report; they don't edit.** Each returns findings with
   `file:line`. You fix, and the maintainer decides what stands.
