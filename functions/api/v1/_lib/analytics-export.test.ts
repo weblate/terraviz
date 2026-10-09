@@ -584,6 +584,27 @@ describe('size-bounded D1 batches', () => {
     expect(await count()).toBe(rollups.spatial.length)
   })
 
+  it('binds every statement before the first batch, so a bad value writes nothing', async () => {
+    // Production D1 rejects an unsupported value at bind() time. A stub
+    // stands in for it, since the SQLite façade only fails at run time.
+    const batch = vi.fn(async () => [])
+    const db = {
+      prepare: () => ({
+        bind: (...params: unknown[]) => {
+          if (params.includes(undefined)) throw new Error('D1_TYPE_ERROR: Type undefined is not supported')
+          return {}
+        },
+      }),
+      batch,
+    } as unknown as D1Database
+    const rollups = computeRollups(heavySpatialDay(), DAY)
+    // The last statement, which a small budget puts in a later batch.
+    rollups.spatial[rollups.spatial.length - 1].hits = undefined as unknown as number
+
+    await expect(writeRollupsToD1(db, DAY, rollups, 64 * 1024)).rejects.toThrow(/D1_TYPE_ERROR/)
+    expect(batch).not.toHaveBeenCalled()
+  })
+
   it('keeps an ordinary day in one batch, so it stays one transaction', async () => {
     const db = makeDb()
     const batchSpy = vi.spyOn(db, 'batch')
@@ -761,9 +782,19 @@ describe('POST /api/v1/publish/analytics-export', () => {
 
     const response = await exportPost(ctx({ env }))
     expect(response.status).toBe(500)
-    const body = (await response.json()) as { error: string; day: string; exported: ExportDaySummaryShape[] }
+    const body = (await response.json()) as {
+      error: string
+      day: string
+      message: string
+      exported: ExportDaySummaryShape[]
+    }
     expect(body.error).toBe('export_failed')
     expect(body.day).toBe(yesterday)
+    // The tick prints this into a public Actions log, so the upstream
+    // body (which can echo request details) stays off the wire.
+    expect(body.message).toBe(
+      `AE SQL query failed (500) for ${yesterday} hour 0`,
+    )
     expect(body.exported.map(d => d.day)).toEqual([addDays(yesterday, -1)])
     // Bookmark kept the completed day, so the retry resumes there.
     expect(await readBookmark(env.CATALOG_DB)).toBe(addDays(yesterday, -1))

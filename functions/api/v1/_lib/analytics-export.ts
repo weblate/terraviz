@@ -142,8 +142,14 @@ export async function fetchAeDayRows(
       body: sql,
     })
     if (!response.ok) {
+      // The upstream body goes on a second line. The route sends only
+      // the first line of an error to its caller, the GHA tick, whose
+      // output is a public Actions log, and an API error body can echo
+      // request details back (a malformed account id comes back in the
+      // routed path). The route's console.error still records the whole
+      // error for `wrangler pages deployment tail`.
       const detail = (await response.text().catch(() => '')).slice(0, 200)
-      throw new Error(`AE SQL query failed (${response.status}) for ${day} hour ${hour}: ${detail}`)
+      throw new Error(`AE SQL query failed (${response.status}) for ${day} hour ${hour}\n${detail}`)
     }
     const payload = (await response.json()) as { data?: Record<string, unknown>[] }
     const chunk = payload.data ?? []
@@ -801,9 +807,14 @@ export function chunkStatements<T extends StatementSpec>(specs: T[], budget: num
  * An ordinary day fits one batch, which D1 runs as one transaction, so
  * the delete and the inserts land together. A day too large for one
  * batch spans several, with the deletes in the first, so a failure part
- * way through leaves that day partly written. That is recoverable where
- * the alternative was not: the caller advances the bookmark only after
- * this returns, so the next tick deletes and rewrites the whole day.
+ * way through leaves that day partly written. A one-off failure (a D1
+ * hiccup, a cut connection) repairs itself, because the caller advances
+ * the bookmark only after this returns and the next tick deletes and
+ * rewrites the whole day. A failure that repeats would leave the day
+ * partly written on every tick. The one such failure this code can
+ * cause, a value D1 cannot bind, is ruled out by binding every
+ * statement before the first batch runs. Row keys are unique by
+ * construction, so a primary-key conflict cannot happen.
  */
 export async function writeRollupsToD1(
   db: D1Database,
@@ -899,10 +910,14 @@ export async function writeRollupsToD1(
     specs.push({ sql: insertDimension, params: [r.day, r.environment, r.metric, r.key, r.count, r.value_sum] })
   }
 
-  // Prepared one batch at a time, so a heavy day holds one batch of
-  // D1 statement objects rather than all of them.
+  // Bind every statement before the first batch runs, so a value D1
+  // cannot bind fails here, while the day's old rollups are still
+  // intact, not after the deletes have committed with batch one.
+  const prepared = specs.map(s => db.prepare(s.sql).bind(...s.params))
+  let next = 0
   for (const batch of chunkStatements(specs, budget)) {
-    await db.batch(batch.map(s => db.prepare(s.sql).bind(...s.params)))
+    await db.batch(prepared.slice(next, next + batch.length))
+    next += batch.length
   }
 }
 
