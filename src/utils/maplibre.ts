@@ -26,9 +26,14 @@
  * starts a module worker for any URL not ending in `.cjs`, hence
  * `worker.format: 'es'` in `vite.config.ts`. The worker is fetched only
  * when the first map needs one, so this costs a page with no map nothing.
- * It also covers the desktop build, where `import.meta.url` is
- * `tauri://localhost/...` and MapLibre's own lookup gives up on a
- * non-HTTP scheme.
+ *
+ * Desktop is expected to need this as well and is **unverified** there. On
+ * macOS and Linux `import.meta.url` is `tauri://localhost/...`, where
+ * MapLibre's own lookup returns no URL at all. Whether the explicit one
+ * loads depends on how the webview treats that scheme's origin. MapLibre
+ * compares origins and, when they differ, starts the worker from a blob
+ * that imports the URL instead, and nobody has run either branch inside
+ * Tauri.
  */
 
 import { setWorkerUrl } from 'maplibre-gl'
