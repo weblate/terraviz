@@ -14,7 +14,9 @@
  *     in-memory R2, and the real migrated D1 façade — archive key,
  *     gzip NDJSON content, rollup rows landed, idempotent re-run.
  *   - The route handler — config/privilege gating, ?day validation,
- *     bookmark walk + monotonic advance, partial-failure 502.
+ *     bookmark walk + monotonic advance, partial-failure 500.
+ *   - Size-bounded D1 batches, so a heavy day's rollups never reach
+ *     D1's 32 MiB per-call limit.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -22,13 +24,17 @@ import {
   addDays,
   advanceBookmark,
   archiveKeyFor,
+  chunkStatements,
   computeRollups,
+  D1_BATCH_BYTE_BUDGET,
+  estimateStatementBytes,
   exportDay,
   footprintRadiusDeg,
   gzipNdjson,
   isValidDay,
   MAX_FOOTPRINT_DEG,
   readBookmark,
+  writeRollupsToD1,
   yesterdayUtc,
 } from './analytics-export'
 import type { DecodedEventRow } from './analytics-layouts'
@@ -534,6 +540,58 @@ describe('exportDay', () => {
   })
 })
 
+describe('size-bounded D1 batches', () => {
+  it('splits in order at the budget and keeps an oversized statement whole', () => {
+    const spec = (sql: string) => ({ sql, params: [] as unknown[] })
+    const small = estimateStatementBytes(spec('aaaa'))
+    const batches = chunkStatements(
+      [spec('aaaa'), spec('bbbb'), spec('cccc'), spec('x'.repeat(10 * small)), spec('dddd')],
+      2 * small,
+    )
+    expect(batches.map(b => b.map(s => s.sql[0]))).toEqual([['a', 'b'], ['c'], ['x'], ['d']])
+    expect(chunkStatements([], 100)).toEqual([])
+  })
+
+  /** Zoomed-out camera views over a few layers: the shape that
+   * produced 2026-08-24's 41 MB batch, at a size a test can afford. */
+  function heavySpatialDay(): DecodedEventRow[] {
+    return Array.from({ length: 12 }, (_, i) =>
+      decoded({
+        event_type: 'camera_settled',
+        session_id: `sess-${i}`,
+        fields: { center_lat: -60 + i * 10, center_lon: -170 + i * 29, zoom: 1, layer_id: `L${i % 3}`, projection: 'globe' },
+      }),
+    )
+  }
+
+  it('writes a heavy day across several batches and lands every row', async () => {
+    const db = makeDb()
+    const rollups = computeRollups(heavySpatialDay(), DAY)
+    expect(rollups.spatial.length).toBeGreaterThan(1000)
+    const batchSpy = vi.spyOn(db, 'batch')
+
+    await writeRollupsToD1(db, DAY, rollups, 64 * 1024)
+    expect(batchSpy.mock.calls.length).toBeGreaterThan(1)
+
+    const count = async () =>
+      (await db.prepare(`SELECT COUNT(*) AS n FROM analytics_spatial_daily WHERE day = ?`).bind(DAY).first<{ n: number }>())!.n
+    expect(await count()).toBe(rollups.spatial.length)
+
+    // A chunked re-export still replaces the day rather than
+    // accumulating, which also proves the deletes run first: rows left
+    // in place would collide on the primary key.
+    await writeRollupsToD1(db, DAY, rollups, 64 * 1024)
+    expect(await count()).toBe(rollups.spatial.length)
+  })
+
+  it('keeps an ordinary day in one batch, so it stays one transaction', async () => {
+    const db = makeDb()
+    const batchSpy = vi.spyOn(db, 'batch')
+    await writeRollupsToD1(db, DAY, computeRollups(heavySpatialDay(), DAY), D1_BATCH_BYTE_BUDGET)
+    expect(batchSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('bookmark', () => {
   it('advances monotonically and never rewinds', async () => {
     const db = makeDb()
@@ -689,7 +747,7 @@ describe('POST /api/v1/publish/analytics-export', () => {
     expect(await readBookmark(env.CATALOG_DB)).toBe(yesterday)
   })
 
-  it('502s with partial progress preserved when AE fails mid-run', async () => {
+  it('500s with partial progress preserved when AE fails mid-run', async () => {
     const { env } = setupRouteEnv()
     const yesterday = yesterdayUtc()
     await advanceBookmark(env.CATALOG_DB, addDays(yesterday, -2))
@@ -702,7 +760,7 @@ describe('POST /api/v1/publish/analytics-export', () => {
     }) as typeof fetch)
 
     const response = await exportPost(ctx({ env }))
-    expect(response.status).toBe(502)
+    expect(response.status).toBe(500)
     const body = (await response.json()) as { error: string; day: string; exported: ExportDaySummaryShape[] }
     expect(body.error).toBe('export_failed')
     expect(body.day).toBe(yesterday)

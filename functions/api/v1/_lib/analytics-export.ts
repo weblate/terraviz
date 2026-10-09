@@ -23,8 +23,9 @@
  * at volumes where the percentile of the sample is an acceptable
  * stand-in for the percentile of the population).
  *
- * Per-day work is idempotent: rollup writes are wrapped in a
- * delete-day-then-insert batch (one D1 transaction) and the R2
+ * Per-day work is idempotent: rollup writes delete the day and then
+ * re-insert it, in size-bounded D1 batches (one transaction when the
+ * day fits a single batch, which an ordinary day does), and the R2
  * object is simply overwritten, so a cron retry or an operator
  * re-export converges on the same state.
  *
@@ -744,105 +745,165 @@ export async function gzipNdjson(lines: string[]): Promise<Uint8Array> {
 
 // --- D1 writes ---
 
-export async function writeRollupsToD1(db: D1Database, day: string, rollups: DayRollups): Promise<void> {
-  const stmts: D1PreparedStatement[] = [
-    db.prepare(`DELETE FROM analytics_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_dataset_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_spatial_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_errors_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_outcomes_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_perf_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_orbit_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_quiz_daily WHERE day = ?`).bind(day),
-    db.prepare(`DELETE FROM analytics_dimension_daily WHERE day = ?`).bind(day),
-  ]
+/**
+ * Size cap for one `db.batch()` call. D1 refuses any binding call
+ * whose serialized arguments exceed 32 MiB ("Serialized RPC arguments
+ * or return values are limited to 32MiB"), and the footprint splat
+ * makes the spatial rollup the one that can get there: a zoomed-out
+ * camera view spreads over hundreds of cells per layer, and
+ * 2026-08-24's single batch serialized to 41.4 MB. That error stopped
+ * the nightly export on that day for six weeks, since the bookmark
+ * walk never moves past a day it could not write. The cap is a
+ * quarter of the limit because `estimateStatementBytes` counts UTF-16
+ * code units and does not model the serializer's own framing.
+ */
+export const D1_BATCH_BYTE_BUDGET = 8 * 1024 * 1024
+
+export interface StatementSpec {
+  sql: string
+  params: unknown[]
+}
+
+/** Rough wire size of one statement: its SQL, its JSON-encoded
+ * parameters, and a fixed allowance for framing. */
+export function estimateStatementBytes(spec: StatementSpec): number {
+  return spec.sql.length + JSON.stringify(spec.params).length + 64
+}
+
+/**
+ * Split statements into consecutive batches whose estimated size stays
+ * within `budget`, preserving order. A statement larger than the budget
+ * on its own gets a batch to itself rather than being dropped, so D1
+ * reports it if it really is over the limit.
+ */
+export function chunkStatements<T extends StatementSpec>(specs: T[], budget: number): T[][] {
+  const batches: T[][] = []
+  let current: T[] = []
+  let size = 0
+  for (const spec of specs) {
+    const bytes = estimateStatementBytes(spec)
+    if (current.length > 0 && size + bytes > budget) {
+      batches.push(current)
+      current = []
+      size = 0
+    }
+    current.push(spec)
+    size += bytes
+  }
+  if (current.length > 0) batches.push(current)
+  return batches
+}
+
+/**
+ * Replace one day's rollups: delete every rollup table's rows for the
+ * day, then insert the new ones, in order.
+ *
+ * An ordinary day fits one batch, which D1 runs as one transaction, so
+ * the delete and the inserts land together. A day too large for one
+ * batch spans several, with the deletes in the first, so a failure part
+ * way through leaves that day partly written. That is recoverable where
+ * the alternative was not: the caller advances the bookmark only after
+ * this returns, so the next tick deletes and rewrites the whole day.
+ */
+export async function writeRollupsToD1(
+  db: D1Database,
+  day: string,
+  rollups: DayRollups,
+  budget: number = D1_BATCH_BYTE_BUDGET,
+): Promise<void> {
+  const specs: StatementSpec[] = [
+    'analytics_daily',
+    'analytics_dataset_daily',
+    'analytics_spatial_daily',
+    'analytics_errors_daily',
+    'analytics_outcomes_daily',
+    'analytics_perf_daily',
+    'analytics_orbit_daily',
+    'analytics_quiz_daily',
+    'analytics_dimension_daily',
+  ].map(table => ({ sql: `DELETE FROM ${table} WHERE day = ?`, params: [day] }))
+
   const insertDaily = `INSERT INTO analytics_daily
     (day, event_type, environment, internal, country, platform, events_count, sessions_count, metrics)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.daily) {
-    stmts.push(
-      db
-        .prepare(insertDaily)
-        .bind(r.day, r.event_type, r.environment, r.internal, r.country, r.platform, r.events_count, r.sessions_count, r.metrics),
-    )
+    specs.push({
+      sql: insertDaily,
+      params: [r.day, r.event_type, r.environment, r.internal, r.country, r.platform, r.events_count, r.sessions_count, r.metrics],
+    })
   }
   const insertDataset = `INSERT INTO analytics_dataset_daily
     (day, layer_id, environment, loads, trigger_mix, source_mix, load_ms_p50, load_ms_p95, dwell_ms_sum)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.dataset) {
-    stmts.push(
-      db
-        .prepare(insertDataset)
-        .bind(r.day, r.layer_id, r.environment, r.loads, r.trigger_mix, r.source_mix, r.load_ms_p50, r.load_ms_p95, r.dwell_ms_sum),
-    )
+    specs.push({
+      sql: insertDataset,
+      params: [r.day, r.layer_id, r.environment, r.loads, r.trigger_mix, r.source_mix, r.load_ms_p50, r.load_ms_p95, r.dwell_ms_sum],
+    })
   }
   const insertSpatial = `INSERT INTO analytics_spatial_daily
     (day, event_type, environment, layer_id, projection, lat_bin, lon_bin, hits)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.spatial) {
-    stmts.push(
-      db
-        .prepare(insertSpatial)
-        .bind(r.day, r.event_type, r.environment, r.layer_id, r.projection, r.lat_bin, r.lon_bin, r.hits),
-    )
+    specs.push({
+      sql: insertSpatial,
+      params: [r.day, r.event_type, r.environment, r.layer_id, r.projection, r.lat_bin, r.lon_bin, r.hits],
+    })
   }
   const insertErrors = `INSERT INTO analytics_errors_daily
     (day, environment, category, source, code, message_class, count)
     VALUES (?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.errors) {
-    stmts.push(
-      db
-        .prepare(insertErrors)
-        .bind(r.day, r.environment, r.category, r.source, r.code, r.message_class, r.count),
-    )
+    specs.push({
+      sql: insertErrors,
+      params: [r.day, r.environment, r.category, r.source, r.code, r.message_class, r.count],
+    })
   }
   const insertOutcomes = `INSERT INTO analytics_outcomes_daily
     (day, environment, event_type, value, count)
     VALUES (?, ?, ?, ?, ?)`
   for (const r of rollups.outcomes) {
-    stmts.push(
-      db.prepare(insertOutcomes).bind(r.day, r.environment, r.event_type, r.value, r.count),
-    )
+    specs.push({ sql: insertOutcomes, params: [r.day, r.environment, r.event_type, r.value, r.count] })
   }
   const insertPerf = `INSERT INTO analytics_perf_daily
     (day, environment, surface, renderer, samples, fps_sum, frame_p95_sum, jsheap_sum, jsheap_samples)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.perf) {
-    stmts.push(
-      db
-        .prepare(insertPerf)
-        .bind(r.day, r.environment, r.surface, r.renderer, r.samples, r.fps_sum, r.frame_p95_sum, r.jsheap_sum, r.jsheap_samples),
-    )
+    specs.push({
+      sql: insertPerf,
+      params: [r.day, r.environment, r.surface, r.renderer, r.samples, r.fps_sum, r.frame_p95_sum, r.jsheap_sum, r.jsheap_samples],
+    })
   }
   const insertOrbit = `INSERT INTO analytics_orbit_daily
     (day, environment, model, turns, rounds_sum, input_tokens_sum, output_tokens_sum, duration_ms_sum)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.orbit) {
-    stmts.push(
-      db
-        .prepare(insertOrbit)
-        .bind(r.day, r.environment, r.model, r.turns, r.rounds_sum, r.input_tokens_sum, r.output_tokens_sum, r.duration_ms_sum),
-    )
+    specs.push({
+      sql: insertOrbit,
+      params: [r.day, r.environment, r.model, r.turns, r.rounds_sum, r.input_tokens_sum, r.output_tokens_sum, r.duration_ms_sum],
+    })
   }
   const insertQuiz = `INSERT INTO analytics_quiz_daily
     (day, environment, tour_id, question_id, answered, correct, response_ms_sum)
     VALUES (?, ?, ?, ?, ?, ?, ?)`
   for (const r of rollups.quiz) {
-    stmts.push(
-      db
-        .prepare(insertQuiz)
-        .bind(r.day, r.environment, r.tour_id, r.question_id, r.answered, r.correct, r.response_ms_sum),
-    )
+    specs.push({
+      sql: insertQuiz,
+      params: [r.day, r.environment, r.tour_id, r.question_id, r.answered, r.correct, r.response_ms_sum],
+    })
   }
   const insertDimension = `INSERT INTO analytics_dimension_daily
     (day, environment, metric, key, count, value_sum)
     VALUES (?, ?, ?, ?, ?, ?)`
   for (const r of rollups.dimensions) {
-    stmts.push(
-      db.prepare(insertDimension).bind(r.day, r.environment, r.metric, r.key, r.count, r.value_sum),
-    )
+    specs.push({ sql: insertDimension, params: [r.day, r.environment, r.metric, r.key, r.count, r.value_sum] })
   }
-  await db.batch(stmts)
+
+  // Prepared one batch at a time, so a heavy day holds one batch of
+  // D1 statement objects rather than all of them.
+  for (const batch of chunkStatements(specs, budget)) {
+    await db.batch(batch.map(s => db.prepare(s.sql).bind(...s.params)))
+  }
 }
 
 export async function readBookmark(db: D1Database): Promise<string | null> {

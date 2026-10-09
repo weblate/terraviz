@@ -345,9 +345,16 @@ care who calls it.
 - The endpoint reads `analytics_export_state.last_day` and exports
   `last_day + 1` through yesterday (normally a single day; multiple
   days after an outage). Explicit `?day=` re-exports one day.
-- Per-day work is idempotent: D1 rollup rows are
-  `INSERT OR REPLACE` on their primary keys, and the R2 object for a
-  day is simply overwritten.
+- Per-day work is idempotent: the D1 rollups for a day are deleted
+  and re-inserted, and the R2 object for a day is simply overwritten.
+  The write goes out in batches capped at 8 MiB each
+  (`D1_BATCH_BYTE_BUDGET`), because D1 refuses any single call over
+  32 MiB. The footprint splat put 2026-08-24's single batch at
+  41.4 MB, and the export stalled on that day from 2026-08-25 until
+  this was fixed. An ordinary day still fits one batch, so it is still
+  one transaction. A heavy day spans several, and a failure part way
+  through is repaired by the next tick, since the bookmark advances
+  only after the whole day lands.
 - On first deploy, a manual backfill loop walks back as far as AE
   still has data (≤ 90 days) — that is the entire recoverable
   history, which is exactly why this phase ships first.

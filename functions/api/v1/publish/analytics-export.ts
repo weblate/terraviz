@@ -152,8 +152,14 @@ export const onRequestPost: PagesFunction<CatalogEnv> = async context => {
   }
 
   if (failure) {
+    // 500, not 502. This response used to be a 502, and Cloudflare's
+    // edge delivered it to the GHA tick as its own plain-text
+    // "error code: 502" page with this JSON gone. For six weeks the
+    // only record of what failed was `wrangler pages deployment tail`.
+    // 500 is the status the publish middleware already uses for its
+    // JSON errors.
     return new Response(JSON.stringify({ error: 'export_failed', ...failure, exported }), {
-      status: 502,
+      status: 500,
       headers: { 'Content-Type': CONTENT_TYPE },
     })
   }
