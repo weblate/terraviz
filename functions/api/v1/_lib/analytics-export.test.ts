@@ -604,11 +604,63 @@ describe('size-bounded D1 batches', () => {
     expect(batchSpy.mock.calls.length).toBeGreaterThan(1)
     expect(await countFor(db, 'analytics_spatial_daily')).toBe(rollups.spatial.length)
 
-    // A chunked re-export still replaces the day rather than
-    // accumulating, which also proves the deletes run first: rows left
-    // in place would collide on the primary key.
+    // A chunked re-export still replaces the day rather than accumulating.
     await writeRollupsToD1(db, DAY, rollups, 64 * 1024)
     expect(await countFor(db, 'analytics_spatial_daily')).toBe(rollups.spatial.length)
+  })
+
+  it('deletes the day first, so a cell the new rollups lack does not survive', async () => {
+    const db = makeDb()
+    await db
+      .prepare(
+        `INSERT INTO analytics_spatial_daily (day, event_type, environment, layer_id, projection, lat_bin, lon_bin, hits)
+         VALUES (?, 'camera_settled', 'production', 'STALE', 'globe', 89.5, 179.5, 1)`,
+      )
+      .bind(DAY)
+      .run()
+    await writeRollupsToD1(db, DAY, computeRollups(heavySpatialDay(), DAY), 64 * 1024)
+    const stale = await db
+      .prepare(`SELECT COUNT(*) AS n FROM analytics_spatial_daily WHERE day = ? AND layer_id = 'STALE'`)
+      .bind(DAY)
+      .first<{ n: number }>()
+    expect(stale!.n).toBe(0)
+  })
+
+  it('lets two overlapping writers of one day converge instead of colliding', async () => {
+    const db = makeDb()
+    const rollups = computeRollups(heavySpatialDay(), DAY)
+    const realBatch = db.batch.bind(db)
+    // Writer A lands its first batch, then waits until writer B has
+    // landed its own first batch (deleting A's rows), so the two
+    // writers' later batches insert the same keys one after the other.
+    let releaseA!: () => void
+    const bFirstBatchLanded = new Promise<void>(resolve => {
+      releaseA = resolve
+    })
+    let aCalls = 0
+    const writerA = {
+      prepare: db.prepare.bind(db),
+      batch: async (statements: D1PreparedStatement[]) => {
+        if (++aCalls === 2) await bFirstBatchLanded
+        return realBatch(statements)
+      },
+    } as unknown as D1Database
+    let bCalls = 0
+    const writerB = {
+      prepare: db.prepare.bind(db),
+      batch: async (statements: D1PreparedStatement[]) => {
+        const result = await realBatch(statements)
+        if (++bCalls === 1) releaseA()
+        return result
+      },
+    } as unknown as D1Database
+
+    const a = writeRollupsToD1(writerA, DAY, rollups, 64 * 1024)
+    const b = writeRollupsToD1(writerB, DAY, rollups, 64 * 1024)
+    await expect(Promise.all([a, b])).resolves.toBeDefined()
+    expect(aCalls).toBeGreaterThan(2)
+    expect(await countFor(db, 'analytics_spatial_daily')).toBe(rollups.spatial.length)
+    expect(await countFor(db, 'analytics_daily')).toBe(rollups.daily.length)
   })
 
   it('cuts only the heatmap short when a later batch fails, and a re-run restores it', async () => {

@@ -360,6 +360,9 @@ care who calls it.
     way through can only leave that day's heatmap short.
   - Every value is checked before the first batch runs, so a value D1
     cannot store fails while the old rollups are still intact.
+  - Inserts are `INSERT OR REPLACE`. Two writers overlapping on one
+    day (the backfill workflow and the nightly tick) therefore
+    converge instead of colliding on a primary key.
   - On the bookmark path a short day is rewritten by the next tick,
     since the bookmark advances only after the whole day lands. An
     explicit `?day=` re-export never moves the bookmark, so a short

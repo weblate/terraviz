@@ -836,11 +836,14 @@ function d1Value(table: string, column: string, value: unknown): D1Value {
 
 /** Multi-row INSERTs for one rollup table, each statement carrying as
  * many rows as fit under D1_MAX_BOUND_PARAMS. Columns are named by the
- * row's own field names, which match the table's columns. */
+ * row's own field names, which match the table's columns. OR REPLACE
+ * changes nothing for a lone writer, whose keys are unique and whose
+ * day was just deleted. It is what lets two overlapping writers of one
+ * day converge, as described on writeRollupsToD1. */
 function insertSpecs<R>(table: string, columns: readonly (keyof R & string)[], rows: readonly R[]): StatementSpec[] {
   const perStatement = Math.floor(D1_MAX_BOUND_PARAMS / columns.length)
   const tuple = `(${columns.map(() => '?').join(', ')})`
-  const head = `INSERT INTO ${table} (${columns.join(', ')}) VALUES `
+  const head = `INSERT OR REPLACE INTO ${table} (${columns.join(', ')}) VALUES `
   const specs: StatementSpec[] = []
   for (let start = 0; start < rows.length; start += perStatement) {
     const chunk = rows.slice(start, start + perStatement)
@@ -870,10 +873,16 @@ function insertSpecs<R>(table: string, columns: readonly (keyof R & string)[], r
  * the bookmark advances only after this returns, so the next tick (or
  * curl's own retry) rewrites the whole day. An explicit `?day=`
  * re-export never moves the bookmark, so a short day it leaves stays
- * short until someone re-runs it. Two writers on the same day (the
- * backfill workflow and the nightly tick run in separate concurrency
- * groups) can collide on a primary key across batches. That fails one
- * of them with a 500 while the other writes the whole day.
+ * short until someone re-runs it.
+ *
+ * Two writers can overlap on one day: the backfill workflow and the
+ * nightly tick run in separate concurrency groups. On a day that
+ * spans several batches, one writer's later batches can land after the
+ * other's delete. Inserts replace on the primary key, so neither
+ * collides with rows the other wrote. Both read the same rows from AE,
+ * so the day converges to complete once both finish. Between batches a
+ * reader can see a short heatmap for that day; the dashboard caches
+ * what it read for about five minutes.
  *
  * Every value is checked before the first batch runs (`d1Value`), so a
  * value D1 cannot store fails while the old rollups are still intact.
