@@ -352,9 +352,11 @@ care who calls it.
   32 MiB. The footprint splat put 2026-08-24's single batch at
   41.4 MB, and the export stalled on that day from 2026-08-25 until
   this was fixed. An ordinary day still fits one batch, so it is still
-  one transaction. A heavy day spans several, and a failure part way
-  through is repaired by the next tick, since the bookmark advances
-  only after the whole day lands.
+  one transaction. A heavy day spans several. Every statement is
+  bound before the first batch runs, so a value D1 cannot bind fails
+  while the day's old rollups are still intact. A one-off failure
+  part way through is repaired by the next tick, since the bookmark
+  advances only after the whole day lands.
 - On first deploy, a manual backfill loop walks back as far as AE
   still has data (≤ 90 days) — that is the entire recoverable
   history, which is exactly why this phase ships first.
