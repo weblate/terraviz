@@ -28,12 +28,16 @@
  * when the first map needs one, so this costs a page with no map nothing.
  *
  * Desktop is expected to need this as well and is **unverified** there. On
- * macOS and Linux `import.meta.url` is `tauri://localhost/...`, where
- * MapLibre's own lookup returns no URL at all. Whether the explicit one
- * loads depends on how the webview treats that scheme's origin. MapLibre
- * compares origins and, when they differ, starts the worker from a blob
- * that imports the URL instead, and nobody has run either branch inside
- * Tauri.
+ * Windows the page is `http://tauri.localhost`, so MapLibre's own lookup
+ * asks for the same missing file the web build did. On macOS and Linux
+ * `import.meta.url` is `tauri://localhost/...`, where the lookup returns no
+ * URL at all. Whether the explicit one loads there depends on how the
+ * webview treats that scheme's origin. MapLibre compares origins and, when
+ * they differ, starts the worker from a blob that imports the URL instead,
+ * and nobody has run either branch inside Tauri. `npm run dev:desktop` cannot
+ * settle it, since it loads the Vite dev server rather than the built
+ * assets; it needs a `build:desktop` app on each platform, checked for the
+ * globe's labels and borders.
  */
 
 import { setWorkerUrl } from 'maplibre-gl'
