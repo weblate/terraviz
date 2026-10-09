@@ -120,7 +120,10 @@ export async function fetchAeDayRows(
   // constraining it to a bare identifier keeps a misconfigured (or
   // poisoned) env var from becoming arbitrary SQL.
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(dataset)) {
-    throw new Error(`Invalid AE dataset name ${JSON.stringify(dataset)} — expected a bare identifier.`)
+    // Names the setting, never its value: this message reaches a public
+    // Actions log, and a value pasted into the wrong setting (the SQL
+    // token, say) would be printed there.
+    throw new Error('Invalid AE dataset name in ANALYTICS_AE_DATASET — expected a bare identifier.')
   }
   const url = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/analytics_engine/sql`
   const rows: DecodedEventRow[] = []
@@ -151,7 +154,15 @@ export async function fetchAeDayRows(
       const detail = (await response.text().catch(() => '')).slice(0, 200)
       throw new Error(`AE SQL query failed (${response.status}) for ${day} hour ${hour}\n${detail}`)
     }
-    const payload = (await response.json()) as { data?: Record<string, unknown>[] }
+    // A JSON parse error quotes the text around the bad character, which
+    // here would be raw event rows, so it goes on a second line.
+    const text = await response.text()
+    let payload: { data?: Record<string, unknown>[] }
+    try {
+      payload = JSON.parse(text) as { data?: Record<string, unknown>[] }
+    } catch (err) {
+      throw new Error(`AE SQL response for ${day} hour ${hour} was not JSON\n${String(err)}`)
+    }
     const chunk = payload.data ?? []
     if (chunk.length >= AE_CHUNK_LIMIT) truncatedChunks++
     for (const raw of chunk) rows.push(decodeAeRow(raw))
@@ -759,21 +770,29 @@ export async function gzipNdjson(lines: string[]): Promise<Uint8Array> {
  * camera view spreads over hundreds of cells per layer, and
  * 2026-08-24's single batch serialized to 41.4 MB. That error stopped
  * the nightly export on that day for six weeks, since the bookmark
- * walk never moves past a day it could not write. The cap is a
- * quarter of the limit because `estimateStatementBytes` counts UTF-16
- * code units and does not model the serializer's own framing.
+ * walk never moves past a day it could not write. The cap is half the
+ * limit: `estimateStatementBytes` measures UTF-8 but does not model the
+ * serializer's own framing exactly.
  */
-export const D1_BATCH_BYTE_BUDGET = 8 * 1024 * 1024
+export const D1_BATCH_BYTE_BUDGET = 16 * 1024 * 1024
+
+/** D1's cap on bound parameters in one statement. Inserts pack as
+ * many rows into one statement as fit under it. */
+export const D1_MAX_BOUND_PARAMS = 100
+
+type D1Value = string | number | null
 
 export interface StatementSpec {
   sql: string
-  params: unknown[]
+  params: D1Value[]
 }
 
-/** Rough wire size of one statement: its SQL, its JSON-encoded
- * parameters, and a fixed allowance for framing. */
+const utf8 = new TextEncoder()
+
+/** Wire size of one statement: its SQL and its JSON-encoded parameters
+ * as UTF-8, plus a fixed allowance for framing. */
 export function estimateStatementBytes(spec: StatementSpec): number {
-  return spec.sql.length + JSON.stringify(spec.params).length + 64
+  return utf8.encode(spec.sql).byteLength + utf8.encode(JSON.stringify(spec.params)).byteLength + 64
 }
 
 /**
@@ -801,20 +820,63 @@ export function chunkStatements<T extends StatementSpec>(specs: T[], budget: num
 }
 
 /**
+ * A value D1 can store, or a thrown error naming the column. D1's own
+ * bind() checks only the JavaScript type, so NaN and ±Infinity pass it
+ * and then fail a NOT NULL column when the statement runs, after the
+ * day's deletes have already committed. Checking here, before any batch
+ * runs, means a bad value leaves the day's old rollups intact.
+ */
+function d1Value(table: string, column: string, value: unknown): D1Value {
+  if (value === null || typeof value === 'string') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  // A label, not the value: this message reaches a public Actions log.
+  const label = typeof value === 'number' ? String(value) : typeof value
+  throw new Error(`Rollup value for ${table}.${column} cannot be stored: ${label}`)
+}
+
+/** Multi-row INSERTs for one rollup table, each statement carrying as
+ * many rows as fit under D1_MAX_BOUND_PARAMS. Columns are named by the
+ * row's own field names, which match the table's columns. */
+function insertSpecs<R>(table: string, columns: readonly (keyof R & string)[], rows: readonly R[]): StatementSpec[] {
+  const perStatement = Math.floor(D1_MAX_BOUND_PARAMS / columns.length)
+  const tuple = `(${columns.map(() => '?').join(', ')})`
+  const head = `INSERT INTO ${table} (${columns.join(', ')}) VALUES `
+  const specs: StatementSpec[] = []
+  for (let start = 0; start < rows.length; start += perStatement) {
+    const chunk = rows.slice(start, start + perStatement)
+    const params: D1Value[] = []
+    for (const row of chunk) {
+      for (const column of columns) params.push(d1Value(table, column, row[column]))
+    }
+    specs.push({ sql: head + chunk.map(() => tuple).join(', '), params })
+  }
+  return specs
+}
+
+/**
  * Replace one day's rollups: delete every rollup table's rows for the
  * day, then insert the new ones, in order.
  *
- * An ordinary day fits one batch, which D1 runs as one transaction, so
- * the delete and the inserts land together. A day too large for one
- * batch spans several, with the deletes in the first, so a failure part
- * way through leaves that day partly written. A one-off failure (a D1
- * hiccup, a cut connection) repairs itself, because the caller advances
- * the bookmark only after this returns and the next tick deletes and
- * rewrites the whole day. A failure that repeats would leave the day
- * partly written on every tick. The one such failure this code can
- * cause, a value D1 cannot bind, is ruled out by binding every
- * statement before the first batch runs. Row keys are unique by
- * construction, so a primary-key conflict cannot happen.
+ * Inserts pack many rows per statement, so an ordinary day fits one
+ * batch, which D1 runs as one transaction: the delete and the inserts
+ * land together. A day too large for one batch (2026-08-24's heatmap
+ * is about two) spans several, and the order is chosen for that case:
+ * the deletes and every small table go first, and the spatial rows,
+ * which are nearly all of a heavy day, go last. A failure part way
+ * through therefore leaves at worst a heatmap that is short for that
+ * day, never the counts, errors or funnels.
+ *
+ * What repairs a short day depends on the caller. On the bookmark path
+ * the bookmark advances only after this returns, so the next tick (or
+ * curl's own retry) rewrites the whole day. An explicit `?day=`
+ * re-export never moves the bookmark, so a short day it leaves stays
+ * short until someone re-runs it. Two writers on the same day (the
+ * backfill workflow and the nightly tick run in separate concurrency
+ * groups) can collide on a primary key across batches. That fails one
+ * of them with a 500 while the other writes the whole day.
+ *
+ * Every value is checked before the first batch runs (`d1Value`), so a
+ * value D1 cannot store fails while the old rollups are still intact.
  */
 export async function writeRollupsToD1(
   db: D1Database,
@@ -834,90 +896,40 @@ export async function writeRollupsToD1(
     'analytics_dimension_daily',
   ].map(table => ({ sql: `DELETE FROM ${table} WHERE day = ?`, params: [day] }))
 
-  const insertDaily = `INSERT INTO analytics_daily
-    (day, event_type, environment, internal, country, platform, events_count, sessions_count, metrics)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.daily) {
-    specs.push({
-      sql: insertDaily,
-      params: [r.day, r.event_type, r.environment, r.internal, r.country, r.platform, r.events_count, r.sessions_count, r.metrics],
-    })
-  }
-  const insertDataset = `INSERT INTO analytics_dataset_daily
-    (day, layer_id, environment, loads, trigger_mix, source_mix, load_ms_p50, load_ms_p95, dwell_ms_sum)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.dataset) {
-    specs.push({
-      sql: insertDataset,
-      params: [r.day, r.layer_id, r.environment, r.loads, r.trigger_mix, r.source_mix, r.load_ms_p50, r.load_ms_p95, r.dwell_ms_sum],
-    })
-  }
-  const insertSpatial = `INSERT INTO analytics_spatial_daily
-    (day, event_type, environment, layer_id, projection, lat_bin, lon_bin, hits)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.spatial) {
-    specs.push({
-      sql: insertSpatial,
-      params: [r.day, r.event_type, r.environment, r.layer_id, r.projection, r.lat_bin, r.lon_bin, r.hits],
-    })
-  }
-  const insertErrors = `INSERT INTO analytics_errors_daily
-    (day, environment, category, source, code, message_class, count)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.errors) {
-    specs.push({
-      sql: insertErrors,
-      params: [r.day, r.environment, r.category, r.source, r.code, r.message_class, r.count],
-    })
-  }
-  const insertOutcomes = `INSERT INTO analytics_outcomes_daily
-    (day, environment, event_type, value, count)
-    VALUES (?, ?, ?, ?, ?)`
-  for (const r of rollups.outcomes) {
-    specs.push({ sql: insertOutcomes, params: [r.day, r.environment, r.event_type, r.value, r.count] })
-  }
-  const insertPerf = `INSERT INTO analytics_perf_daily
-    (day, environment, surface, renderer, samples, fps_sum, frame_p95_sum, jsheap_sum, jsheap_samples)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.perf) {
-    specs.push({
-      sql: insertPerf,
-      params: [r.day, r.environment, r.surface, r.renderer, r.samples, r.fps_sum, r.frame_p95_sum, r.jsheap_sum, r.jsheap_samples],
-    })
-  }
-  const insertOrbit = `INSERT INTO analytics_orbit_daily
-    (day, environment, model, turns, rounds_sum, input_tokens_sum, output_tokens_sum, duration_ms_sum)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.orbit) {
-    specs.push({
-      sql: insertOrbit,
-      params: [r.day, r.environment, r.model, r.turns, r.rounds_sum, r.input_tokens_sum, r.output_tokens_sum, r.duration_ms_sum],
-    })
-  }
-  const insertQuiz = `INSERT INTO analytics_quiz_daily
-    (day, environment, tour_id, question_id, answered, correct, response_ms_sum)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.quiz) {
-    specs.push({
-      sql: insertQuiz,
-      params: [r.day, r.environment, r.tour_id, r.question_id, r.answered, r.correct, r.response_ms_sum],
-    })
-  }
-  const insertDimension = `INSERT INTO analytics_dimension_daily
-    (day, environment, metric, key, count, value_sum)
-    VALUES (?, ?, ?, ?, ?, ?)`
-  for (const r of rollups.dimensions) {
-    specs.push({ sql: insertDimension, params: [r.day, r.environment, r.metric, r.key, r.count, r.value_sum] })
-  }
+  specs.push(
+    ...insertSpecs<DailyRollupRow>('analytics_daily', [
+      'day', 'event_type', 'environment', 'internal', 'country', 'platform', 'events_count', 'sessions_count', 'metrics',
+    ], rollups.daily),
+    ...insertSpecs<DatasetRollupRow>('analytics_dataset_daily', [
+      'day', 'layer_id', 'environment', 'loads', 'trigger_mix', 'source_mix', 'load_ms_p50', 'load_ms_p95', 'dwell_ms_sum',
+    ], rollups.dataset),
+    ...insertSpecs<ErrorsRollupRow>('analytics_errors_daily', [
+      'day', 'environment', 'category', 'source', 'code', 'message_class', 'count',
+    ], rollups.errors),
+    ...insertSpecs<OutcomesRollupRow>('analytics_outcomes_daily', [
+      'day', 'environment', 'event_type', 'value', 'count',
+    ], rollups.outcomes),
+    ...insertSpecs<PerfRollupRow>('analytics_perf_daily', [
+      'day', 'environment', 'surface', 'renderer', 'samples', 'fps_sum', 'frame_p95_sum', 'jsheap_sum', 'jsheap_samples',
+    ], rollups.perf),
+    ...insertSpecs<OrbitRollupRow>('analytics_orbit_daily', [
+      'day', 'environment', 'model', 'turns', 'rounds_sum', 'input_tokens_sum', 'output_tokens_sum', 'duration_ms_sum',
+    ], rollups.orbit),
+    ...insertSpecs<QuizRollupRow>('analytics_quiz_daily', [
+      'day', 'environment', 'tour_id', 'question_id', 'answered', 'correct', 'response_ms_sum',
+    ], rollups.quiz),
+    ...insertSpecs<DimensionRollupRow>('analytics_dimension_daily', [
+      'day', 'environment', 'metric', 'key', 'count', 'value_sum',
+    ], rollups.dimensions),
+    // Last, so a failure part way through a heavy day can only cut the
+    // heatmap short.
+    ...insertSpecs<SpatialRollupRow>('analytics_spatial_daily', [
+      'day', 'event_type', 'environment', 'layer_id', 'projection', 'lat_bin', 'lon_bin', 'hits',
+    ], rollups.spatial),
+  )
 
-  // Bind every statement before the first batch runs, so a value D1
-  // cannot bind fails here, while the day's old rollups are still
-  // intact, not after the deletes have committed with batch one.
-  const prepared = specs.map(s => db.prepare(s.sql).bind(...s.params))
-  let next = 0
   for (const batch of chunkStatements(specs, budget)) {
-    await db.batch(prepared.slice(next, next + batch.length))
-    next += batch.length
+    await db.batch(batch.map(s => db.prepare(s.sql).bind(...s.params)))
   }
 }
 

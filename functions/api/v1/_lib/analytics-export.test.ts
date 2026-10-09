@@ -27,6 +27,7 @@ import {
   chunkStatements,
   computeRollups,
   D1_BATCH_BYTE_BUDGET,
+  D1_MAX_BOUND_PARAMS,
   estimateStatementBytes,
   exportDay,
   footprintRadiusDeg,
@@ -529,6 +530,26 @@ describe('exportDay', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('names the setting rather than echoing its value, which could be a misplaced secret', async () => {
+    const error = await exportDay({
+      db: makeDb(),
+      r2: makeR2().bucket,
+      sql: { ...SQL_CFG, dataset: 'tok-3f9a-not-a-dataset' },
+      day: DAY,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    }).then(() => { throw new Error('expected a rejection') }, (e: unknown) => e as Error)
+    expect(error.message).toContain('ANALYTICS_AE_DATASET')
+    expect(error.message).not.toContain('tok-3f9a')
+  })
+
+  it('keeps the body of a non-JSON AE response off the error\'s first line', async () => {
+    const garbled = (async () => new Response('{"data":[{"index1":"sess-private-9', { status: 200 })) as typeof fetch
+    const error = await exportDay({ db: makeDb(), r2: makeR2().bucket, sql: SQL_CFG, day: DAY, fetchImpl: garbled })
+      .then(() => { throw new Error('expected a rejection') }, (e: unknown) => e as Error)
+    const firstLine = error.message.split('\n', 1)[0]
+    expect(firstLine).toBe(`AE SQL response for ${DAY} hour 0 was not JSON`)
+  })
+
   it('throws on an AE SQL error without touching storage', async () => {
     const db = makeDb()
     const r2 = makeR2()
@@ -542,7 +563,7 @@ describe('exportDay', () => {
 
 describe('size-bounded D1 batches', () => {
   it('splits in order at the budget and keeps an oversized statement whole', () => {
-    const spec = (sql: string) => ({ sql, params: [] as unknown[] })
+    const spec = (sql: string) => ({ sql, params: [] })
     const small = estimateStatementBytes(spec('aaaa'))
     const batches = chunkStatements(
       [spec('aaaa'), spec('bbbb'), spec('cccc'), spec('x'.repeat(10 * small)), spec('dddd')],
@@ -550,6 +571,12 @@ describe('size-bounded D1 batches', () => {
     )
     expect(batches.map(b => b.map(s => s.sql[0]))).toEqual([['a', 'b'], ['c'], ['x'], ['d']])
     expect(chunkStatements([], 100)).toEqual([])
+  })
+
+  it('measures UTF-8, so non-ASCII text costs more than its length', () => {
+    const ascii = estimateStatementBytes({ sql: 'x', params: ['aaaa'] })
+    const accented = estimateStatementBytes({ sql: 'x', params: ['éééé'] })
+    expect(accented - ascii).toBe(4)
   })
 
   /** Zoomed-out camera views over a few layers: the shape that
@@ -564,6 +591,9 @@ describe('size-bounded D1 batches', () => {
     )
   }
 
+  const countFor = async (db: D1Database, table: string) =>
+    (await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE day = ?`).bind(DAY).first<{ n: number }>())!.n
+
   it('writes a heavy day across several batches and lands every row', async () => {
     const db = makeDb()
     const rollups = computeRollups(heavySpatialDay(), DAY)
@@ -572,38 +602,89 @@ describe('size-bounded D1 batches', () => {
 
     await writeRollupsToD1(db, DAY, rollups, 64 * 1024)
     expect(batchSpy.mock.calls.length).toBeGreaterThan(1)
-
-    const count = async () =>
-      (await db.prepare(`SELECT COUNT(*) AS n FROM analytics_spatial_daily WHERE day = ?`).bind(DAY).first<{ n: number }>())!.n
-    expect(await count()).toBe(rollups.spatial.length)
+    expect(await countFor(db, 'analytics_spatial_daily')).toBe(rollups.spatial.length)
 
     // A chunked re-export still replaces the day rather than
     // accumulating, which also proves the deletes run first: rows left
     // in place would collide on the primary key.
     await writeRollupsToD1(db, DAY, rollups, 64 * 1024)
-    expect(await count()).toBe(rollups.spatial.length)
+    expect(await countFor(db, 'analytics_spatial_daily')).toBe(rollups.spatial.length)
   })
 
-  it('binds every statement before the first batch, so a bad value writes nothing', async () => {
-    // Production D1 rejects an unsupported value at bind() time. A stub
-    // stands in for it, since the SQLite façade only fails at run time.
+  it('cuts only the heatmap short when a later batch fails, and a re-run restores it', async () => {
+    const db = makeDb()
+    // A session_start adds a dimension row, a table that used to be
+    // written after the spatial rows.
+    const rollups = computeRollups(
+      [...heavySpatialDay(), decoded({ event_type: 'session_start', fields: { os: 'macos', platform: 'web' } })],
+      DAY,
+    )
+    expect(rollups.dimensions.length).toBeGreaterThan(0)
+    const realBatch = db.batch.bind(db)
+    let calls = 0
+    const failing = {
+      prepare: db.prepare.bind(db),
+      batch: async (statements: D1PreparedStatement[]) => {
+        if (++calls === 2) throw new Error('D1_ERROR: simulated outage')
+        return realBatch(statements)
+      },
+    } as unknown as D1Database
+
+    await expect(writeRollupsToD1(failing, DAY, rollups, 64 * 1024)).rejects.toThrow(/simulated outage/)
+    // The deletes and the small tables went in the first batch.
+    expect(await countFor(db, 'analytics_daily')).toBe(rollups.daily.length)
+    expect(await countFor(db, 'analytics_dimension_daily')).toBe(rollups.dimensions.length)
+    const short = await countFor(db, 'analytics_spatial_daily')
+    expect(short).toBeLessThan(rollups.spatial.length)
+
+    await writeRollupsToD1(db, DAY, rollups, 64 * 1024)
+    expect(await countFor(db, 'analytics_spatial_daily')).toBe(rollups.spatial.length)
+    expect(await countFor(db, 'analytics_daily')).toBe(rollups.daily.length)
+  })
+
+  /** A D1 stand-in that records each bind and each batch. */
+  function recordingDb() {
+    const binds: unknown[][] = []
     const batch = vi.fn(async () => [])
     const db = {
       prepare: () => ({
         bind: (...params: unknown[]) => {
-          if (params.includes(undefined)) throw new Error('D1_TYPE_ERROR: Type undefined is not supported')
+          binds.push(params)
           return {}
         },
       }),
       batch,
     } as unknown as D1Database
-    const rollups = computeRollups(heavySpatialDay(), DAY)
-    // The last statement, which a small budget puts in a later batch.
-    rollups.spatial[rollups.spatial.length - 1].hits = undefined as unknown as number
+    return { db, binds, batch }
+  }
 
-    await expect(writeRollupsToD1(db, DAY, rollups, 64 * 1024)).rejects.toThrow(/D1_TYPE_ERROR/)
-    expect(batch).not.toHaveBeenCalled()
+  it('packs rows into statements under the bound-parameter cap', async () => {
+    const { db, binds } = recordingDb()
+    const rollups = computeRollups(heavySpatialDay(), DAY)
+    await writeRollupsToD1(db, DAY, rollups)
+    expect(Math.max(...binds.map(b => b.length))).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMS)
+    // Spatial rows have 8 columns, so 12 rows fill 96 parameters.
+    expect(binds.some(b => b.length === 96)).toBe(true)
+    expect(binds.length).toBeLessThan(rollups.spatial.length / 10)
   })
+
+  for (const [label, bad] of [
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ] as const) {
+    it(`rejects ${label} before any batch runs, so the day's old rollups stay intact`, async () => {
+      const { db, batch } = recordingDb()
+      const rollups = computeRollups(heavySpatialDay(), DAY)
+      // The last statement, which a small budget puts in a later batch.
+      rollups.spatial[rollups.spatial.length - 1].hits = bad as unknown as number
+
+      await expect(writeRollupsToD1(db, DAY, rollups, 64 * 1024)).rejects.toThrow(
+        /analytics_spatial_daily\.hits cannot be stored/,
+      )
+      expect(batch).not.toHaveBeenCalled()
+    })
+  }
 
   it('keeps an ordinary day in one batch, so it stays one transaction', async () => {
     const db = makeDb()
