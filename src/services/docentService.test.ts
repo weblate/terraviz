@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Dataset, ChatMessage, DocentConfig } from '../types'
 import { processMessage, loadConfig, saveConfig, getDefaultConfig, validateAndCleanText, captureViewContext, readCurrentTime, executeSearchDatasets, executeListFeaturedDatasets, executeSearchEvents, clearPreSearchCache } from './docentService'
@@ -333,6 +336,121 @@ describe('processMessage — LLM path', () => {
     // Should end with done, not fallback
     const doneChunk = chunks.find(c => c.type === 'done') as { type: 'done'; fallback: boolean } | undefined
     expect(doneChunk?.fallback).toBe(false)
+  })
+})
+
+describe('processMessage — the node turned Orbit off mid-session', () => {
+  // The chat endpoint refuses with `feature_disabled` once the
+  // operator turns Orbit off. The docent must neither retry nor answer
+  // from the local engine — that keyword-only docent is what the toggle
+  // exists to remove — but withdraw Orbit from the page.
+  const config: DocentConfig = {
+    apiUrl: '/api',
+    apiKey: '',
+    model: 'test',
+    enabled: true,
+    readingLevel: 'general',
+    visionEnabled: false,
+  }
+
+  it('withdraws Orbit instead of retrying or answering from keywords', async () => {
+    const { resetOrbitAvailabilityForTests, isOrbitWithdrawn } = await import('./orbitAvailability')
+    resetOrbitAvailabilityForTests()
+    const { streamChat } = await import('./llmProvider')
+    const mockedStream = vi.mocked(streamChat)
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'error' as const, message: 'API error 403: feature_disabled', code: 'feature_disabled' as const }
+    })
+    mockedStream.mockClear()
+
+    const chunks: DocentStreamChunk[] = []
+    for await (const chunk of processMessage('hello', [], datasets, null, config)) chunks.push(chunk)
+
+    expect(mockedStream).toHaveBeenCalledTimes(1)
+    expect(isOrbitWithdrawn()).toBe(true)
+    expect(chunks.some(c => c.type === 'delta')).toBe(false)
+    resetOrbitAvailabilityForTests()
+  })
+})
+
+describe('processMessage — quota-exhausted LLM errors', () => {
+  // A spent Workers AI budget comes back as an error chunk with
+  // `code: 'quota_exhausted'`. It is not transient, so the retry that
+  // covers empty streams and network blips must not fire for it: that
+  // was another round trip to hear the same 503 before the local
+  // engine answered anyway.
+  const config: DocentConfig = {
+    apiUrl: 'http://localhost:11434/v1',
+    apiKey: '',
+    model: 'test',
+    enabled: true,
+    readingLevel: 'general',
+    visionEnabled: false,
+  }
+
+  async function run(input: string): Promise<DocentStreamChunk[]> {
+    const chunks: DocentStreamChunk[] = []
+    for await (const chunk of processMessage(input, [], datasets, null, config)) {
+      chunks.push(chunk)
+    }
+    return chunks
+  }
+
+  it('does not retry a quota error, and falls back to the local engine', async () => {
+    const { streamChat } = await import('./llmProvider')
+    const mockedStream = vi.mocked(streamChat)
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'error' as const, message: 'API error 503: 4006: neurons exhausted', code: 'quota_exhausted' as const }
+    })
+    mockedStream.mockClear()
+
+    const chunks = await run('hello')
+
+    expect(mockedStream).toHaveBeenCalledTimes(1)
+    expect(getDegradedReason()).toBe('quota_exhausted')
+    const done = chunks.find(c => c.type === 'done') as { type: 'done'; fallback: boolean }
+    expect(done.fallback).toBe(true)
+  })
+
+  it('does not retry a quota error that arrives on a tool round', async () => {
+    // The same signal from the tool path: round 1 asks for a catalog
+    // search, round 2 is refused for quota. One attempt, two rounds.
+    const { streamChat } = await import('./llmProvider')
+    const mockedStream = vi.mocked(streamChat)
+    let callCount = 0
+    mockedStream.mockImplementation(async function* () {
+      callCount++
+      if (callCount % 2 === 1) {
+        yield {
+          type: 'tool_call' as const,
+          call: { id: 'call_search_1', name: 'search_catalog', arguments: { query: 'ocean temperature' } },
+        }
+        yield { type: 'done' as const }
+      } else {
+        yield { type: 'error' as const, message: 'API error 503: quota exhausted', code: 'quota_exhausted' as const }
+      }
+    })
+
+    const chunks = await run('ocean temperature')
+
+    expect(callCount).toBe(2)
+    expect(getDegradedReason()).toBe('quota_exhausted')
+    const done = chunks.find(c => c.type === 'done') as { type: 'done'; fallback: boolean }
+    expect(done.fallback).toBe(true)
+  })
+
+  it('still retries an error that is not quota', async () => {
+    const { streamChat } = await import('./llmProvider')
+    const mockedStream = vi.mocked(streamChat)
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'error' as const, message: 'API error 502: Workers AI returned an empty stream' }
+    })
+    mockedStream.mockClear()
+
+    await run('hello')
+
+    expect(mockedStream).toHaveBeenCalledTimes(2)
+    expect(getDegradedReason()).toBeNull()
   })
 })
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Hand-rolled argv parser for the `terraviz` CLI. Avoids a
  * `commander` / `yargs` dependency for what is, in the end, three
@@ -37,6 +40,8 @@ export const BOOLEAN_FLAGS = new Set<string>([
   'from-stdin',
   'human',
   'update-existing',
+  'clear-description',
+  'clear-contact',
 ])
 
 export function parseArgs(argv: string[], booleans: Set<string> = BOOLEAN_FLAGS): ParsedArgs {

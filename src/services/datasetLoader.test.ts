@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { displayDatasetInfo } from './datasetLoader'
+import { displayDatasetInfo, pickDirectFile } from './datasetLoader'
 import type { Dataset } from '../types'
+import { until } from '../test-utils'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -185,9 +189,15 @@ describe('displayDatasetInfo', () => {
     ]
 
     displayDatasetInfo(target, catalog, onLoad)
-    // The lexical list renders synchronously in catalog order (A, B);
-    // drain the async semantic enhancement (fetch → json → re-render).
-    for (let i = 0; i < 6; i++) await new Promise(r => setTimeout(r, 0))
+    // The lexical list renders synchronously in catalog order (A, B).
+    // The semantic enhancement replaces those nodes, so waiting for the
+    // first one to be detached is the re-render signal — deliberately
+    // weaker than the ordering assertion below, which still does the work.
+    const lexicalFirst = document.querySelector('.info-related a[data-dataset-id]')!
+    await until(
+      () => !document.contains(lexicalFirst),
+      'the semantic re-render to replace the lexical list',
+    )
 
     const ids = Array.from(document.querySelectorAll('.info-related a[data-dataset-id]')).map(
       l => l.getAttribute('data-dataset-id'),
@@ -394,7 +404,15 @@ describe('displayDatasetInfo', () => {
 })
 
 describe('displayDatasetInfo — "In the news"', () => {
-  const flush = async () => { for (let i = 0; i < 4; i++) await new Promise(r => setTimeout(r, 0)) }
+  // `displayDatasetInfo` renders the "In the news" slot synchronously and
+  // empty; `renderInTheNews` then either fills it (events) or removes it
+  // (none). Either outcome ends the wait, which keeps this weaker than
+  // every assertion below — including the removed-placeholder one.
+  const newsSettled = async (): Promise<void> =>
+    until(() => {
+      const slot = document.querySelector('.info-in-the-news-section')
+      return slot === null || slot.innerHTML !== ''
+    }, 'the In the news slot to be filled or removed')
   const NEWS_EVENT = {
     id: 'E1',
     title: 'Marine heatwave off the coast',
@@ -420,7 +438,7 @@ describe('displayDatasetInfo — "In the news"', () => {
   it('renders an "In the news" section when the dataset has approved events', async () => {
     stubFetchWithEvents([NEWS_EVENT])
     displayDatasetInfo(makeDataset({ id: 'ds-news' }), [], vi.fn())
-    await flush()
+    await newsSettled()
     const body = document.getElementById('info-body')!
     const section = body.querySelector('.info-in-the-news-section')
     expect(section).not.toBeNull()
@@ -432,14 +450,14 @@ describe('displayDatasetInfo — "In the news"', () => {
   it('removes the placeholder when the dataset has no events (graceful absence)', async () => {
     stubFetchWithEvents([])
     displayDatasetInfo(makeDataset({ id: 'ds-quiet' }), [], vi.fn())
-    await flush()
+    await newsSettled()
     expect(document.getElementById('info-body')!.querySelector('.info-in-the-news-section')).toBeNull()
   })
 
   it('renders a "View on globe" button when the event has a place/time', async () => {
     stubFetchWithEvents([NEWS_EVENT])
     displayDatasetInfo(makeDataset({ id: 'ds-news' }), [], vi.fn(), vi.fn())
-    await flush()
+    await newsSettled()
     const body = document.getElementById('info-body')!
     expect(body.querySelector('.info-news-locate')).not.toBeNull()
     // The out-of-range note ships hidden until a click reports it.
@@ -449,7 +467,7 @@ describe('displayDatasetInfo — "In the news"', () => {
   it('omits the button for an event with neither geometry nor time', async () => {
     stubFetchWithEvents([{ ...NEWS_EVENT, occurredStart: undefined, geometry: {} }])
     displayDatasetInfo(makeDataset({ id: 'ds-news' }), [], vi.fn(), vi.fn())
-    await flush()
+    await newsSettled()
     expect(document.getElementById('info-body')!.querySelector('.info-news-locate')).toBeNull()
   })
 
@@ -457,7 +475,7 @@ describe('displayDatasetInfo — "In the news"', () => {
     stubFetchWithEvents([NEWS_EVENT])
     const onNav = vi.fn(() => ({ navigated: true, time: 'seeked' as const }))
     displayDatasetInfo(makeDataset({ id: 'ds-news' }), [], vi.fn(), onNav)
-    await flush()
+    await newsSettled()
     ;(document.querySelector('.info-news-locate') as HTMLButtonElement).click()
     expect(onNav).toHaveBeenCalledTimes(1)
     expect(onNav).toHaveBeenCalledWith(expect.objectContaining({ id: 'E1' }))
@@ -467,7 +485,7 @@ describe('displayDatasetInfo — "In the news"', () => {
     stubFetchWithEvents([NEWS_EVENT])
     const onNav = vi.fn(() => ({ navigated: true, time: 'out-of-range' as const }))
     displayDatasetInfo(makeDataset({ id: 'ds-news' }), [], vi.fn(), onNav)
-    await flush()
+    await newsSettled()
     const btn = document.querySelector('.info-news-locate') as HTMLButtonElement
     const note = btn.parentElement!.querySelector('.info-news-note') as HTMLElement
     expect(note.hidden).toBe(true)
@@ -479,10 +497,133 @@ describe('displayDatasetInfo — "In the news"', () => {
     stubFetchWithEvents([NEWS_EVENT])
     const onNav = vi.fn(() => ({ navigated: true, time: 'seeked' as const }))
     displayDatasetInfo(makeDataset({ id: 'ds-news' }), [], vi.fn(), onNav)
-    await flush()
+    await newsSettled()
     const btn = document.querySelector('.info-news-locate') as HTMLButtonElement
     btn.click()
     const note = btn.parentElement!.querySelector('.info-news-note') as HTMLElement
     expect(note.hidden).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pickDirectFile — the single-file manifest seam
+// ---------------------------------------------------------------------------
+
+describe('pickDirectFile', () => {
+  it('finds the single entry a direct-MP4 manifest emits', () => {
+    // Exactly what `externalVideoManifest` in
+    // `functions/api/v1/datasets/[id]/manifest.ts` produces for a
+    // `url:<href>` or non-`.m3u8` `r2:<key>` reference: no `width`, and
+    // a `quality` that is neither of the Vimeo rungs. The previous
+    // selector required `f.width && f.link`, so this matched nothing
+    // and the load threw "No playable video source found" while
+    // holding a working URL.
+    const file = pickDirectFile([
+      { quality: 'source', size: 0, type: 'video/mp4', link: 'https://cdn.example/a.mp4' },
+    ])
+    expect(file?.link).toBe('https://cdn.example/a.mp4')
+  })
+
+  it('still prefers the 1080p rung when a Vimeo-shaped ladder is present', () => {
+    const file = pickDirectFile([
+      { quality: '360p', width: 640, size: 1, type: 'video/mp4', link: 'lo.mp4' },
+      { quality: '1080p', width: 1920, size: 3, type: 'video/mp4', link: 'hi.mp4' },
+      { quality: '720p', width: 1280, size: 2, type: 'video/mp4', link: 'mid.mp4' },
+    ])
+    expect(file?.link).toBe('hi.mp4')
+  })
+
+  it('falls to 720p when there is no 1080p', () => {
+    const file = pickDirectFile([
+      { quality: '360p', width: 640, size: 1, type: 'video/mp4', link: 'lo.mp4' },
+      { quality: '720p', width: 1280, size: 2, type: 'video/mp4', link: 'mid.mp4' },
+    ])
+    expect(file?.link).toBe('mid.mp4')
+  })
+
+  it('skips an entry with no link rather than returning it', () => {
+    // A linkless entry would reach `video.src = undefined` and fail as
+    // a media error, which reads as a device problem rather than a
+    // manifest one.
+    const file = pickDirectFile([
+      { quality: '1080p', width: 1920, size: 3, type: 'video/mp4', link: '' },
+      { quality: 'source', size: 0, type: 'video/mp4', link: 'only-real.mp4' },
+    ])
+    expect(file?.link).toBe('only-real.mp4')
+  })
+
+  it('returns undefined for an empty list so the caller can name the failure', () => {
+    expect(pickDirectFile([])).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// loadVideoDataset — failure cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * `hlsService` is handed to the caller only on success, so every throw
+ * before the return leaves it unreachable. Since the pipeline nudge, an
+ * unreachable one is also *playing*: it holds a decoder slot and a
+ * network fetch for the life of the window, after the operator has been
+ * shown a load failure.
+ */
+describe('loadVideoDataset — failure cleanup', () => {
+  afterEach(() => {
+    vi.resetModules()
+    vi.doUnmock('./hlsService')
+    vi.doUnmock('./downloadService')
+  })
+
+  async function loadAndCatch(): Promise<{ destroyed: number; err: unknown }> {
+    let destroyed = 0
+    // Before the mocks, not after: the static import at the top of this
+    // file already put the real module in the registry, so a dynamic
+    // import would hand back that copy with its real dependencies.
+    vi.resetModules()
+    vi.doMock('./hlsService', () => ({
+      HLSService: class {
+        hasAudio = false
+        createVideo() {
+          return document.createElement('video')
+        }
+        destroy() {
+          destroyed++
+        }
+      },
+    }))
+    // The earliest awaited call in the function, so the throw lands
+    // before any source exists — the case with the least to clean up
+    // and therefore the one most likely to be left uncleaned.
+    vi.doMock('./downloadService', () => ({
+      getDownload: () => Promise.reject(new Error('index unreadable')),
+      getDownloadPath: () => Promise.resolve(null),
+      isZipDownloadable: () => false,
+    }))
+    const { loadVideoDataset } = await import('./datasetLoader')
+    let err: unknown
+    try {
+      await loadVideoDataset(
+        makeDataset(),
+        {} as never,
+        {} as never,
+        false,
+        {} as never,
+        {} as never,
+      )
+    } catch (e) {
+      err = e
+    }
+    return { destroyed, err }
+  }
+
+  it('destroys the service it created when the load throws', async () => {
+    const { destroyed } = await loadAndCatch()
+    expect(destroyed).toBe(1)
+  })
+
+  it('still reports the failure to the caller', async () => {
+    const { err } = await loadAndCatch()
+    expect((err as Error).message).toBe('index unreadable')
   })
 })

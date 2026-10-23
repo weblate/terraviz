@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 import { describe, it, expect, vi } from 'vitest'
 import { renderEventQueue } from './event-queue'
 import type { ReviewEvent, ReviewLink } from './events-model'
@@ -24,6 +27,13 @@ describe('renderEventQueue', () => {
     // 3 links, but only 1 still awaits a decision.
     expect(nav.querySelector('.publisher-events-queue-sub')?.textContent).toContain('1')
     expect(nav.querySelector('.publisher-events-queue-sub')?.textContent).not.toContain('3')
+  })
+
+  it('names each row with the source it shows', () => {
+    const nav = renderEventQueue([event()], 'EVT1', { onSelect: vi.fn() })
+    const row = nav.querySelector('.publisher-events-queue-row')!
+    expect(row.getAttribute('aria-label')).toContain('NOAA')
+    expect(row.textContent).toContain('NOAA')
   })
 
   it('uses the supplied eyebrow label for the active filter', () => {

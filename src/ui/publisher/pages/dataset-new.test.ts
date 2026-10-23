@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderDatasetNewPage, dateTimeToIso } from './dataset-new'
 import { suggestedLicense } from '../components/dataset-form'
+import { until } from '../../../test-utils'
 
 function jsonResponse(body: unknown, status = 201): Response {
   return new Response(JSON.stringify(body), {
@@ -811,7 +815,9 @@ describe('renderDatasetNewPage', () => {
       configurable: true,
     })
     input.dispatchEvent(new Event('change', { bubbles: true }))
-    for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+    // Both requests, not just the draft-create POST. This is the exact
+    // race in #364: `calls[1]` was read while only `calls[0]` existed.
+    await until(() => fetchFn.mock.calls.length >= 2, 'the draft-create POST and the /asset mint')
 
     // First call is the draft-create POST…
     expect(fetchFn.mock.calls[0][0]).toBe('/api/v1/publish/datasets')

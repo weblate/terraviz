@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Scene manifest for the Weblate screenshot pipeline.
  *
@@ -28,9 +31,11 @@ import type { Page } from 'playwright'
 
 import { gotoApp } from './core/browser'
 import type { FixtureRule } from './core/fixtures'
+import type { ExpectedBadResponse } from './core/signals'
+import type { Box } from './core/types'
 import { analyticsFixtures, feedbackFixtures } from './fixtures/admin'
 import { catalogReportFixtures } from './fixtures/catalog'
-import { blogPublicFixtures, publisherFixtures } from './fixtures/publisher'
+import { blogPublicFixtures, publisherConflictFixtures, publisherFixtures } from './fixtures/publisher'
 
 export interface Scene {
   /** Stable id — used as the screenshot filename and Weblate name. */
@@ -93,6 +98,17 @@ export interface Scene {
    * is always local + stubbed).
    */
   requiresFixtures?: boolean
+  /**
+   * Bad responses this scene is *supposed* to provoke.
+   *
+   * A scene that exists to capture a failure surface stubs the failure
+   * deliberately, and the report would otherwise badge it forever —
+   * which is how a badge stops being read. Declaring the expectation
+   * keeps the badge meaningful and keeps the scene honest: a *different*
+   * endpoint failing, or the same one failing with a different code,
+   * still reports.
+   */
+  expectedBadResponses?: ExpectedBadResponse[]
 }
 
 /** Open the catalog landing surface (the Browse overlay). */
@@ -192,6 +208,56 @@ async function openDataEncodedDataset(page: Page): Promise<void> {
   // browse overlay up and no globe behind it.
   await card.locator('.browse-card-load').click()
   await page.locator('.panel-colorbar').first().waitFor({ state: 'visible' })
+}
+
+/**
+ * Pick a point on `canvas` at the given fractions, moved clear of a
+ * fixed overlay panel if it would otherwise land on it.
+ *
+ * Exported for tests: a click that lands on a panel instead of the map
+ * fails as a bare 30-second `waitFor` timeout on whatever the map was
+ * supposed to produce, which says nothing about the cause. That is not
+ * hypothetical — see `analyze-panel`, where it broke one viewport for
+ * a week and froze the whole repository's visual baseline.
+ *
+ * A point that would not land on the panel is returned untouched, so a
+ * layout the panel does not cover is unaffected pixel for pixel. Only
+ * one that would land on it takes `fy` of the clear strip above the
+ * panel instead. Only the strip *above* is used: these panels anchor
+ * to the bottom edge, so below is where there is nothing.
+ *
+ * "Would land on it" tests both axes. Testing x alone is not a
+ * conservative approximation of that — it moves points that share the
+ * panel's columns while sitting well above its top edge, which for a
+ * bottom-anchored panel is most of the canvas above it.
+ */
+export function pointClearOfPanel(
+  canvas: Box,
+  panel: Box | null,
+  fx: number,
+  fy: number,
+  minClear = 120,
+): { x: number; y: number } {
+  const x = canvas.x + canvas.width * fx
+  const y = canvas.y + canvas.height * fy
+  if (panel === null) return { x, y }
+
+  const onPanel =
+    x >= panel.x && x <= panel.x + panel.width &&
+    y >= panel.y && y <= panel.y + panel.height
+  if (!onPanel) return { x, y }
+
+  const clear = panel.y - canvas.y
+  if (clear < minClear) {
+    throw new Error(
+      `pointClearOfPanel: only ${Math.round(clear)}px of canvas is clear of the ` +
+        `panel (need ${minClear}px). The panel has grown or the viewport has ` +
+        'shrunk; give the scene its own geometry rather than widening this ' +
+        'threshold — a click that lands on the panel fails as an unrelated ' +
+        'timeout somewhere downstream.',
+    )
+  }
+  return { x, y: canvas.y + clear * fy }
 }
 
 export const scenes: Scene[] = [
@@ -365,6 +431,42 @@ export const scenes: Scene[] = [
   },
 
   {
+    name: 'orbit-disabled',
+    description:
+      'A node with Orbit turned off (Node profile → Features) — catalog with no Ask-Orbit button and no Orbit section in Tools',
+    // First match wins, so this rule overrides the all-enabled
+    // node-profile read in the catalog fixtures.
+    fixtures: [
+      { url: '/api/v1/node-profile', json: { profile: null, features: { orbit: false } } },
+      ...catalogReportFixtures(),
+    ],
+    requiresFixtures: true,
+    // Orbit-off renders no strings of its own; Weblate has nothing to gain.
+    skipWeblate: true,
+    // The same landing as `catalog-landing`, whose hero picks a
+    // different dataset on each capture.
+    masks: ['#hero-panel'],
+    async setup(page) {
+      await openCatalog(page)
+      // Set once boot has heard the node's answer and before the browse
+      // panel is shown. Assert the chrome is gone, so a regression that
+      // brings Orbit back fails the capture rather than diffing quietly.
+      // (The floating trigger is not checked: a catalog boot with no
+      // dataset never shows it, Orbit on or off.)
+      await page.locator('body.orbit-disabled').waitFor({ state: 'attached' })
+      await page.locator('#browse-chat-btn').waitFor({ state: 'hidden' })
+      // Catalog mode has no Tools toggle to open, and a section inside a
+      // closed popover reads hidden either way — so ask for the
+      // section's own computed display, which only the Orbit-off rule
+      // sets to none.
+      await page.waitForFunction(() => {
+        const section = document.querySelector('.tools-menu-section-orbit')
+        return !!section && getComputedStyle(section).display === 'none'
+      })
+    },
+  },
+
+  {
     name: 'colorbar-controls',
     description:
       'Colour & range controls for a data-encoded dataset — palette swatches, contrast stretch, and the value threshold, opened from the floating colorbar',
@@ -425,8 +527,33 @@ export const scenes: Scene[] = [
       const globe = page.locator('.map-viewport canvas').first()
       const box = await globe.boundingBox()
       if (!box) throw new Error('analyze-panel: no globe canvas to click')
-      await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.38)
-      await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.56)
+
+      // The panel is `position: fixed` *over* the globe, so a point
+      // chosen as a fraction of the canvas can land on the panel rather
+      // than the map — and then the map never sees the click, no
+      // endpoint is set, and the wait below times out 30 s later saying
+      // only that `.analyze-transect` never appeared.
+      //
+      // That is not hypothetical: it is why this scene failed at the
+      // mobile viewport on every run from at least 2026-08-30. At
+      // ≤600px `analyze.css` swaps the panel to `inset-inline`, so it
+      // spans the full width instead of sitting in the bottom-right
+      // corner, and at its `max-block-size` of 34rem it covers y≈284
+      // to 828 of an 844px-tall viewport. Both old points (38% and 56%
+      // of the canvas) sat inside that. On desktop the same points are
+      // far to the *left* of a 352px-wide panel, which is why only one
+      // viewport ever broke — and why a hardcoded pair of fractions is
+      // the wrong shape for this: it encodes one viewport's layout.
+      //
+      // So derive the points from where the panel actually is. A point
+      // that would not land on the panel keeps its original position
+      // (desktop is unchanged, pixel for pixel); one that would land on
+      // it is placed in the clear strip above it instead.
+      const panel = await page.locator('.analyze-panel').boundingBox()
+      const a = pointClearOfPanel(box, panel, 0.4, 0.38)
+      const b = pointClearOfPanel(box, panel, 0.6, 0.56)
+      await page.mouse.click(a.x, a.y)
+      await page.mouse.click(b.x, b.y)
       await page.locator('.analyze-transect').waitFor({ state: 'visible' })
     },
   },
@@ -538,6 +665,36 @@ export const scenes: Scene[] = [
     },
   },
   {
+    name: 'publish-dataset-conflict',
+    description: 'Publisher dataset save conflict with a visible, focused validation summary',
+    fixtures: publisherConflictFixtures(),
+    expectedBadResponses: [{ url: /\/api\/v1\/publish\/datasets(?:\?|$)/, status: 409 }],
+    async setup(page) {
+      await openPublish(page, '/publish/datasets/new')
+      await page.locator('#dataset-title').fill('Unsaved ocean observations')
+      await page.locator('#dataset-title').blur()
+      await page.locator('.publisher-form-nav-link[data-section="ds-section-timespace"]').click()
+      await page.locator('.publisher-dataset-form-header-actions .publisher-button-primary').click()
+      await page.locator('.publisher-form-error-summary').waitFor({ state: 'visible' })
+    },
+  },
+  {
+    name: 'publish-dataset-data-encoded',
+    description:
+      'Publisher portal — new-dataset form, Media step: the data-encoded toggle and its colour-scale sidecar field',
+    fixtures: publisherFixtures(),
+    async setup(page) {
+      await openPublish(page, '/publish/datasets/new')
+      // The form is a stepper; the encoding controls live on the Media
+      // step, above the upload control.
+      await page.locator('.publisher-form-nav-link[data-section="ds-section-media"]').click()
+      await page.locator('#dataset-data-encoded').check()
+      // The sidecar field only exists once the mode is on, so wait for
+      // it rather than capturing the frame before it mounts.
+      await page.locator('#dataset-color-scale').waitFor({ state: 'visible' })
+    },
+  },
+  {
     name: 'publish-dataset-edit-thumbnail',
     description:
       'Publisher portal — dataset edit, globe-thumbnail generator: a rendered preview with longitude/latitude rotation sliders',
@@ -632,12 +789,35 @@ export const scenes: Scene[] = [
   },
   {
     name: 'publish-node-profile',
-    description: 'Publisher portal — node / host-organization profile form + the admin Features toggles card (Phase 3d)',
+    description:
+      'Publisher portal — node / host-organization profile form, the admin Features toggles card (Phase 3d) and the Embedding card (who may frame the public app)',
     fixtures: publisherFixtures({ admin: true }),
     async setup(page) {
+      // The Embedding card reads the node's own headers with `HEAD /`.
+      // The dev server sends none, so answer it with the policy the
+      // fixture saved: the capture then shows the readout's settled
+      // state rather than whatever the dev server happens to send.
+      await page.route(
+        url => url.pathname === '/',
+        async route => {
+          if (route.request().method() !== 'HEAD') return route.fallback()
+          await route.fulfill({
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html',
+              'Content-Security-Policy':
+                "frame-ancestors 'self' https://www.coastal.example.org https://coastal.example.org",
+            },
+          })
+        },
+      )
       await openPublish(page, '/publish/node-profile')
       await page.locator('#nodeprofile-org').waitFor()
       await page.locator('.publisher-nodeprofile-feature-toggle').first().waitFor()
+      await page.locator('.publisher-nodeprofile-embed-input').first().waitFor()
+      // The readout is filled after a HEAD of `/`; wait for it so the
+      // capture does not race a half-drawn card.
+      await page.locator('.publisher-nodeprofile-embed-finding').first().waitFor()
     },
   },
   {
@@ -746,6 +926,12 @@ export const scenes: Scene[] = [
     description: 'Publisher portal — datasets list, server-error card',
     fixtures: publisherFixtures({ datasets: 'error' }),
     requiresFixtures: true,
+    // The 500 *is* the scene: the fixture stubs it so the page renders
+    // its error card. Anchored rather than a bare substring, because
+    // `/publish/datasets/<id>` is a real route here (the fixtures stub
+    // it too) and a plain `includes` would suppress its failures as
+    // well — the opposite of what declaring an expectation is for.
+    expectedBadResponses: [{ url: /\/api\/v1\/publish\/datasets(\?|$)/, status: 500 }],
     async setup(page) {
       await openPublish(page, '/publish/datasets')
       await page.locator('.publisher-error').first().waitFor()

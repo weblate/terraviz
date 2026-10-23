@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * A lightweight MapLibre **locator** for the Events detail pane
  * (`docs/events-tab-handoff/EVENTS_TAB_IMPLEMENTATION_BRIEF.md` §7). It
@@ -48,8 +51,10 @@ export function mountEventLocator(slot: HTMLElement, point: { lat: number; lon: 
   // Lazy-import the JS *and* the stylesheet together (Vite injects the
   // CSS on dynamic import), so neither lands in the eager publisher chunk
   // even though this module is imported eagerly by events.ts.
-  void Promise.all([import('maplibre-gl'), import('maplibre-gl/dist/maplibre-gl.css')])
-    .then(([{ default: maplibregl }]) => {
+  void Promise.all([import('../../../../utils/maplibre'), import('maplibre-gl/dist/maplibre-gl.css')])
+    // The namespace, not `.default`: MapLibre 6 is ESM-only and exports no
+    // default. Through `utils/maplibre`, which names the bundled worker.
+    .then(([maplibregl]) => {
       if (disposed) return
       const canvas = document.createElement('div')
       canvas.className = 'publisher-events-locator-canvas'

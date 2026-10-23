@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * /api/v1/publish/node-identity — read / provision this node's identity.
  *
@@ -101,7 +104,7 @@ export const onRequestPut: PagesFunction<CatalogEnv> = async context => {
 
   function optionalString(field: string): string | null | undefined {
     const v = b[field]
-    if (v === undefined || v === null) return null
+    if (v === undefined || v === null) return v
     if (typeof v !== 'string') {
       errors.push({ field, code: 'type', message: `${field} must be a string.` })
       return undefined
@@ -173,8 +176,8 @@ export const onRequestPut: PagesFunction<CatalogEnv> = async context => {
   const input: NodeIdentityInput = {
     display_name,
     base_url,
-    description: description ?? null,
-    contact_email: contact_email ?? null,
+    description,
+    contact_email,
     public_key,
   }
   const identity = await upsertNodeIdentity(context.env.CATALOG_DB!, input)

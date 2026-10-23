@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Earth tile layer — Day/night, clouds, and specular effects for MapLibre globe.
  *
@@ -1294,6 +1297,17 @@ export interface EarthTileLayerControl {
   setDatasetVideo(video: HTMLVideoElement, options?: DatasetOverlayOptions): void
   /** Force a one-shot video texture re-upload (e.g. after scrubbing while paused). */
   requestVideoUpdate(): void
+  /**
+   * Playhead position of the frame currently *in the dataset texture*,
+   * or `null` when no video frame has been uploaded.
+   *
+   * The only honest answer to "what is this globe showing". A video
+   * element's `currentTime` describes the element, not the texture, and
+   * the two come apart whenever an upload is skipped — a frameless
+   * element mid-seek, or a repaint that never ran. Recorded at the
+   * upload rather than read from the element for exactly that reason.
+   */
+  getUploadedFrameTime(): number | null
   /** Apply a palette / stretch / threshold transform to the current
    *  data-encoded dataset. Rebuilds the 256x1 LUT only — the dataset
    *  texture is untouched, so this is one upload and costs nothing per
@@ -1353,6 +1367,9 @@ export function createEarthTileLayer(): EarthTileLayerControl {
    *  do. `docs/DATA_ANALYSIS_PLAN.md` §A1. */
   let datasetDisplay: ColorScaleDisplay = DEFAULT_DISPLAY
   let forceVideoUpdate = false
+  /** Playhead of the frame last handed to `texImage2D` — see
+   *  `getUploadedFrameTime`. Null until the first video upload. */
+  let uploadedFrameTime: number | null = null
   let transmittanceLutTex: WebGLTexture | null = null
   let skyboxProg: WebGLProgram | null = null
   let skyboxInvProjLoc: WebGLUniformLocation | null = null
@@ -1842,13 +1859,37 @@ export function createEarthTileLayer(): EarthTileLayerControl {
 
       // --- Dataset overlay: opaque textured sphere (replaces earth effects) ---
       if (datasetActive && dataset && datasetTex) {
+        // A playing video keeps its own panel animating: each render
+        // schedules the next one. The repaint *is* the loop, so it has to
+        // run whether or not there is a frame to upload this time.
+        //
+        // It used to sit inside the upload branch below, which meant a
+        // render landing while `readyState` was under HAVE_CURRENT_DATA
+        // scheduled nothing and killed the chain. A seek is exactly that
+        // window — the element drops to HAVE_METADATA for a second or
+        // two while it re-buffers — so after a scrub a non-primary panel
+        // would keep playing with nothing drawing it, frozen on its last
+        // uploaded frame until some unrelated repaint (a globe drag, a
+        // layout change) happened to restart it.
+        //
+        // The primary never showed this because `startPlaybackLoop`
+        // repaints it every frame from the rAF loop — but that heartbeat
+        // is `this.renderer`, the primary's map alone. Siblings have
+        // only this line.
+        if (datasetVideo && !datasetVideo.paused) mapRef?.triggerRepaint()
+
         // For video datasets, re-upload the current frame every render.
         // Also re-upload on forceVideoUpdate (scrubbing while paused).
+        // Still gated on having data: a frameless element has nothing to
+        // hand `texImage2D`, and holding the last good frame is right.
         if (datasetVideo && datasetVideo.readyState >= 2 && (!datasetVideo.paused || forceVideoUpdate)) {
           gl2.bindTexture(gl2.TEXTURE_2D, datasetTex)
           gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, datasetVideo)
+          // The texture now holds this frame. Recorded here and nowhere
+          // else, so the value can never claim an upload that did not
+          // happen.
+          uploadedFrameTime = datasetVideo.currentTime
           forceVideoUpdate = false
-          if (!datasetVideo.paused) mapRef?.triggerRepaint()
         }
 
         // A data-encoded dataset is the one case with a real alpha
@@ -2201,8 +2242,15 @@ export function createEarthTileLayer(): EarthTileLayerControl {
 
       const canvas = mapRef.getCanvas()
       const aspect = canvas.width / canvas.height
-      const fov = ((mapRef as any).transform?._fov ?? 0.6435) as number
-      gl2.uniform2f(skyboxAspectFovLoc, aspect, fov)
+      // The render args carry the vertical FOV in radians, which is what
+      // `uAspectFov` wants. This used to read `transform._fov` behind an
+      // `as any` with a 0.6435 fallback — but MapLibre's transform has no
+      // `_fov`, only `_fovInRadians`, so that access resolved to
+      // `undefined` on every frame and the skybox always drew at the
+      // fallback. It matched only because 0.6435 rad is 36.87°, the
+      // default; the moment anything called `setVerticalFieldOfView` the
+      // stars would have stopped agreeing with the globe in front of them.
+      gl2.uniform2f(skyboxAspectFovLoc, aspect, args.fov)
 
       const center = mapRef.getCenter()
       const bearing = mapRef.getBearing() * Math.PI / 180
@@ -2352,6 +2400,7 @@ export function createEarthTileLayer(): EarthTileLayerControl {
     ) {
       if (!glRef) return
       datasetVideo = null // clear any previous video
+      uploadedFrameTime = null
       if (!datasetTex) {
         datasetTex = glRef.createTexture()
       }
@@ -2380,6 +2429,8 @@ export function createEarthTileLayer(): EarthTileLayerControl {
     setDatasetVideo(video: HTMLVideoElement, options?: DatasetOverlayOptions) {
       if (!glRef) return
       datasetVideo = video
+      // A new video means the recorded frame belongs to the old one.
+      uploadedFrameTime = null
       if (!datasetTex) {
         datasetTex = glRef.createTexture()
       }
@@ -2406,6 +2457,9 @@ export function createEarthTileLayer(): EarthTileLayerControl {
         mapRef?.triggerRepaint()
       }
     },
+    getUploadedFrameTime() {
+      return datasetVideo ? uploadedFrameTime : null
+    },
     setColorScaleDisplay(display: ColorScaleDisplay) {
       datasetDisplay = display
       // Only the LUT is rebuilt. The dataset texture is not re-uploaded
@@ -2418,6 +2472,7 @@ export function createEarthTileLayer(): EarthTileLayerControl {
     clearDatasetTexture() {
       datasetActive = false
       datasetVideo = null
+      uploadedFrameTime = null
       datasetOptions = null
       // Drop the palette with the dataset, so the next one can't
       // inherit it and render its values through a stranger's ramp.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Wire-level tests for the public GET /api/v1/node-profile — the lean
  * host-organization identity read (org name + logo URL) the public
@@ -127,5 +130,16 @@ describe('GET /api/v1/node-profile', () => {
     const payload = await readJson(res)
     expect(payload.profile?.orgName).toBe('The Zyra Project')
     expect(payload.features).toEqual(defaultFeatures())
+  })
+
+  it('never caches features it had to assume', async () => {
+    // The SPA decides whether to offer Orbit from this payload, so a
+    // guess cached for the TTL would outlive the failure behind it.
+    const { env, sqlite } = setupEnv()
+    insertProfile(sqlite)
+    sqlite.prepare('DROP TABLE node_settings').run()
+    const res = await onRequestGet(ctx(env))
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    expect((env.CATALOG_KV as ReturnType<typeof makeKV>)._store.size).toBe(0)
   })
 })

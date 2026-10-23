@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * The handoff report — every value the operator has to put somewhere
  * this tool cannot reach.
@@ -92,8 +95,23 @@ export function buildHandoff(state: SetupState, opts: HandoffOptions = {}): Hand
             'project they must be exported in your CI job instead — setting ' +
             'them in the dashboard would have no effect.',
     items: [
-      { name: 'VITE_BUILD_CHANNEL', status: 'todo', value: 'public' },
-      { name: 'VITE_TELEMETRY_ENABLED', status: 'todo', value: 'true' },
+      // Both already resolve to these values with nothing set:
+      // `resolveBuildChannel` returns 'public' for anything that is
+      // not 'internal' or 'canary', and TELEMETRY_BUILD_ENABLED is
+      // `!== 'false'`. Printing them as work to do sends an operator
+      // to a dashboard to type in the default. Still named, so the
+      // list stays complete, carrying the value that would change
+      // something rather than the one that would not.
+      {
+        name: 'VITE_BUILD_CHANNEL',
+        status: 'optional',
+        why: 'already public; set it only for an internal or canary build',
+      },
+      {
+        name: 'VITE_TELEMETRY_ENABLED',
+        status: 'optional',
+        why: 'already on; false is the only value that changes anything',
+      },
       {
         name: 'VITE_API_ORIGIN',
         status: site ? 'todo' : 'optional',
@@ -103,8 +121,8 @@ export function buildHandoff(state: SetupState, opts: HandoffOptions = {}): Hand
       {
         name: 'VITE_EARTH_ASSET_BASE',
         status: 'optional',
-        source: 'your own CDN, after mirroring the Earth basemap textures',
-        why: 'left unset, every page load pulls basemaps from upstream',
+        source: 'nothing — the Earth textures ship in your own build',
+        why: 'set it only to serve them from a CDN instead',
       },
     ],
   })

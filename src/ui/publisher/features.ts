@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Portal-side helpers for the per-node feature toggles
  * (`src/types/node-features.ts`).
@@ -99,6 +102,8 @@ export function featureLabel(feature: FeatureKey): string {
       return t('publisher.feature.feedback')
     case 'datasets':
       return t('publisher.feature.datasets')
+    case 'orbit':
+      return t('publisher.feature.orbit')
   }
 }
 

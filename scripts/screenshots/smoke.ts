@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Smoke / interaction tests (Phase V8).
  *
@@ -27,7 +30,7 @@ import { gotoApp, launchBrowser, withScenePage } from './core/browser'
 import { installFixtures, type FixtureRule } from './core/fixtures'
 import { attachSignalCollectors } from './core/signals'
 import { catalogFixtures } from './fixtures/catalog'
-import { blogPublicFixtures, publisherFixtures } from './fixtures/publisher'
+import { blogPublicFixtures, publisherConflictFixtures, publisherFixtures } from './fixtures/publisher'
 
 const BASE_URL = process.env.SCREENSHOT_BASE_URL ?? 'http://localhost:4173'
 const VIEWPORT = { width: 1440, height: 900 }
@@ -115,6 +118,33 @@ const checks: Check[] = [
     },
   },
   {
+    name: 'a node with Orbit turned off offers no Orbit',
+    fixtures: [
+      { url: '/api/v1/node-profile', json: { profile: null, features: { orbit: false } } },
+      ...catalogFixtures(),
+    ],
+    async run(page) {
+      // `?labels=on` is the anchor: the poster deep links click it and
+      // then handle `?orbit=open` in the same synchronous pass, so once
+      // labels read pressed, the request to open Orbit has been made.
+      await gotoApp(page, '/?catalog=true&labels=on&orbit=open')
+      await page.locator('#browse-overlay').waitFor({ state: 'visible' })
+      await page.locator('body.orbit-disabled').waitFor({ state: 'attached' })
+      await page.locator('#tools-menu-labels[aria-pressed="true"]').waitFor({ state: 'attached' })
+      assert(!(await page.locator('#chat-panel').isVisible()), '?orbit=open must not open Orbit on a node that turned it off')
+      assert(!(await page.locator('#browse-chat-btn').isVisible()), 'browse must not offer the Ask-Orbit button')
+
+      // A search with no results offers no "ask Orbit" hint at all —
+      // not one that is merely hidden.
+      await page.locator('#browse-search').fill('zzzz no such dataset')
+      await page.locator('#browse-grid .browse-no-results').waitFor()
+      assert(
+        (await page.locator('.browse-docent-hint').count()) === 0,
+        'an empty search must not render the Orbit hint',
+      )
+    },
+  },
+  {
     name: 'view-mode navigation mounts each surface',
     async run(page) {
       await gotoApp(page, '/?catalog=true')
@@ -136,15 +166,41 @@ const checks: Check[] = [
       // Baseline: this chrome is genuinely visible on a bare globe, so
       // asserting embed mode hides it is a real gate (not a no-op that
       // passes because the element was hidden for some other reason).
+      //
+      // **The globe has to actually be bare for that to hold.** The
+      // browse overlay auto-opens on a fresh launch, and
+      // `body.browse-open` hides `#help-trigger` outright — correctly,
+      // since the overlay carries its own (`#help-trigger-browse`). So
+      // the overlay is closed first. Before `gotoApp` waited out the
+      // boot splash this passed anyway, by reading a frame from
+      // *during* boot in which the overlay had not opened yet: a
+      // state no user ever sees, asserted as the baseline for
+      // everything below.
       await gotoApp(page, '/')
+      await page.locator('#browse-close').click()
+      await page.locator('body:not(.browse-open)').waitFor()
       for (const id of ['#map-controls', '#help-trigger']) {
         await page.locator(id).waitFor({ state: 'visible' })
       }
       // Embed mode hides it.
       await gotoApp(page, '/?embed=1')
       await page.locator('body.embed-mode').waitFor()
-      for (const id of ['#map-controls', '#help-trigger']) {
-        assert(!(await page.locator(id).isVisible()), `embed mode should hide ${id}`)
+      // The overlay auto-opens here too, so `body.browse-open` is set
+      // and hides both of these *on its own* — this assertion would
+      // pass with every embed rule deleted, which is the vacuous gate
+      // the baseline above exists to rule out. Drop that one class and
+      // re-read, leaving `embed-mode` as the only cause left standing.
+      // Same technique as the chat-trigger check below, for the same
+      // reason: assert the rule, not a state several rules can produce.
+      const hiddenByEmbedAlone = await page.evaluate(() =>
+        ['#map-controls', '#help-trigger'].map(sel => {
+          document.body.classList.remove('browse-open')
+          const el = document.querySelector(sel)
+          return el ? getComputedStyle(el).display === 'none' : false
+        }),
+      )
+      for (const [i, id] of ['#map-controls', '#help-trigger'].entries()) {
+        assert(hiddenByEmbedAlone[i], `embed mode should hide ${id} on its own`)
       }
       // The ?chat=1 sub-flag (body.embed-show-chat) must stop embed.css from
       // hiding the Orbit chat trigger. The app only adds `.visible` to the
@@ -190,6 +246,57 @@ const checks: Check[] = [
       await page.locator('#browse-view-mode [data-view-mode="timeline"]').click()
       await page.locator('#browse-timeline:not(.hidden)').waitFor()
       await page.locator('.browse-timeline-legend-dot-event').first().waitFor({ timeout: 30_000 })
+    },
+  },
+  {
+    name: 'publisher conflicts stay visible without losing draft edits',
+    fixtures: publisherConflictFixtures(),
+    async run(page) {
+      await gotoApp(page, '/publish/datasets/new')
+      await page.locator('#dataset-title').fill('Unsaved ocean observations')
+      await page.locator('#dataset-title').blur()
+      await page.locator('.publisher-form-nav-link[data-section="ds-section-timespace"]').click()
+      await page.locator('.publisher-dataset-form-header-actions .publisher-button-primary').click()
+      const summary = page.locator('.publisher-form-error-summary')
+      await summary.waitFor({ state: 'visible' })
+      assert((await summary.textContent())?.includes('Reload and retry.'), 'conflict message must be visible')
+      assert(await summary.evaluate(node => document.activeElement === node), 'error summary must receive focus')
+      assert(await page.locator('[aria-current="step"]').getAttribute('data-section') === 'ds-section-timespace', 'unknown errors must not move the stepper')
+      assert(await page.locator('#dataset-title').inputValue() === 'Unsaved ocean observations', 'unsaved edits must survive a conflict')
+    },
+  },
+  {
+    name: 'publisher data-encoded controls gate the upload',
+    fixtures: publisherFixtures({ admin: true }),
+    async run(page) {
+      await gotoApp(page, '/publish/datasets/new')
+      await page.locator('#publisher-root .publisher-sidebar').waitFor({ state: 'visible' })
+      await page
+        .locator('.publisher-form-nav-link[data-section="ds-section-media"]')
+        .click()
+      // Off by default, and the sidecar field does not exist yet.
+      const scale = page.locator('#dataset-color-scale')
+      await page.locator('#dataset-data-encoded').waitFor({ state: 'visible' })
+      if (await scale.count()) throw new Error('colour-scale field shown before the mode was enabled')
+      await page.locator('#dataset-data-encoded').check()
+      await scale.waitFor({ state: 'visible' })
+      // The interaction that actually matters: with the mode on and no
+      // readable sidecar, the uploader must not be mounted. Bytes
+      // uploaded here would transcode as a picture and lose the values
+      // the row would then claim to carry.
+      if (await page.locator('.publisher-form-data-upload .publisher-asset-uploader').count()) {
+        throw new Error('asset uploader mounted while the colour scale was missing')
+      }
+      await scale.fill(JSON.stringify({
+        stops: [{ t: 0, rgba: [0, 0, 0, 0] }, { t: 1, rgba: [255, 255, 255, 255] }],
+        vmin: -35, vmax: 78.025, units: 'dBZ', dataMinLuma: 8,
+      }))
+      // `fill()` emits `input` but does not blur, and the form
+      // reconciles the upload gate on `change` — re-rendering per
+      // keystroke would move focus out of the field mid-paste. Blur
+      // explicitly, which is what a publisher leaving the field does.
+      await scale.blur()
+      await page.locator('.publisher-form-data-upload .publisher-asset-uploader').waitFor({ state: 'visible', timeout: 15_000 })
     },
   },
   {
@@ -245,6 +352,16 @@ const checks: Check[] = [
       // The status filter row lets a curator reach reviewed events.
       const filters = page.locator('.publisher-events-filters button')
       assert((await filters.count()) >= 5, 'queue header should expose the status filter (incl. All)')
+      // Search narrows the loaded queue client-side and the count says
+      // so; Clear brings the whole bucket back.
+      await page.locator('.publisher-events-query-input').fill('hurricane')
+      await page.locator('.publisher-events-query-count', { hasText: '1 of 2' }).waitFor({ timeout: 5_000 })
+      assert(
+        (await page.locator('.publisher-events-queue-row').count()) === 1,
+        'search should narrow the queue to the one matching event',
+      )
+      await page.locator('.publisher-events-query-clear').click()
+      await page.locator('.publisher-events-query-count', { hasText: '2 events' }).waitFor({ timeout: 5_000 })
       // The authoring toolbar exposes Refresh + New event; clicking New
       // opens the Direction-D drawer (compose + search/pair datasets).
       const toolbarButtons = page.locator('.publisher-events-toolbar button')
@@ -270,6 +387,32 @@ const checks: Check[] = [
         (await page.locator('.publisher-nodeprofile-link-row').count()) >= 1,
         'stored links should render as editable rows',
       )
+    },
+  },
+  {
+    name: 'publisher Embedding card: the list posture edits sites and refuses a bad one inline',
+    fixtures: publisherFixtures({ admin: true }),
+    async run(page) {
+      await gotoApp(page, '/publish/node-profile')
+      const card = page.locator('.publisher-nodeprofile-embedding')
+      await card.waitFor({ timeout: 15_000 })
+      const inputs = card.locator('.publisher-nodeprofile-embed-input')
+      assert((await inputs.count()) === 2, 'the stored list should pre-fill one row per site')
+      assert(
+        await card.locator('input[type="radio"][value="list"]').isChecked(),
+        'the stored posture should be selected',
+      )
+      // A bad site is refused inline before any request.
+      await inputs.nth(1).fill('http://coastal.example.org/')
+      await card.getByRole('button', { name: 'Save embedding' }).click()
+      await card.locator('.publisher-nodeprofile-embed-error:not([hidden])').first().waitFor({ timeout: 5_000 })
+      assert(
+        (await inputs.nth(1).getAttribute('aria-invalid')) === 'true',
+        'the refused row should be marked invalid',
+      )
+      // Choosing "No other site" hides the list.
+      await card.locator('input[type="radio"][value="self"]').check()
+      await card.locator('.publisher-nodeprofile-embed-origins').waitFor({ state: 'hidden', timeout: 5_000 })
     },
   },
   {
@@ -343,6 +486,13 @@ const checks: Check[] = [
         (await page.locator('.publisher-feeds-preview-item').count()) >= 3,
         'the feed preview should list the fixture items',
       )
+      // The admin-only re-score card is present and enabled. It is the
+      // only way an operator recovers scores after a scoring change,
+      // so its absence from this page is a regression worth catching
+      // here rather than the next time the matcher changes.
+      const rematch = page.locator('#feeds-rematch-run')
+      await rematch.waitFor({ timeout: 5_000 })
+      assert(await rematch.isEnabled(), 'the re-score button should start enabled')
     },
   },
   {

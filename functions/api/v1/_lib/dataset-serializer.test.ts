@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Tests for the catalog wire-shape serializer.
  *
@@ -61,6 +64,11 @@ function fakeRow(overrides: Partial<DatasetRow> = {}): DatasetRow {
     bbox_s: null,
     bbox_w: null,
     bbox_e: null,
+    bbox_provenance: 'unknown',
+    bbox_evidence: null,
+    temporal_semantics: 'unknown',
+    temporal_evidence: null,
+    resource_kind: 'unknown',
     celestial_body: null,
     radius_mi: null,
     lon_origin: null,
@@ -314,6 +322,24 @@ describe('serializeDataset — Phase 3d columns (non-global metadata)', () => {
     expect(zero.isFlippedInY).toBeUndefined()
     const nullCase = serializeDataset(fakeRow({}), emptyDecoration, fakeIdentity)
     expect(nullCase.isFlippedInY).toBeUndefined()
+  })
+
+  it('serves playback_fps, which the tour frame-rate maths divides by', () => {
+    // The column existed for a while without being served, so a tour
+    // asking for a rate on a slow dataset divided by 30 and came out
+    // wrong by the ratio between the two. Nothing on the client can
+    // recover a field the wire never carries.
+    const wire = serializeDataset(
+      fakeRow({ playback_fps: 2 }),
+      emptyDecoration,
+      fakeIdentity,
+    )
+    expect(wire.playbackFps).toBe(2)
+  })
+
+  it('omits playbackFps when the column is null (30 is the default)', () => {
+    const wire = serializeDataset(fakeRow({}), emptyDecoration, fakeIdentity)
+    expect(wire.playbackFps).toBeUndefined()
   })
 })
 

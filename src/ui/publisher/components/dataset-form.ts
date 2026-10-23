@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Shared dataset create / edit form.
  *
@@ -19,7 +22,7 @@
  * save redirect differ.
  */
 
-import { t, type MessageKey } from '../../../i18n'
+import { interpolate, t, type MessageKey } from '../../../i18n'
 import {
   clearWarmupFlag,
   handleSessionError,
@@ -38,6 +41,7 @@ import { renderMarkdown } from '../../../services/markdownRenderer'
 import type { PublisherDatasetDetail } from '../types'
 import type { DatasetOverlayOptions } from '../../../types'
 import { parseColorScale, RENDER_ENCODING_DATA_LUMA } from '../../../types/color-scale'
+import { toDisplayUnits } from '../../../types/unit-scale'
 import { ROUTE_CHANGE_START_EVENT } from '../router'
 
 export type DatasetFormMode = 'create' | 'edit'
@@ -104,6 +108,39 @@ interface FormState {
    *  the manual input is the create-mode + external fallback. */
   thumbnailRef: string
   legendRef: string
+  /**
+   * Whether this dataset's video encodes *data* rather than a picture —
+   * luma is the normalised value, and `colorScale` says how to read it
+   * back (`src/types/color-scale.ts`).
+   *
+   * A boolean rather than the raw `render_encoding` string because the
+   * server accepts exactly one value, `data-luma`, and rejects anything
+   * else; a text input could only ever produce typos.
+   *
+   * This must be set **before** the video transcodes. `transcode-from
+   * -dispatch` reads `render_encoding` off the row to choose the
+   * rendition ladder and a nearest-neighbour scaler; a picture-mode
+   * transcode uses bicubic, which interpolates across the nodata
+   * boundary and invents values that were never measured. Ticking the
+   * box afterwards relabels the row without re-encoding the bytes.
+   */
+  dataEncoded: boolean
+  /** What the row said when the form loaded. Distinguishes "never was
+   *  data-encoded" from "was, and the user just turned it off" — only
+   *  the second needs an explicit null on the wire to clear the
+   *  columns, and sending one on every create would put a pair of
+   *  nulls in the body of every picture dataset ever published. */
+  dataEncodedWasSet: boolean
+  /** The sidecar as the row last had it. Paired with
+   *  `dataEncodedWasSet` to tell "the form differs from the row" from
+   *  "the form differs from its defaults" — only the first blocks an
+   *  edit-mode upload. */
+  savedColorScale: string
+  /** The `color_scale` JSON sidecar, held as text so an invalid paste
+   *  is still visible and editable rather than being silently dropped.
+   *  Validated through `parseColorScale` — the same fail-closed parser
+   *  the server and the renderer use. */
+  colorScale: string
   /** Resolved public URL of the dataset's own data (edit mode), used
    *  as the globe-thumbnail generator's auto source for image
    *  datasets. Empty when absent / unresolvable. */
@@ -290,18 +327,21 @@ const FORM_SECTIONS: ReadonlyArray<{
 /** Map a server validation-error field to the section that holds it,
  *  so a failed save can jump the stepper to the offending field
  *  (otherwise an error in a hidden section is invisible). */
-function sectionForField(field: string): string {
+function sectionForField(field: string): string | null {
   if (field === 'abstract') return 'ds-section-abstract'
-  if (field === 'thumbnail_ref' || field === 'legend_ref') return 'ds-section-media'
+  if (field === 'thumbnail_ref' || field === 'legend_ref'
+      || field === 'render_encoding' || field === 'color_scale') {
+    return 'ds-section-media'
+  }
   if (field.startsWith('license') || field === 'attribution_text' || field === 'rights_holder' || field === 'doi' || field === 'citation_text') {
     return 'ds-section-licensing'
   }
-  if (field === 'start_time' || field === 'end_time' || field === 'period' || field.startsWith('bounding_box') || field === 'lon_origin' || field === 'celestial_body' || field === 'radius_mi') {
+  if (field === 'start_time' || field === 'end_time' || field === 'period' || field.startsWith('bounding_box') || field === 'lon_origin' || field === 'celestial_body' || field === 'radius_mi' || field === 'playback_fps') {
     return 'ds-section-timespace'
   }
   if (field === 'keywords' || field === 'tags') return 'ds-section-categorization'
-  // title / slug / format / visibility / data_ref / organization.
-  return 'ds-section-identity'
+  if (['title', 'slug', 'format', 'visibility', 'data_ref', 'organization'].includes(field)) return 'ds-section-identity'
+  return null
 }
 
 /** Left-rail section nav. The form is a stepper — clicking a section
@@ -1476,6 +1516,9 @@ interface RenderContext {
     disposed: boolean
     uploader?: HTMLElement
     uploaderFormat?: string
+    /** Data-encoding flag the cached uploader was built with — part
+     *  of the cache key for the reason `uploaderFormat` is. */
+    uploaderDataEncoded?: boolean
     /** Cached auxiliary-asset uploader subtrees (thumbnail /
      *  legend), preserved across parent re-renders so an in-flight
      *  image upload isn't torn down when an unrelated field change
@@ -1687,6 +1730,178 @@ function thumbnailDataSourceUrl(state: FormState): string | null {
 }
 
 /**
+ * How the dataset's video should be interpreted: a picture, or data
+ * where luma *is* the value.
+ *
+ * Rendered above the upload control, and that placement is the point.
+ * `transcode-from-dispatch` reads `render_encoding` off the row when it
+ * fires, and uses it to pick both the rendition ladder and a
+ * nearest-neighbour scaler. A picture-mode transcode scales bicubic,
+ * interpolating across the nodata boundary and inventing values that
+ * were never measured — so ticking this box after the upload relabels
+ * the row without re-encoding the bytes, and produces a dataset that
+ * claims to carry values it has already lost.
+ *
+ * The sidecar is validated here through `parseColorScale`, the same
+ * fail-closed parser the server and the renderer use, so a malformed
+ * paste is caught while it is still on screen rather than on submit.
+ */
+function dataEncodingFieldset(state: FormState, update: () => void): HTMLElement {
+  const fieldset = document.createElement('fieldset')
+  fieldset.className = 'publisher-form-fieldset'
+
+  const legend = document.createElement('legend')
+  legend.textContent = t('publisher.datasetForm.encoding.legend')
+  fieldset.appendChild(legend)
+
+  const toggleWrap = el('div', { className: 'publisher-form-check' })
+  const toggle = document.createElement('input')
+  toggle.type = 'checkbox'
+  toggle.id = 'dataset-data-encoded'
+  toggle.checked = state.dataEncoded
+  toggle.addEventListener('change', () => {
+    state.dataEncoded = toggle.checked
+    // Re-render: the sidecar field only exists while this is on, and
+    // the upload control's disabled state depends on both.
+    update()
+  })
+  const toggleLabel = document.createElement('label')
+  toggleLabel.htmlFor = toggle.id
+  toggleLabel.textContent = t('publisher.datasetForm.encoding.dataEncodedLabel')
+  toggleWrap.appendChild(toggle)
+  toggleWrap.appendChild(toggleLabel)
+  fieldset.appendChild(toggleWrap)
+
+  const help = el('p', {
+    className: 'publisher-form-help',
+    textContent: t('publisher.datasetForm.encoding.dataEncodedHelp'),
+  })
+  fieldset.appendChild(help)
+
+  if (!state.dataEncoded) return fieldset
+
+  const wrap = el('div', { className: 'publisher-form-field' })
+  const label = document.createElement('label')
+  label.htmlFor = 'dataset-color-scale'
+  label.textContent = t('publisher.datasetForm.encoding.colorScaleLabel')
+  wrap.appendChild(label)
+
+  const textarea = document.createElement('textarea')
+  textarea.id = 'dataset-color-scale'
+  textarea.className = 'publisher-form-textarea'
+  textarea.rows = 10
+  textarea.placeholder = t('publisher.datasetForm.encoding.colorScalePlaceholder')
+  textarea.value = state.colorScale
+  wrap.appendChild(textarea)
+
+  // Live feedback, updated in place rather than through `update()`:
+  // re-rendering the form on every keystroke would move focus out of
+  // the textarea mid-paste.
+  const status = el('p', { className: 'publisher-form-help' })
+  const paint = (): void => {
+    const raw = textarea.value.trim()
+    if (!raw) {
+      status.className = 'publisher-form-error'
+      status.textContent = t('publisher.datasetForm.encoding.colorScaleRequired')
+      return
+    }
+    const parsed = parseColorScale(raw)
+    if (!parsed) {
+      status.className = 'publisher-form-error'
+      status.textContent = t('publisher.datasetForm.encoding.colorScaleInvalid')
+      return
+    }
+    status.className = 'publisher-form-help'
+    let text = interpolate(t('publisher.datasetForm.encoding.colorScaleValid'), {
+      vmin: String(parsed.vmin),
+      vmax: String(parsed.vmax),
+      units: parsed.units ?? '—', // i18n-exempt: an em dash placeholder, not a word
+      stops: String(parsed.stops.length),
+    })
+    // A range like `0` to `2e-7 kg m-3` is restated for viewers as `0`
+    // to `200 µg m-3`, and the publisher should find that out here
+    // rather than from the live globe. Saying it only when it happens
+    // keeps the common case a single line.
+    const readable = toDisplayUnits(parsed)
+    if (readable.sourceUnits) {
+      text += ` ${interpolate(t('publisher.datasetForm.encoding.colorScaleReadable'), {
+        vmin: String(readable.vmin),
+        vmax: String(readable.vmax),
+        units: readable.units ?? '',
+      })}`
+    }
+    status.textContent = text
+  }
+  // Validity at render time. The upload gate was decided against this
+  // value, so when editing flips it the form has to re-render or the
+  // uploader stays hidden after a *valid* sidecar is pasted — visible
+  // as "I fixed it and nothing happened".
+  const blockedAtRender = dataEncodingBlocksUpload(state)
+  textarea.addEventListener('input', () => {
+    state.colorScale = textarea.value
+    // Paint only: a re-render on every keystroke moves focus out of the
+    // textarea mid-paste.
+    paint()
+  })
+  textarea.addEventListener('change', () => {
+    state.colorScale = textarea.value
+    // On blur, reconcile. Re-rendering here is safe — focus has already
+    // left the field — and it is the point at which the uploader should
+    // appear or disappear.
+    if (dataEncodingBlocksUpload(state) !== blockedAtRender) {
+      update()
+      return
+    }
+    paint()
+  })
+  paint()
+  wrap.appendChild(status)
+
+  const serverError = findError(state.errors, 'color_scale')
+    ?? findError(state.errors, 'render_encoding')
+  if (serverError) {
+    wrap.appendChild(el('p', {
+      className: 'publisher-form-error',
+      textContent: serverError.message,
+    }))
+  }
+
+  fieldset.appendChild(wrap)
+  return fieldset
+}
+
+/** Whether the data upload may proceed. A dataset marked data-encoded
+ *  without a readable sidecar would transcode with the right scaler and
+ *  then arrive at the globe with nothing to interpret it, so the upload
+ *  waits for the sidecar rather than producing a half-configured row. */
+function dataEncodingBlocksUpload(state: FormState): boolean {
+  return state.dataEncoded && parseColorScale(state.colorScale.trim()) === null
+}
+
+/**
+ * Whether the encoding choice on screen has yet to reach the row.
+ *
+ * This is the difference that matters, and validating the in-memory
+ * sidecar alone missed it. The transcode reads `render_encoding` from
+ * the *row*, and an edit-mode uploader is handed the existing dataset
+ * id — `ensureId` in `asset-uploader.ts` returns it without ever
+ * calling `ensureDatasetId`, so nothing persists on the way to the
+ * upload. A publisher could therefore tick the box, paste a valid
+ * sidecar, upload before pressing Save, and get the bicubic picture
+ * encode the whole guard exists to prevent. Unticking has the mirror
+ * problem: the row still says data-luma and a picture is scaled with
+ * the nearest-neighbour path.
+ *
+ * Create mode is exempt because `ensureDraftId` calls `persistDataset`
+ * before handing back an id, so the pair is already on the row by the
+ * time the upload starts.
+ */
+function dataEncodingUnsaved(state: FormState): boolean {
+  if (state.dataEncoded !== state.dataEncodedWasSet) return true
+  return state.dataEncoded && state.colorScale.trim() !== state.savedColorScale.trim()
+}
+
+/**
  * Media card — the thumbnail + legend auxiliary images. Both feed
  * the public catalog: `thumbnail_ref` is the browse-card image,
  * `legend_ref` the colour-scale legend shown alongside the loaded
@@ -1781,6 +1996,21 @@ function renderForm(
 
   if (state.topLevelError) {
     shell.appendChild(renderTopLevelError(state.topLevelError, state.topLevelErrorDetails))
+  }
+
+  if (state.errors.length > 0) {
+    const summary = el('div', { className: 'publisher-form-error publisher-form-error-summary' })
+    summary.setAttribute('role', 'alert')
+    summary.setAttribute('aria-labelledby', 'dataset-validation-heading')
+    summary.tabIndex = -1
+    summary.style.overflowWrap = 'anywhere'
+    const heading = el('strong', { textContent: t('publisher.api.fallbackError.validationFailed') })
+    heading.id = 'dataset-validation-heading'
+    summary.appendChild(heading)
+    const messages = el('ul')
+    for (const error of state.errors) messages.appendChild(el('li', { textContent: error.message }))
+    summary.appendChild(messages)
+    shell.appendChild(summary)
   }
 
   // Two-column layout: a sticky left rail (section nav + publish
@@ -2011,6 +2241,25 @@ function renderForm(
     label.className = 'publisher-field-label'
     label.textContent = t('publisher.datasetForm.field.dataRef')
     uploaderWrap.appendChild(label)
+    // Hold the upload until the sidecar is readable. The transcode
+    // consults `render_encoding` when it fires, so bytes uploaded now
+    // would be scaled as a picture and arrive at the globe having
+    // already lost the values the row would then claim to carry. A
+    // warning would be the wrong shape here: it is dismissable, and
+    // the resulting dataset looks correct until someone reads a number
+    // off it.
+    // `scopedId` is the edit-mode marker: in create mode the uploader
+    // mints the row through `ensureDraftId`, which persists first.
+    const encodingUnsaved = Boolean(scopedId) && dataEncodingUnsaved(state)
+    const uploadBlocked = dataEncodingBlocksUpload(state) || encodingUnsaved
+    if (uploadBlocked) {
+      uploaderWrap.appendChild(el('p', {
+        className: 'publisher-form-error',
+        textContent: encodingUnsaved && !dataEncodingBlocksUpload(state)
+          ? t('publisher.datasetForm.encoding.uploadNeedsSave')
+          : t('publisher.datasetForm.encoding.uploadBlocked'),
+      }))
+    }
     // Reuse the previously-mounted uploader DOM across renders when
     // the format is unchanged — edit mode only. This preserves the
     // uploader's in-flight XHR / progress / promise chain so a parent
@@ -2021,10 +2270,18 @@ function renderForm(
     // fresh, id-bound uploader rather than reuse the placeholder. PR
     // #112 followup — dataset-form.ts:asset uploader subtree
     // preservation.
-    if (
+    if (uploadBlocked) {
+      // Deliberately not mounting the uploader at all, rather than
+      // disabling it: a mounted uploader caches itself on
+      // `ctx.lifecycle` and would survive into the next render.
+    } else if (
       scopedId &&
       ctx.lifecycle.uploader &&
-      ctx.lifecycle.uploaderFormat === state.format
+      ctx.lifecycle.uploaderFormat === state.format &&
+      // Keyed on the encoding too: the uploader bakes its transcode
+      // default in at construction, so a subtree cached before the row
+      // became data-encoded would keep offering the wrong one.
+      ctx.lifecycle.uploaderDataEncoded === state.dataEncoded
     ) {
       uploaderWrap.appendChild(ctx.lifecycle.uploader)
     } else {
@@ -2034,6 +2291,10 @@ function renderForm(
         ensureDatasetId: scopedId ? undefined : ctx.ensureDraftId,
         format: state.format,
         currentDataRef: state.dataRef || null,
+        // Safe to read the live toggle: `dataEncodingUnsaved` keeps the
+        // uploader unmounted until it matches the saved row, and the
+        // mint route gates on the saved `render_encoding` regardless.
+        dataEncoded: state.dataEncoded,
         navigate: ctx.navigate,
         fetchFn: ctx.fetchFn,
         sleep: ctx.sleep,
@@ -2042,6 +2303,7 @@ function renderForm(
       if (scopedId) {
         ctx.lifecycle.uploader = uploaderEl
         ctx.lifecycle.uploaderFormat = state.format
+        ctx.lifecycle.uploaderDataEncoded = state.dataEncoded
       }
       uploaderWrap.appendChild(uploaderEl)
     }
@@ -2087,9 +2349,15 @@ function renderForm(
   const mediaEl = mediaCard(content, state, ctx)
   mediaEl.id = 'ds-section-media'
   mediaEl.dataset.section = 'ds-section-media'
-  // Primary dataset-data upload leads the Media section (before the
-  // thumbnail + legend). Insert it right after the section heading.
-  mediaEl.insertBefore(dataUploadEl, mediaEl.children[1] ?? null)
+  // Encoding choice, then the primary dataset-data upload, both ahead
+  // of the thumbnail + legend. The order is load-bearing rather than
+  // cosmetic: the transcode reads `render_encoding` off the row when it
+  // fires, so the choice has to be made and saved before the bytes go
+  // up, and putting the control underneath the uploader would invite
+  // exactly the sequence that silently loses the values.
+  const encodingEl = dataEncodingFieldset(state, update)
+  mediaEl.insertBefore(encodingEl, mediaEl.children[1] ?? null)
+  mediaEl.insertBefore(dataUploadEl, encodingEl.nextSibling)
   const licensingEl = licensingCard(state, update)
   licensingEl.id = 'ds-section-licensing'
   licensingEl.dataset.section = 'ds-section-licensing'
@@ -2195,6 +2463,19 @@ function renderForm(
     setIfPresent('data_ref', state.dataRef)
     setIfPresent('thumbnail_ref', state.thumbnailRef)
     setIfPresent('legend_ref', state.legendRef)
+    // Sent as an explicit pair, and explicitly `null` when off, rather
+    // than through `setIfPresent`. The server requires each of the two
+    // whenever the other is set, so a PATCH that omitted them would
+    // leave a half-configured row: unticking the box on an
+    // already-data-encoded dataset has to *clear* the columns, and an
+    // omitted field means "unchanged" to a PATCH.
+    if (state.dataEncoded) {
+      body.render_encoding = RENDER_ENCODING_DATA_LUMA
+      body.color_scale = state.colorScale.trim()
+    } else if (state.dataEncodedWasSet) {
+      body.render_encoding = null
+      body.color_scale = null
+    }
     setIfPresent('abstract', state.abstract)
     setIfPresent('organization', state.organization)
     setIfPresent('license_spdx', state.licenseSpdx)
@@ -2292,6 +2573,10 @@ function renderForm(
 
     if (result.ok) {
       clearWarmupFlag()
+      // The row now carries what the form holds, so an edit-mode upload
+      // is no longer racing an unsaved encoding choice.
+      state.dataEncodedWasSet = state.dataEncoded
+      state.savedColorScale = state.dataEncoded ? state.colorScale : ''
       if (opts.navigateOnSuccess) {
         // On create, send the publisher straight to the edit page
         // (which mounts the asset uploader) rather than the read-only
@@ -2318,10 +2603,10 @@ function renderForm(
       state.errors = result.errors
       // Jump the stepper to the first offending field's section so the
       // error isn't hidden in a collapsed section.
-      if (result.errors.length > 0) {
-        state.activeSection = sectionForField(result.errors[0].field)
-      }
+      const section = result.errors.map(error => sectionForField(error.field)).find(section => section !== null)
+      if (section) state.activeSection = section
       update()
+      content.querySelector<HTMLElement>('.publisher-form-error-summary')?.focus()
       return null
     }
     if (result.kind === 'session') {
@@ -2433,6 +2718,10 @@ function initialState(
       dataRef: '',
       thumbnailRef: '',
       legendRef: '',
+      dataEncoded: false,
+      dataEncodedWasSet: false,
+      savedColorScale: '',
+      colorScale: '',
       dataUrl: '',
       overlay: null,
       currentThumbnailUrl: null,
@@ -2487,6 +2776,10 @@ function initialState(
     dataRef: row.data_ref ?? '',
     thumbnailRef: row.thumbnail_ref ?? '',
     legendRef: row.legend_ref ?? '',
+    dataEncoded: row.render_encoding === RENDER_ENCODING_DATA_LUMA,
+    dataEncodedWasSet: row.render_encoding === RENDER_ENCODING_DATA_LUMA,
+    savedColorScale: row.color_scale ?? '',
+    colorScale: row.color_scale ?? '',
     dataUrl: dataUrl ?? '',
     overlay: overlayFromRow(row),
     currentThumbnailUrl: thumbnailUrl ?? null,

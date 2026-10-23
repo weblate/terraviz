@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * POST /api/v1/publish/datasets/{id}/transcode-complete
  *
@@ -285,6 +288,12 @@ export const onRequestPost: PagesFunction<CatalogEnv, 'id'> = async context => {
   // mirrors the explicit check's `transcode_upload_mismatch`
   // shape so the workflow's retry logic treats them the same
   // way: "another upload took over; this run is stale."
+  const { prepareHistory, historyInsertStatements } = await import('../../../_lib/stac-history')
+  const completed = { ...existing, ...(frameSource ?? {}), data_ref: dataRef, content_digest: null,
+    transcoding: null, active_transcode_upload_id: null, updated_at: now }
+  const history = existing.published_at && !existing.retracted_at
+    ? await prepareHistory(context.env, completed, now)
+    : null
   const changes = await clearTranscoding(
     db,
     id,
@@ -292,6 +301,7 @@ export const onRequestPost: PagesFunction<CatalogEnv, 'id'> = async context => {
     dataRef,
     now,
     frameSource,
+    history ? historyInsertStatements(db, history, existing) : [],
   )
   if (changes === 0) {
     return jsonError(

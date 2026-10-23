@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Data service - fetches and manages SOS dataset metadata
  */
@@ -18,11 +21,12 @@ import {
   type ColorScale,
   type RenderEncoding,
 } from '../types/color-scale'
+import { toDisplayUnits } from '../types/unit-scale'
 import { isLiveCadence, parseISO8601Duration, safePeriodMs } from '../utils/time'
 import { resolveDatasetRef } from '../utils/datasetUrl'
 import { logger } from '../utils/logger'
 import { reportError } from '../analytics'
-import { apiFetch, getCatalogSource } from './catalogSource'
+import { apiFetch, getCatalogSource, sampleToursEnabled } from './catalogSource'
 
 /** Milliseconds floor for period-driven cache expiry — even a PT15M
  *  workflow shouldn't make every page interaction re-fetch the
@@ -310,6 +314,12 @@ interface WireDataset {
   /** Image Y-axis flip flag for datasets with inverted Y conventions.
    *  Omitted == false. */
   isFlippedInY?: boolean
+  /** How many source frames this dataset advances per second. The
+   * rate is already baked into the file, so nothing applies it on
+   * load; it is served because the tour `frameRate` task must divide
+   * a requested rate by what the dataset already does. Omitted means
+   * 30. */
+  playbackFps?: number
   /**
    * Set by the node-catalog serializer for tour rows: the resolved
    * URL the tour engine fetches the tour document from. Bypasses
@@ -398,6 +408,7 @@ function wireToDataset(d: WireDataset): Dataset {
     celestialBody: d.celestialBody,
     lonOrigin: d.lonOrigin,
     isFlippedInY: d.isFlippedInY,
+    playbackFps: d.playbackFps,
     // Data-encoded video. Re-validated rather than trusted: the
     // catalog can be served from a static snapshot that never went
     // through the write-side validator, and a malformed sidecar
@@ -410,15 +421,26 @@ function wireToDataset(d: WireDataset): Dataset {
   }
 }
 
-/** Accept the `renderEncoding` / `colorScale` pair only when both
- *  halves are present and the sidecar parses. */
+/**
+ * Accept the `renderEncoding` / `colorScale` pair only when both
+ * halves are present and the sidecar parses.
+ *
+ * This is also the one seam where a scale is restated in readable
+ * units. Everything downstream — colorbar, hover readout, Analyze,
+ * contours, CSV, Orbit's measurement tools, the VR label — derives its
+ * numbers through `lumaToValue` and labels them with `scale.units`, so
+ * rewriting the pair here is the whole of the change for all of them.
+ * Doing it per-surface instead would be the same arithmetic written a
+ * dozen times, and the first one anybody forgot would be a globe
+ * reporting `µg m-3` beside a CSV reporting `kg m-3`.
+ */
 function dataEncodingFromWire(
   d: WireDataset,
 ): { renderEncoding?: RenderEncoding; colorScale?: ColorScale } {
   if (d.renderEncoding !== RENDER_ENCODING_DATA_LUMA) return {}
   const colorScale = parseColorScale(d.colorScale)
   if (!colorScale) return {}
-  return { renderEncoding: RENDER_ENCODING_DATA_LUMA, colorScale }
+  return { renderEncoding: RENDER_ENCODING_DATA_LUMA, colorScale: toDisplayUnits(colorScale) }
 }
 
 /**
@@ -439,8 +461,15 @@ export class PreviewFetchError extends Error {
  * paths. Pulled out as a function so both call sites get identical
  * rows; once these are publishable as real `tours/json` rows we can
  * delete this helper.
+ *
+ * Returns nothing when the deployment builds with
+ * `VITE_SAMPLE_TOURS=false` — see `sampleToursEnabled` in
+ * `catalogSource.ts` for why a downstream node wants that. The gate
+ * lives here rather than at the two call sites so neither path can
+ * grow a third injection that forgets it.
  */
 function sampleTourBuiltins(): Dataset[] {
+  if (!sampleToursEnabled()) return []
   return [
     {
       id: 'SAMPLE_TOUR',
@@ -692,6 +721,10 @@ export class DataService {
    * registered them in the catalog. Once Phase 1a's CLI lands those
    * tours as real `tours/json` rows, this client-side injection
    * becomes redundant; we'll remove it then.
+   *
+   * A node that never held the legacy SOS datasets those tours drive
+   * builds with `VITE_SAMPLE_TOURS=false` and gets none of them —
+   * `sampleTourBuiltins` returns empty and this push is a no-op.
    */
   private async fetchDatasetsFromNode(): Promise<Dataset[]> {
     logger.info('[DataService] Fetching datasets from node catalog...')

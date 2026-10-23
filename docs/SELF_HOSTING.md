@@ -22,6 +22,13 @@ that's a bug in this document — please file it.
 
 Two companion reads:
 
+- Enabling STAC publication: follow the
+  [Phase 2 rollout](metadata/PHASE2_IMPLEMENTATION.md). Routes default off.
+  Review, replace or clear existing `node_identity.description` before setting
+  `STAC_ENABLED=true`; that text will become publicly readable. Verify the
+  extension schema deployment before enabling discovery. This does not publish
+  private mission/about profile prose.
+
 - [`CATALOG_BACKEND_DEVELOPMENT.md`](CATALOG_BACKEND_DEVELOPMENT.md)
   — contributor setup for hacking on the backend, not deploying it.
 - [`ANALYTICS_CONTRIBUTING.md`](ANALYTICS_CONTRIBUTING.md) — if
@@ -171,7 +178,8 @@ itself where it is known and not secret.
 ── Wherever your build runs
    → VITE_API_ORIGIN = https://terraviz.example.org
    · VITE_EARTH_ASSET_BASE
-       from: your own content delivery network (CDN), after mirroring the Earth basemap textures
+       from: nothing — the Earth textures ship in your own build
+       (set it only to serve them from a CDN instead)
 
 ── GitHub → Settings → Secrets and variables → Actions
    → CF_ACCESS_CLIENT_SECRET
@@ -238,7 +246,7 @@ install, guided:
 
 ```bash
 npm run setup -- --manual         # do these in the dashboard first
-export CLOUDFLARE_API_TOKEN=...   # from --manual step 3
+export CLOUDFLARE_API_TOKEN=...   # the "Mint a Cloudflare API token" step
 
 npm run gen:node-key              # Phase 7, the half the tool doesn't own
 npm run setup -- --interactive    # answer 4-5 questions, see the plan
@@ -263,22 +271,56 @@ burning its timeout.
 
 `npm run setup -- --help` lists every flag and environment variable.
 
-**Token scope.** The single `CLOUDFLARE_API_TOKEN` this needs:
+**Token scope.** The single `CLOUDFLARE_API_TOKEN` this needs.
+Every node needs these five, because Phase 2 creates all five
+resources:
 
 | Permission | For |
 |---|---|
 | Account → Cloudflare Pages → **Edit** | Phases 5 and 8 |
+| Account → D1 → **Edit** | Phase 2 creates it, Phase 4 migrates it |
+| Account → Workers KV Storage → **Edit** | both namespaces, Phase 2 |
+| Account → Workers R2 Storage → **Edit** | the bucket in Phase 2, the origin in 8.5 |
+| Account → Vectorize → **Edit** | the search index, Phase 2 |
+
+A publisher node adds Access. A viewer node never calls it:
+
+| Permission | For |
+|---|---|
 | Account → Access: Apps and Policies → **Edit** | Phase 6 |
 | Account → Access: Service Tokens → **Edit** | Phase 6 |
 | Account → Access: Organizations → **Read** | discovering the team domain |
-| Account → Workers R2 Storage → **Edit** | Phase 8.5 |
-| Zone → Zone → **Read** | resolving the zone for 8.5 / 8.6 |
-| Zone → Zone WAF → **Edit** | Phase 8.6 |
-| Account → D1 → **Edit** | only if you enable CI migrations (14.3) |
 
-Grant only what you plan to run — each step names the permission it
-is missing rather than failing with a bare `10000: Authentication
-error`.
+These two are needed only for the step named beside each:
+
+| Permission | For |
+|---|---|
+| Zone → Zone → **Read** | `--only=r2` and `--only=waf` |
+| Zone → Zone WAF → **Edit** | `--only=waf` |
+
+Each step names the permission it is missing rather than failing
+with a bare `10000: Authentication error`.
+
+> **The two Zone rows are the ones people cannot find.** Each
+> permission row has three dropdowns, and the first one — the
+> scope — starts on **Account**. Zone permissions are not in the
+> Account list at all. Change that first dropdown to **Zone** and
+> the middle one refills with `Zone`, `Zone WAF` and the rest.
+>
+> A zone-scoped row also needs the **Zone Resources** section
+> below Permissions. Leave it unset and the token carries the
+> permission but reaches no zone. Include the zone your node runs
+> on, or every zone in the account.
+>
+> **`export CLOUDFLARE_API_TOKEN=…` outranks `wrangler login`.**
+> Wrangler prefers the token over your browser session, so Phases 2
+> and 4 run with the scopes above rather than your own account
+> access. This is why a Pages-only token reaches Phase 2 and then
+> fails on D1, KV or Vectorize.
+>
+> The names above are current. If some other permission is missing
+> from the list, `GET /user/tokens/permission_groups` returns every
+> one with its scope.
 
 ---
 
@@ -495,16 +537,55 @@ provisions the whole stack and serves real traffic.
 | **Vectorize** (semantic search) | 30M queried + 5M stored vector dimensions/month | At 768 dimensions that is ~6,500 stored datasets |
 | **D1** (catalog) | 5 GB total | A hard cap on Free, not an overage — writes start failing. Paid includes the same 5 GB, then $0.75/GB-month |
 | **R2** (assets) | 10 GB-month | Billed at $0.015/GB-month past it, on either plan |
+| **Workers requests** (Pages Functions) | 100,000 requests/day for the whole account, shared with any Workers on it, reset at midnight UTC | Depends on the project's fail mode; see below. Paid has no daily limit |
 | **KV**, **Pages** | Ample for a single node | — |
 
 The practical reading: Orbit is the reason to pay $5. Roughly 200
 conversations a day exhausts the Neuron allocation, and a kiosk in a
-museum lobby will pass that before lunch. Everything else on this
-list either has room to spare at node scale, or is billed the same
-whichever plan you are on.
+museum lobby will pass that before lunch. Workers requests are the
+one other ceiling worth watching. Everything else on this list either
+has room to spare at node scale, or is billed the same whichever plan
+you are on.
 
-> **Checked against Cloudflare's published pricing on 2026-08-03.**
-> These allocations move, so re-read the
+**Workers requests.** Every request that reaches a Pages Function
+counts, and on a Terraviz node that is most of them:
+
+- Every API call counts, including Orbit, search and the portal.
+- Every map tile counts, because tiles are proxied through
+  `/api/tile/`.
+- Every page a visitor opens counts. The root middleware that
+  enforces the embedding setting (Phase 13) runs on each one. That
+  is true on every node, including one left on **Any site can
+  embed**, and it includes bots and scanners.
+
+Scripts, styles, images under `/assets/` and the other build output
+are static, and free. A first visit to the globe can spend a hundred
+or more requests on tiles, so a busy free-plan node can reach the
+limit.
+
+What happens then depends on the project's fail mode, under
+**Workers & Pages → your project → Settings → Runtime → Fail open /
+closed**. Pages projects have defaulted to fail open; check yours.
+
+- **Fail open** skips Functions until midnight UTC. The site still
+  loads, but the API and map tiles stop working. Expect a globe
+  without its base imagery, an empty catalog, Orbit on its local
+  engine, and a portal that cannot save. Any embedding restriction
+  lifts too.
+- **Fail closed** shows Cloudflare's error 1027 instead. Every page
+  load is a Functions request, so that takes the whole public app
+  down, not just the API.
+
+Neither is good. The fix is the $5 plan, which has no daily limit.
+If one free account holds both a staging and a production node, they
+share the one allowance.
+
+> **Checked against Cloudflare's published pricing on 2026-08-03**,
+> and the Workers-requests row on 2026-10-15, against the
+> [Pages Functions pricing](https://developers.cloudflare.com/pages/functions/pricing/),
+> [routing](https://developers.cloudflare.com/pages/functions/routing/)
+> and [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+> pages. These allocations move, so re-read the
 > [Workers pricing page](https://developers.cloudflare.com/workers/platform/pricing/)
 > before you rely on them.
 >
@@ -657,11 +738,23 @@ Each `create` prints the ID. **Copy them onto the worksheet now** —
 ID is the one thing you cannot recover from a later error message.
 To re-read them: `wrangler d1 list`, `wrangler kv namespace list`.
 
-**W9 — Analytics Engine.** There is nothing to create. AE datasets
-come into existence the first time something writes to them; you
-name the dataset in the binding (Phase 8) and it appears. Use
-`terraviz_events` unless you have a reason not to — the Grafana
-dashboards and the export pipeline default to that name.
+**W9 — Analytics Engine.** There is no dataset to create. AE
+datasets come into existence the first time something writes to
+them; you name the dataset in the binding (Phase 8) and it
+appears. Use `terraviz_events` unless you have a reason not to —
+the Grafana dashboards and the export pipeline default to that
+name.
+
+> ⚠️ **The product itself does have to be turned on.** Open
+> **Workers & Pages → Analytics Engine** once. Until you do, the
+> Pages deploy in Phase 8.8 fails with `Failed to publish your
+> Function. You need to enable Analytics Engine.` — not a
+> degraded feature, a deploy that will not publish.
+>
+> The dialog asks for two values, and both are fixed by the code:
+> Dataset Name `terraviz_events`, Dataset Binding `ANALYTICS`.
+> Those are the names Phase 8.1 binds and
+> `functions/api/ingest.ts` writes through.
 
 **Tier 1 operators:** you only need `W4` (D1) and `W5` (KV). Skip
 the R2 and Vectorize commands; add them later if you upgrade.
@@ -807,17 +900,33 @@ authorise, pick `W3`, then:
 - Build output directory: `dist`
 - Root directory: *(empty)*
 
-**Build-time environment variables** — set these *before* the first
-build. `VITE_*` values are baked into the bundle at build time.
-Changing one later requires a rebuild, not just a redeploy.
+**Build-time environment variables.** None of these is required —
+the build succeeds with all of them unset, and each falls back to
+a working default. But `VITE_*` values are baked into the bundle
+at build time, so setting one later means a rebuild rather than
+just a redeploy. Cheaper to decide now.
+
+`VITE_API_ORIGIN` is the one most likely to be wanted later:
+desktop builds and deep-link host recognition read it, and adding
+it afterwards means a rebuild. The Earth textures need no
+variable at all — they ship in your own build.
+
+> `VITE_*` is a naming convention, not a Cloudflare product. Vite
+> is the bundler that builds this app, and it copies variables
+> carrying that prefix into the JavaScript it emits. So they have
+> to be set wherever the build runs — the Cloudflare dashboard if
+> Cloudflare builds, your CI job if CI builds. By the time a
+> visitor loads the page the values are already inside the file
+> being served.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `VITE_BUILD_CHANNEL` | `public` | or `internal` / `canary` |
-| `VITE_TELEMETRY_ENABLED` | `true` | |
-| `VITE_EARTH_ASSET_BASE` | your CDN | **Recommended.** Defaults to upstream's CloudFront. See Reference C. |
+| `VITE_BUILD_CHANNEL` | *(unset)* | Already `public`. Set it only for an `internal` or `canary` build. |
+| `VITE_TELEMETRY_ENABLED` | *(unset)* | Already on. `false` is the only value that changes anything, for a telemetry-free build. |
+| `VITE_EARTH_ASSET_BASE` | *(unset)* | Leave it. The Earth textures are committed to the repo, so your build ships them and serves them from your domain. Set it only to put them on a CDN instead. |
 | `VITE_API_ORIGIN` | `https://` + `W2` | Only needed for desktop builds (Phase 15), harmless to set now. |
 | `VITE_DEFAULT_UI_SCALE` | *(unset)* | `1.5` suits kiosks. Clamped to [0.5, 2.0]; a visitor's own choice always wins. |
+| `VITE_SAMPLE_TOURS` | `false` | Set it unless you ran `import-snapshot`. Drops the two bundled sample tours, which drive SOS datasets your node doesn't have. See [Reference C](#reference-c--fork-pinned-source-values). |
 
 Save and Deploy. Record the project name as `W10`.
 
@@ -832,21 +941,33 @@ terraviz`. On a fresh fork that job either fails for lack of
 secrets, or — worse, if you've set them — deploys to a project name
 that isn't yours.
 
+Both paths are configured in the **Cloudflare** dashboard, not on
+GitHub. Cloudflare asks GitHub for repository access partway
+through the first one; you never start from the GitHub side.
+
 - **Using the dashboard Git integration (recommended):** delete or
   disable the `deploy` job in `ci.yml` and `poster.yml`. Keep
   `type-check`, `unit-tests`, and `build` — they're fork-safe and
-  need no secrets.
+  need no secrets. Take this one if you want pushes to deploy
+  themselves and would rather not maintain a workflow.
 - **Using GitHub Actions to deploy (Direct Upload):** four things.
   Set repo secrets `CLOUDFLARE_API_TOKEN` (`W11`) and
   `CLOUDFLARE_ACCOUNT_ID` (`W1`). Change every
   `--project-name terraviz` to `W10`. Set the repo **Variable**
   `TERRAVIZ_SERVER` to `https://<W2>`. And do *not* connect the Git
-  integration.
+  integration. Take this one if you want deploys gated on the tests
+  your fork already runs, or would rather not grant Cloudflare
+  access to the repository.
 
-`W11` needs, at minimum, **Account → Cloudflare Pages → Edit**. Add
-**Account → D1 → Edit** only if you enable CI migrations (Phase
-14.3). Mint it at
+A token used only by CI needs **Account → Cloudflare Pages → Edit**
+and nothing else. Add **Account → D1 → Edit** if you enable CI
+migrations (Phase 14.3). Mint it at
 `https://dash.cloudflare.com/profile/api-tokens`.
+
+If you reuse the token you minted for `npm run setup`, it already
+carries more than this — see the token-scope table under
+[Shortcut: `npm run setup`](#shortcut-npm-run-setup). That is fine
+for a repo you control, and worth narrowing for one you share.
 
 > Forks created with GitHub's **Fork** button land with Actions
 > **disabled** and no secrets, variables, or environments — GitHub
@@ -1392,6 +1513,7 @@ npm run terraviz -- init-node \
   --client-secret "$CF_ACCESS_CLIENT_SECRET" \
   --display-name "Terraviz — Your Org" \
   --base-url "https://<W2>" \
+  --description "Public environmental datasets from Your Org." \
   --contact ops@your-org.org
 ```
 
@@ -1399,8 +1521,31 @@ It reads `node-public-key.txt` (`W17`) automatically, and writes
 through the publisher API — so it needs only the service token from
 Phase 6.3, no `wrangler` or direct D1 access. It's idempotent:
 re-running updates the row in place, preserving `node_id` so
-existing `origin_node` references stay valid, and keeping the
-existing key unless you pass `--public-key`.
+existing `origin_node` references stay valid. It keeps the existing
+key when no key flag or default key file supplies a replacement.
+
+**The node description is intended public metadata**, not private authoring
+context. Use a short public-facing sentence (at most 2048 characters); do not
+put secrets, internal notes, or unpublished plans in it. This release stores
+the field and returns it through the authenticated publisher API, but does
+not expose it in the anonymous well-known document or a STAC route. The
+planned STAC release will use it directly as the root Catalog description,
+without a profile-approval step. This is separate from the private
+`node_profile.mission` and `about_md` publication policy.
+
+**Update semantics:** re-running `init-node` without `--description` or
+`--contact` preserves the stored values. Use `--clear-description` or
+`--clear-contact` to store `null` explicitly. Empty string values remain
+explicit replacements. An omitted public key is preserved only when no default key file is found — if
+`node-public-key.txt` exists, it is read and sent again. Check that it is the
+correct key before updating an existing node.
+
+**Compatibility:** deploy the updated server before using this CLI's omission
+semantics. Older servers clear omitted description/contact fields, and older
+CLIs explicitly send null for omitted flags even against the updated server.
+Upgrade both together; during mixed-version operation, pass the values you
+intend to preserve explicitly. API callers must now send explicit `null` to
+clear either field; omission preserves it atomically without a read/merge/write.
 
 **Gate:**
 
@@ -1411,6 +1556,9 @@ curl -s https://<W2>/.well-known/terraviz.json | head -c 200
 
 <details>
 <summary>Fallback: write the row directly with wrangler</summary>
+
+The description literal below has the same intended-public meaning and
+upgrade-review requirement as `--description`; SQL provisioning is not exempt.
 
 ```bash
 wrangler d1 execute sphere-feedback --remote --config wrangler.toml \
@@ -1431,6 +1579,42 @@ If you later rotate the keypair, push the new public half to remote
 D1 too — `init-node … --public-key ed25519:…`. `gen:node-key` only
 updates your local copy.
 </details>
+
+## 9.1 Existing nodes: review descriptions before STAC publication
+
+**Upgrade notice:** earlier versions did not explain that this field was
+intended to become public. Before deploying the first release that serves
+STAC, review every node's stored description, including values entered through
+the fallback SQL. Replace internal prose with a public summary or clear it.
+This preparation release does **not** publish existing values; the STAC
+publishing release must repeat this notice in its upgrade instructions.
+
+1. Inspect the stored identity through the existing authenticated endpoint
+  using the service token from Phase 6.3 (or a signed-in publisher session).
+  Review the response locally; do not paste internal prose into a public
+  issue or a shared log. The anonymous well-known endpoint does not show it.
+
+  ```bash
+  curl --fail --silent --show-error \
+    -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+    -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+    "$TERRAVIZ_SERVER/api/v1/publish/node-identity"
+  ```
+
+2. To replace the description, repeat the `init-node` command above with a
+  public `--description`. Use the **current** display name, base URL, and
+  contact from the read, not the example placeholders. A write requires an
+  admin or service token. Check the default key file as noted above so this
+  update does not accidentally rotate the node key.
+3. To clear the description, run that same command with **`--clear-description`**
+  instead of `--description`; it stores `null`. Omit `--contact` to preserve
+  the email, or pass `--clear-contact` to clear it too. A bare `--description`
+  is an error, not a clear request;
+  `--description=` stores an empty string instead of `null`.
+4. Repeat the authenticated read to verify the saved text or `null` and the
+  unchanged node ID/public key. A cleared description will use the generic
+  STAC fallback, not private mission/about text. This does not require a
+  profile snapshot or a change to the well-known wire format.
 
 ---
 
@@ -1573,25 +1757,153 @@ It sits ahead of the optional phase deliberately. Everything from
 here to Phase 13 is work every node does; Phase 14 is the first
 thing you may genuinely skip.
 
-**The repo ships no CSP.** `src/index.html` has no `<meta>` policy,
-and `public/_headers` sets `X-Content-Type-Options`,
-`Referrer-Policy` and `Permissions-Policy` but no CSP. Upstream's
-production deploy enforces a strict `connect-src` policy **at the
-Cloudflare edge** via Transform Rules — which a fork does **not**
-inherit. Your node works without one; you should still add your
+**The repo ships no CSP for the app.** `src/index.html` has no
+`<meta>` policy, and `public/_headers` sets `X-Content-Type-Options`,
+`Referrer-Policy` and `Permissions-Policy` everywhere. Its only CSP
+is `frame-ancestors 'self'` on `/publish`, so no other site can
+frame the publisher portal. Keep that rule if you edit the file.
+Upstream's production deploy enforces a strict `connect-src` policy
+**at the Cloudflare edge** via Transform Rules — which a fork does
+**not** inherit. Your node works without one; you should still add your
 own, as an edge rule or a `Content-Security-Policy` line in
 `public/_headers`:
 
 - `connect-src`: `'self'`, `gibs.earthdata.nasa.gov`,
   `s3.dualstack.us-east-1.amazonaws.com` (SOS snapshot), your video
   and caption proxies, and `W19`.
-- `img-src` / `media-src`: `'self' data: blob:`, your
-  `VITE_EARTH_ASSET_BASE` host, the SOS/CloudFront asset hosts,
-  and `W19`.
+- `img-src` / `media-src`: `'self' data: blob:`, the SOS/CloudFront
+  asset hosts, and `W19`. The Earth basemap textures need no entry —
+  they are served from your own origin, so `'self'` already covers
+  them. Add a host here only if you set `VITE_EARTH_ASSET_BASE`.
 
 The app uses `blob:` for preview tours and screenshots — omitting
 it reproduces the "may not load data from blob:" failure. Test
 playback, VR and a tour before locking it down.
+
+If you add the policy with an edge Transform Rule, use **Add**, not
+**Set**. A Set replaces the header the node sent, which strips the
+portal's `frame-ancestors 'self'`. If your replacement has no
+`frame-ancestors`, the portal's `X-Frame-Options` still protects it.
+If it has one, browsers ignore `X-Frame-Options`, so any site that
+policy names can frame the portal. If you must use Set, give
+`/publish` and `/publish/*` a rule of their own that includes
+`frame-ancestors 'self'`. Do not add it to a rule for every path:
+that stops every other site embedding the public app. A Set rule
+also replaces the policy the Embedding setting below sends.
+
+## If other sites embed the node
+
+The Terraviz WordPress plugin, and anything else that embeds a node,
+loads a URL such as `https://<W2>/?dataset=…&embed=1` in an iframe on
+another site. By default any site may do that. The public app sends
+no `frame-ancestors` and no `X-Frame-Options`.
+
+**To limit it, use the portal.** Sign in as an admin, open
+`https://<W2>/publish/node-profile` (**Settings → Node profile** in
+the sidebar), and find the **Embedding** card:
+
+- **Any site can embed** is the default, and how every node starts.
+- **Only sites I list** allows this node and the sites you name.
+- **No other site** allows only the node's own pages.
+
+The change reaches visitors within a few minutes, with no redeploy.
+
+**Which sites to list.** List the origin of each page that will show
+the embed: `https://` and the host from its address bar, with no
+path. For `https://www.example.org/2026/10/post/`, list
+`https://www.example.org`.
+
+- `www.example.org` and `example.org` are different sites, so list
+  both if your pages use both.
+- `https://*.example.org` covers subdomains, but not `example.org`
+  itself.
+- If anything wraps the page in a frame of its own, list that origin
+  too. A page builder's preview is the usual case, when its editor
+  runs on a different host.
+- The card refuses `http://` sites, single-word hosts such as
+  `localhost`, IP addresses, and wildcards over services where anyone
+  can make a site, such as `*.wordpress.com`. Test a local WordPress
+  against a node left on **Any site can embed**.
+- A page opened from a file, such as a standalone HTML page on a
+  kiosk, has an address starting `file://` and no host to list. List
+  `file:` on its own row for it, not `file://` or a path. Any page
+  opened from a file can then embed the node, not only yours. A
+  stranger's file can do that only if a visitor downloads and opens
+  it, so this is still narrower than **Any site can embed**. Chrome,
+  Edge and other Chromium browsers honour it. Firefox and Safari have
+  not been tested, so try the kiosk's browser before you rely on it.
+
+**The card checks what the node sends.** Its **What this node sends
+now** readout shows the headers a visitor gets on `/`. It warns about
+a `frame-ancestors` the setting did not send, and about an
+`X-Frame-Options` header that browsers will follow. When the node also
+sends `frame-ancestors`, current browsers ignore `X-Frame-Options`, so
+the readout shows it as a note instead. It cannot see Cloudflare
+Access, rules that cover other paths only, or the custom domain's rules
+if you opened the portal on `*.pages.dev`. If it says the node "doesn't
+match the saved setting yet", that should clear within a few minutes.
+If it stays past ten, look for an edge rule that *Sets* a
+Content-Security-Policy: that replaces the node's own.
+
+Three things can block an embed the setting allows:
+
+- **An `X-Frame-Options` header.** Cloudflare's **Add security
+  headers** managed transform sends `SAMEORIGIN`. With **Any site can
+  embed**, it blocks every other site and every page opened from a
+  file. With a list, current browsers
+  ignore it, but older ones still block. Turn it off under **Rules →
+  Settings → Managed Transforms** if other sites need to embed the
+  node. `public/_headers` already sends the other headers it adds.
+  If the transform has to stay on, for example because the zone serves
+  other sites, choose **Only sites I list** rather than **Any site can
+  embed**. Current browsers then ignore the header. You will need to
+  name every site that embeds the node.
+- **A `frame-ancestors` you set elsewhere.** Browsers enforce every
+  policy they receive, so the stricter one wins.
+- **Cloudflare Access.** An embed cannot load a page Access
+  protects, so keep Access off the public app.
+
+**If an embed still fails**, open the browser console on the page
+showing it. The message names the cause:
+
+- "Refused to display … X-Frame-Options" is an `X-Frame-Options`
+  header.
+- "… violates the following Content Security Policy directive:
+  frame-ancestors …" is a `frame-ancestors` policy, and it quotes
+  the policy.
+- A sign-in page inside the frame is Access.
+
+From a terminal, this shows the headers an embed gets:
+
+```bash
+curl -sI 'https://<W2>/?embed=1' | grep -iE 'content-security-policy|x-frame-options'
+```
+
+**Static config still works.** Put `frame-ancestors` in an edge
+Transform Rule instead, and leave the setting on **Any site can
+embed**. The readout will then always say another policy applies,
+which is expected. Use **Add**, or skip `/publish` and `/publish/*`,
+so the portal keeps its own `frame-ancestors 'self'`. You can put it
+in `public/_headers` instead, but a test pins the repo's default
+there (`scripts/pages-headers.test.ts`). Change that test too, or CI
+will not deploy.
+
+**How it works.** A small root middleware (`functions/_middleware.ts`)
+adds the header to every page the app serves. `public/_routes.json`
+keeps it off static files, and `public/_headers` locks the folders it
+skips. Each page a visitor opens is therefore a Functions request;
+§0.6 says what that costs. If storage fails, the middleware keeps the
+last policy it read, or sends none if it has none yet. So a storage
+outage can lift a restriction on some servers while it lasts, but
+never blanks every embed.
+Running out of the free plan's daily Functions requests lifts it
+until midnight UTC (§0.6).
+
+**If the card is missing after an upgrade**, apply the pending
+catalog migrations (§14.3, or `wrangler d1 migrations apply`). The
+setting is stored by migration 0057, and the card stays hidden until
+it is applied. Preview deployments without a catalog database always
+behave as **Any site can embed**.
 
 ---
 
@@ -1769,16 +2081,156 @@ Gatekeeper "damaged" warning.
 
 **15.3 `VITE_API_ORIGIN`.** Desktop webviews are served from
 `tauri://localhost`, so relative `/api/` paths don't resolve.
-`src/services/catalogSource.ts` rewrites them to an absolute
-origin, defaulting to `https://terraviz.zyra-project.org`. Set
+`src/config/endpoints.ts` resolves an absolute origin for them,
+defaulting to `https://terraviz.zyra-project.org`. Set
 `VITE_API_ORIGIN=https://<W2>` at build time so your app talks to
 *your* backend. The same value drives deep-link host recognition,
 so setting it also makes your node accept its own `/dataset/<id>`
 links.
 
+> **It also decides where your desktop app's telemetry goes.**
+> `/api/ingest` resolves through the same origin — one rule, so a
+> node's catalog and its analytics cannot disagree about where
+> "here" is. Two consequences are worth reading twice.
+>
+> **Leave it unset and your desktop builds report to upstream.**
+> Their users' telemetry lands in *upstream's* Analytics Engine,
+> indistinguishable from upstream's own. That is the same default
+> every other `/api/` call already has. But this is data leaving
+> your users rather than content arriving, so decide it
+> deliberately rather than by shrug.
+>
+> **Verify the origin check rather than assume it — on your node
+> and ours alike.** `functions/api/ingest.ts` rejects any request
+> whose `Origin` header it does not recognise. It answers **403**,
+> and the client drops that without retrying. `tauri://localhost`
+> and its Windows variants are already in `ALLOWED_ORIGINS`, so a
+> desktop request is accepted *if* it carries that header. The
+> catch: the desktop path goes through the Tauri HTTP plugin,
+> which issues from Rust rather than from the webview. Whether it
+> forwards an `Origin` at all has not been confirmed against a
+> live deploy. If desktop rows never appear, look there first —
+> the fix is one entry in `ALLOWED_ORIGINS`, not a client change.
+>
+> **On the web this variable is irrelevant.** The endpoint stays
+> relative, and the Pages Function that answers it is part of the
+> deploy that served the page. A web fork already reports to
+> itself with no configuration.
+
 **15.4 Weblate.** `sync-weblate.yml` targets upstream's Weblate
 project and needs `WEBLATE_TOKEN`. Disable the workflow unless you
 run your own pipeline; otherwise it fails on every push to `main`.
+
+---
+
+# Updating an existing node
+
+Everything above assumes a fresh install. This is the other path:
+your node is already running, upstream has moved, and you want the
+changes.
+
+## Sync your fork
+
+Your node deploys from your fork, so upstream work reaches you
+only when you merge it.
+
+```bash
+git remote add upstream https://github.com/zyra-project/terraviz.git
+git fetch upstream main
+git merge upstream/main
+```
+
+Add the remote once. The fetch and merge are the routine part.
+
+**Then pull the LFS content before you build.**
+
+```bash
+git lfs install    # once per machine
+git lfs pull
+```
+
+This is not optional tidiness. Most images here are Git LFS
+objects, and a clone or fetch without LFS leaves them as small
+text files still wearing `.jpg` and `.png` names. The build
+succeeds, the deploy succeeds, and the skybox arrives as garbage.
+`npm run check:lfs` reports the state, and it is advisory — it
+will not stop a build that is about to ship pointer text as
+imagery.
+
+## Rebuild, do not just redeploy
+
+`VITE_*` values are read at build time and written into the
+JavaScript. Redeploying an existing `dist/` therefore carries the
+old values forward regardless of what you changed in a dashboard.
+
+- **Cloudflare builds your project** — push to your default
+  branch, or use Retry deployment.
+- **Direct Upload** — run `npm run build` yourself, then
+  `wrangler pages deploy dist/ --project-name <W10>`.
+
+## Check whether a default you overrode has changed
+
+This is the failure mode worth naming, because it is silent.
+`normalizeBase` in [`src/config/endpoints.ts`](../src/config/endpoints.ts)
+takes any non-empty value ahead of the built-in fallback. So when
+upstream improves a default, a variable you set once — for a
+reason that has since gone away — keeps winning, and the upgrade
+appears to do nothing.
+
+**The current case: Earth textures.** They used to be served from
+upstream's CDN, and Reference C used to tell you to mirror the
+files to your own bucket and point `VITE_EARTH_ASSET_BASE` there.
+They are now committed to the repository and served from your own
+origin with nothing set.
+
+If you followed that advice, unset the variable. Otherwise you
+ship 18.5 MB of textures in your bundle and go on loading them
+from your mirror.
+
+- **Cloudflare Pages** → Settings → Variables and Secrets →
+  Build, delete `VITE_EARTH_ASSET_BASE`, then rebuild.
+- **Direct Upload** — remove the export from your CI job, then
+  rebuild.
+
+Keep it only if you deliberately want a CDN in front of them. It
+is an optimisation now rather than a workaround.
+
+## Verify
+
+The Phase 10 checks apply unchanged after an upgrade, and are the
+fastest way to catch a binding that drifted while you were away.
+Run both.
+
+For the textures specifically, the useful check is local and
+happens before you deploy:
+
+```bash
+npm run build
+grep -rl "cloudfront.net/terraviz/basemaps" dist/assets/*.js
+# → no output. A hit means VITE_EARTH_ASSET_BASE is still set.
+```
+
+Then, once deployed:
+
+```bash
+curl -sI https://<W2>/assets/basemaps/earth_diffuse_4096.jpg | head -1
+# → HTTP/2 200
+```
+
+The first command is the one that matters. The second only proves
+Vite copied the files into `dist/`. It stays green even when the
+bundle points somewhere else, because the unused copy sits right
+there at that path.
+
+## What else an upgrade can need
+
+- **New bindings.** Phase 8 creates them; `check:pages-bindings`
+  names anything missing, so run it first and let it tell you.
+- **Schema migrations.** Phase 14.3 if you opted into CI-applied
+  migrations, otherwise apply them with wrangler yourself.
+- **New manual steps.** `npm run setup -- --manual` reprints the
+  current pre-flight sheet, including any step added since you
+  installed. Turning on Analytics Engine arrived this way.
 
 ---
 
@@ -1826,7 +2278,8 @@ is [`scripts/lib/expected-bindings.ts`](../scripts/lib/expected-bindings.ts).
 `VITE_BUILD_CHANNEL`, `VITE_TELEMETRY_ENABLED`,
 `VITE_EARTH_ASSET_BASE`, `VITE_API_ORIGIN`,
 `VITE_DEFAULT_UI_SCALE`, `VITE_VIDEO_PROXY_BASE`,
-`VITE_CAPTION_PROXY_BASE`, `VITE_VOICE_WS_STREAMING`,
+`VITE_CAPTION_PROXY_BASE`, `VITE_SAMPLE_TOURS`,
+`VITE_VOICE_WS_STREAMING`,
 `VITE_VOICE_WAKEWORD_MODEL_URL`. Changing one needs a **rebuild**,
 not just a redeploy.
 
@@ -1881,9 +2334,10 @@ quietly dependent on upstream infrastructure.
 
 | Env var | Default | What it is | Change it when |
 |---|---|---|---|
-| `VITE_EARTH_ASSET_BASE` | `https://d3sik7mbbzunjo.cloudfront.net/terraviz/basemaps` | Earth basemap textures (diffuse / night lights / normal / borders) for the photoreal Earth and 2D overlays — loaded by **every** node. | **Any independent node.** Mirror the static `.jpg`/`.png` files to your own bucket and point here. |
+| `VITE_EARTH_ASSET_BASE` | *(unset — served from your own origin)* | Earth basemap textures (diffuse / night lights / normal / borders) for the photoreal Earth and 2D overlays — loaded by **every** node. | **Nothing to do.** The eleven files are committed under `public/assets/basemaps/`, so your clone has them and your build serves them itself — no install-time fetch, and it works air-gapped. Set this only to move them to a CDN. |
 | `VITE_VIDEO_PROXY_BASE` | `https://video-proxy.zyra-project.org/video` | Resolves **legacy SOS** `vimeo:` data refs into HLS/MP4. | Only if you ran `import-snapshot` and want video independent of upstream. The proxy worker isn't in this repo. |
 | `VITE_CAPTION_PROXY_BASE` | `https://video-proxy.zyra-project.org/captions` | CORS shim for legacy `sos.noaa.gov` `.srt` captions. | Same. |
+| `VITE_SAMPLE_TOURS` | *(unset — the two bundled tours are shown)* | "Climate Connections" and "Climate Futures", the sample tours committed under `public/assets/`. They are injected into the catalog **client-side**, after `/api/v1/catalog` returns, so they appear even on a node that has published nothing — and they load SOS handles (`INTERNAL_SOS_25_VIDEO`, `INTERNAL_SOS_SSP_GA_19`, …) that only exist upstream. On your node the cards open a tour that can load nothing, and Orbit recommends them to newcomers besides. | **Set it to `false`** unless you ran `import-snapshot` and hold those datasets. It drops those two rows only — your own published tours are unaffected (that is the `tours` node-feature toggle, which is broader). If CI builds, it is a **GitHub Variable** (Settings → Secrets and variables → Actions → Variables, or the `production` Environment); `ci.yml` already passes it through. If Cloudflare builds, set it in Pages → Settings → Environment variables. |
 | `TERRAVIZ_DOCS_URL` | `https://github.com/zyra-project/terraviz/blob/main/docs/SELF_HOSTING.md` | Base for the 19 links the `/setup` console makes into this guide (17 anchored per phase). Read at **build** time by `npm run build:setup-page`. | Once your fork's copy of this guide diverges from upstream's. Set it to your own blob URL — including the branch, if yours isn't `main` — and rebuild. |
 
 Content you publish through the portal is transcoded to your own
@@ -1968,6 +2422,20 @@ texture stops the deploy rather than reaching your visitors.
 You skipped `npm install`, or ran it somewhere other than the
 repository root. Every `npm run` command in this guide runs from
 inside your clone, after a successful install. See §0.4.
+
+### Deploy fails: "You need to enable Analytics Engine"
+The product is off on your account, and stays off until somebody
+opens it once. A Pages Function that declares an
+`analytics_engine_datasets` binding cannot publish without it, so
+this fails the whole deploy rather than degrading one route.
+
+Open **Workers & Pages → Analytics Engine** and create a dataset:
+Dataset Name `terraviz_events`, Dataset Binding `ANALYTICS`. Then
+retry the deployment. The error links straight to the page.
+
+Creating the dataset is not strictly what fixes it — AE datasets
+appear on first write regardless. Enabling the product is. The
+dialog is just the shortest path to both.
 
 ### `/api/ingest` returns 204 but nothing lands in Analytics Engine
 The `ANALYTICS` binding is missing in the environment serving
@@ -2089,6 +2557,53 @@ the portal can't follow — it's fetched with `redirect: 'manual'` so
 it can *detect* the redirect, but it can't complete the sign-in.
 The Refresh button is the escape hatch: refreshing triggers Access
 at top-level navigation, you sign in, and the next fetch succeeds.
+
+### Console fills with CORS errors on `/api/tile/`, but the globe still renders
+Your Access application covers the whole hostname instead of the six
+destinations Phase 6.2 lists. Three request paths in the SPA are
+deliberately uncredentialed. On a fully-protected host each one draws
+a 302 to `<team>.cloudflareaccess.com`. The redirect then fails the
+CORS check, because the login origin sends no
+`Access-Control-Allow-Origin`:
+
+| Request | What you see |
+|---|---|
+| `tilePreloader.ts` z0–z3 warm-up | ~170 CORS errors and nothing else — the preloader catches per URL and moves on |
+| `POST /api/ingest` | telemetry retries and backs off forever; only the `sendBeacon()` pagehide flush lands |
+| `/site.webmanifest` | no install prompt, no theme colour, no shortcuts |
+
+The globe keeps working throughout, which makes this look like a
+service worker bug. It is not. `sw.js` re-issues
+`fetch(request.clone())`, and a clone carries the caller's own
+credentials mode. So the worker fails exactly the requests that were
+already failing. It never sees `/site.webmanifest` at all:
+`shouldCache` claims only `/api/tile/`, `/assets/skybox/` and the
+specular map. MapLibre's raster sources set no `transformRequest`,
+so its tile fetches use the default `same-origin` credentials and
+succeed. The discriminator is which caller issued the request, not
+the zoom level and not a `clients.claim()` race.
+
+Two fixes, and you want the first:
+
+1. **Narrow the Access application** to the Phase 6.2 destinations.
+   `/api/tile/`, `/api/ingest` and the SPA shell are public surfaces;
+   only `/publish*` and `/api/v1/publish` need a policy.
+2. **If whole-host protection is deliberate**, deploy a build new
+   enough to send `credentials: 'same-origin'` on those three paths.
+   That is the staging-node case: nobody outside the org should reach
+   it, and anonymous visitors get nothing either way.
+
+Do not reach for `credentials: 'include'` inside `sw.js`:
+
+- On a same-origin request it changes nothing. `same-origin` already
+  sends the `CF_Authorization` cookie, and fix 2 sets it at each call
+  site.
+- It changes only the worker's cross-origin requests, and there it can
+  only break them. GIBS answers with `Access-Control-Allow-Origin: *`,
+  which a browser rejects outright on a credentialed request.
+- Nothing breaks at once, because the app fetches its tiles through
+  `/api/tile/` today. The next cross-origin rule added to the worker is
+  what breaks, far from the change that caused it.
 
 ### Publisher portal shows `role: service` for a real user
 A pre-3pa middleware bug — the classifier read `claims.type ===

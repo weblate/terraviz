@@ -413,6 +413,68 @@ PCVR session and buckets as `pcvr`).
 `error_detail` adds a `stack` blob at `blob9` (sanitized stack
 frame list).
 
+### `output_added` / `output_removed` / `output_failure` (Tier A)
+
+Multi-monitor output windows
+(`docs/MULTI_MONITOR_PLAN.md` §3, rung 13). All three fire from the
+**control window** — an output window emits nothing, ever, because §3.6
+keeps it capture-clean. Categorical fields only: no free text to hash,
+no coordinates to round, no device string. The one field that could
+identify hardware is `monitor_index`, an index into the enumeration,
+never the OS-reported display name.
+
+| Position | Field (output_added) | Field (output_removed) | Field (output_failure) |
+|---|---|---|---|
+| `blob5` | `framebuffer_bucket` (`1k` / `2k` / `4k` / `8k` / `native`) | `mode` | `kind` |
+| `blob6` | `mode` (`sos-equirect` / `projector-warp`) | `reason` | `recovered` (`true` / `false`) |
+| `double1` | `client_offset_ms` | `client_offset_ms` | `client_offset_ms` |
+| `double2` | `monitor_index` | — | `retries` |
+
+`framebuffer_bucket` is `native` for a `projector-warp` output
+(rung 16): that window draws projector rasters rather than an
+equirect frame, so no rung on the ladder describes it, and bucketing
+its stored width would name a 2:1 frame it does not draw. Its real,
+spanned display size is deliberately not reported — that would
+fingerprint a rig.
+
+`output_removed.reason` is one of `operator-close`, `crash`,
+`monitor-gone`, `gpu-loss-timeout`, `rejected-by-storm-guard`.
+`operator-close` covers both halves of a deliberate close (the Outputs
+panel's Remove and the window's own close button) — the manager keeps
+those apart internally, but the interesting split for a dashboard is
+deliberate-versus-not. `rejected-by-storm-guard` is a **configured**
+output that never came back, so it has no paired `output_added`.
+
+`output_failure.kind` is one of `crash`, `hls-stalled`, `ipc-silence`,
+`gpu-loss`, `monitor-unplug`. A crash emits **both** an
+`output_removed` (reason `crash`) and an `output_failure` (kind
+`crash`) — the first answers "how many outputs stopped and why", the
+second "how healthy is this installation".
+
+> **Landed so far:** three `kind`s have detectors — `crash`,
+> `ipc-silence` (case 6's boot scan; `recovered` says whether the
+> orphan answered the poke) and `gpu-loss` (case 5). `hls-stalled` and
+> `monitor-unplug` arrive with cases 2 and 4. Of the `reason`s, only
+> `gpu-loss-timeout` is still without a detector — `monitor-gone` got
+> one with case 6. The enums were complete from the start, so a
+> dashboard pinned to them has not had to change as these landed.
+>
+> **`gpu-loss` is the one kind that emits a pair**, and a query that
+> counts incidents needs to know it: the loss emits
+> `retries=0, recovered=false` and a recovery emits
+> `retries=1, recovered=true`. So **incidents = the `recovered=false`
+> rows** and recoveries are the rest; an incident that never comes back
+> has only its opening row. One row per incident was the first shape
+> and was wrong — `recovered` is defined as whether the output carried
+> on afterwards, and a never-updated `false` reported every recovered
+> installation as unrecovered. The `retries=1` credits the browser and
+> Three's `initGLContext()`, which is the only thing that retries;
+> nothing in this repo does.
+
+A framebuffer width that is not a rung on the ladder reports the rung
+**below** it, matching what `outputScene` actually renders — so a
+`4k` bucket never means a window running 8K.
+
 ### Tier B catalog (research mode only)
 
 Tier B events (`dwell`, `orbit_*`, `browse_search`, `vr_interaction`,
@@ -465,7 +527,7 @@ alphabetical layout. Per-event positions:
 
 | Position | Field |
 |---|---|
-| `blob5` | `finish_reason` (`stop` / `length` / `tool_calls` / `error`) |
+| `blob5` | `finish_reason` (`stop` / `length` / `tool_calls` / `error`). `error` means the turn did not complete on the client: an exception, or Orbit withdrawn mid-turn because the node turned it off |
 | `blob6` | `model` |
 | `blob7` | `reading_level` |
 | `blob8` | `turn_role` (`user` / `assistant`) |
@@ -475,7 +537,7 @@ alphabetical layout. Per-event positions:
 | `double4` | `input_tokens` (when present) |
 | `double5` | `output_tokens` (when present) |
 | `double6` | `turn_index` |
-| `double7` | `turn_rounds` (1 = direct reply, ≥2 = tool-calling turn; Phase 1d/Y) |
+| `double7` | `turn_rounds` (1 = direct reply, ≥2 = tool-calling turn; Phase 1d/Y). 0 on the user-side turn, on a turn the local engine answered, one that ended in a client exception, one cut off by an Orbit withdrawal, and from pre-1d/Y clients |
 
 #### `orbit_tool_call`
 
@@ -948,6 +1010,12 @@ ORDER BY occurrences DESC
 > `duration_ms` carries `0` on `orbit_interaction` rows that have
 > no measurable timing (e.g. synchronous `action_executed`).
 > Filter `double2 > 0` so the average doesn't include those.
+> `blob7 = 'stop'` keeps it to replies that completed: an `error`
+> response stopped early — an exception, or Orbit withdrawn
+> mid-turn — and its duration measures that, not the model.
+> Local-engine fallback answers are still `stop` and still counted,
+> under the configured model, with any failed LLM attempt in their
+> duration; `orbit_interaction` has no field to separate them.
 
 ```sql
 SELECT
@@ -958,6 +1026,7 @@ SELECT
 FROM terraviz_events
 WHERE blob1 = 'orbit_interaction'
   AND blob5 = 'response_complete'
+  AND blob7 = 'stop'
   AND blob2 = 'production'
   AND double2 > 0
 GROUP BY model

@@ -271,6 +271,14 @@ the same origin.
 
 ### STAC alignment
 
+> **Decision update (2026-09-04).** The
+> [metadata and STAC audit](metadata/README.md#relationship-to-earlier-decisions)
+> supersedes the native-wire design below. `WireDataset`, `/api/v1/catalog`,
+> and signed federation feeds remain native. A separate D1-backed STAC Core
+> 1.1.0 projection publishes explicit Collections and eligible Items; STAC API
+> 1.0.0 conformance remains a later, separately tested phase. The previous
+> design is retained below as decision history, not implementation guidance.
+
 A catalog protocol that ignores the existing scientific-data
 ecosystem will be siloed by default. The relevant standards:
 
@@ -284,10 +292,9 @@ ecosystem will be siloed by default. The relevant standards:
 - **schema.org/Dataset** — what Google Dataset Search consumes.
   Trivial to emit as JSON-LD on dataset pages; ~30 lines.
 
-**Decision: Terraviz's wire `Dataset` is a STAC Item profile.** Not
-strict STAC (we keep our existing fields users already depend on)
-but a valid STAC Item when projected through a small mapping.
-Concretely:
+**Previous decision (superseded): Terraviz's wire `Dataset` is a STAC Item
+profile.** Not strict STAC (we keep our existing fields users already depend
+on) but a valid STAC Item when projected through a small mapping. Concretely:
 
 - Required STAC fields are populated or computed:
   - `type: "Feature"`, `stac_version: "1.0.0"`
@@ -2696,6 +2703,16 @@ contract tests and unit tests.
 
 - One commit per migration, with the migration file in the same
   commit as the code that depends on it.
+- **A migration's filename is permanent once it merges.**
+  `d1_migrations.name` records the full filename, not the number, so
+  renaming an applied file makes wrangler treat it as new and run it
+  a second time. An `ALTER TABLE … ADD COLUMN` then fails with
+  `duplicate column name`, and that failure aborts every migration
+  behind it. Pick the number carefully in review, while changing it
+  is still free —
+  `npm run check:migrations` fails on a number claimed twice, and the
+  one existing collision (two `0036` files, shipped) is frozen there
+  for exactly this reason.
 - `schema_version` bumps in a separate commit so its diff is the
   one place to audit shape changes.
 - Federation protocol changes go through a separate `protocol/`

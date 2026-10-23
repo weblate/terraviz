@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Help UI — floating panel with a Guide tab and a Feedback form.
  *
@@ -66,8 +69,14 @@ function renderGuideHtml(): string {
   // smuggle <script>, on*-handlers, or javascript: hrefs.
   // scripts/generate-locales.ts catches obvious cases at build
   // time too; this is the runtime backstop.
+  // The Orbit section carries a class of its own so a node with
+  // Orbit off can hide it (`body.orbit-disabled` in chat.css) — the
+  // guide renders on first open, which can precede boot's answer.
   return sectionKeys
-    .map((key) => `<section class="help-guide-section">${sanitizeGuideHtml(t(key))}</section>`)
+    .map((key) => {
+      const cls = key === 'help.guide.section.orbit' ? 'help-guide-section help-guide-section-orbit' : 'help-guide-section'
+      return `<section class="${cls}">${sanitizeGuideHtml(t(key))}</section>`
+    })
     .join('\n')
 }
 

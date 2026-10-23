@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * `asset_uploads` row-level helpers + per-kind validation rules.
  *
@@ -67,6 +70,10 @@ export interface AssetInitBody {
   mime?: unknown
   size?: unknown
   content_digest?: unknown
+  /** Opt out of the transcode for a `data` + `video/mp4` upload,
+   *  publishing the uploaded bytes as the served asset. See
+   *  `ValidatedAssetInit.transcode`. */
+  transcode?: unknown
 }
 
 export interface ValidatedAssetInit {
@@ -74,6 +81,26 @@ export interface ValidatedAssetInit {
   mime: string
   size: number
   content_digest: string
+  /**
+   * Whether a `data` + `video/mp4` upload should go through the GHA
+   * transcode. Defaults to `true`, which is the historical behaviour
+   * and stays the behaviour for every other kind.
+   *
+   * `false` publishes the uploaded file *as* the served asset: the
+   * mint hands back a content-addressed key instead of the
+   * `uploads/…/source.mp4` one the workflow watches, so `/complete`
+   * writes `data_ref` directly and no workflow is dispatched.
+   *
+   * It exists because the transcode is destructive for a data-encoded
+   * video. `DATA_ENCODED_RENDITIONS` pins one rung at 4096×2048, so a
+   * larger frame is decimated — and when luma *is* the measurement,
+   * re-encoding changes the values rather than the picture quality.
+   * The route gates this on `render_encoding`, since for an ordinary
+   * video the transcode earns its keep: it normalises to 30 fps, which
+   * the tour engine's `requestedFps / 30` maths assumes, and builds the
+   * ladder the player expects.
+   */
+  transcode: boolean
 }
 
 export interface AssetInitValidationError {
@@ -149,6 +176,24 @@ export function validateAssetInit(
     })
   }
 
+  // Absent means "transcode", which is what every caller written
+  // before this field did. Only a literal boolean is accepted — a
+  // string "false" arriving from a hand-rolled client would otherwise
+  // be truthy and silently transcode the file it was meant to
+  // preserve, which is the failure this flag exists to prevent.
+  let transcode = true
+  if (body.transcode !== undefined) {
+    if (typeof body.transcode !== 'boolean') {
+      errors.push({
+        field: 'transcode',
+        code: 'invalid_type',
+        message: 'transcode must be a boolean when present.',
+      })
+    } else {
+      transcode = body.transcode
+    }
+  }
+
   if (errors.length) return { ok: false, errors }
   // `kind` is non-null in the success path because errors would be
   // non-empty otherwise; the `!` makes the narrowing explicit.
@@ -159,6 +204,7 @@ export function validateAssetInit(
       mime: body.mime as string,
       size: body.size as number,
       content_digest: body.content_digest as string,
+      transcode,
     },
   }
 }
@@ -799,11 +845,13 @@ export async function stampTranscodingForVideoSource(
   //     allowed a stamp to take over a stuck transcoding=1 row,
   //     which could start a second workflow alongside whatever
   //     workflow left the row in that shape. PR #112 followup.
+  const metadata = sourceMetadataReset(upload.claimed_digest)
   const result = await db
     .prepare(
       `UPDATE datasets
          SET transcoding = 1,
              active_transcode_upload_id = ?,
+             ${metadata.sql},
              data_ref = CASE WHEN published_at IS NULL THEN '' ELSE data_ref END,
              source_digest = ?,
              content_digest = CASE WHEN published_at IS NULL THEN NULL ELSE content_digest END,
@@ -811,7 +859,7 @@ export async function stampTranscodingForVideoSource(
        WHERE id = ?
          AND (COALESCE(transcoding, 0) = 0 OR active_transcode_upload_id = ?)`,
     )
-    .bind(upload.id, upload.claimed_digest, now, datasetId, upload.id)
+    .bind(upload.id, ...metadata.binds, upload.claimed_digest, now, datasetId, upload.id)
     .run()
   return result.meta?.changes ?? 0
 }
@@ -864,11 +912,13 @@ export async function stampTranscodingForFrameSource(
   // frame_extension, frame_source_filenames_ref) atomically when
   // the bundle is ready. Phase 3pf-review/E — Copilot
   // discussion suppressed-confidence #3.
+  const metadata = sourceMetadataReset(upload.claimed_digest)
   const result = await db
     .prepare(
       `UPDATE datasets
          SET transcoding = 1,
              active_transcode_upload_id = ?,
+             ${metadata.sql},
              data_ref = CASE WHEN published_at IS NULL THEN '' ELSE data_ref END,
              source_digest = ?,
              content_digest = CASE WHEN published_at IS NULL THEN NULL ELSE content_digest END,
@@ -881,6 +931,7 @@ export async function stampTranscodingForFrameSource(
     )
     .bind(
       upload.id,
+      ...metadata.binds,
       upload.claimed_digest,
       frameCount,
       frameExtension,
@@ -987,6 +1038,9 @@ export async function revertTranscodingStamp(
   prior: TranscodingStampSnapshot,
   now: string,
 ): Promise<number> {
+  // Do not resurrect annotations invalidated when a distinct source was
+  // accepted. A curator may have edited them since the stamp; restoring an
+  // old snapshot could overwrite that decision. Unknown is the safe fallback.
   const result = await db
     .prepare(
       `UPDATE datasets
@@ -1064,6 +1118,7 @@ export async function clearTranscoding(
   dataRef: string,
   now: string,
   frameSource: FrameSourceCompleteFields | null = null,
+  historyStatements: D1PreparedStatement[] = [],
 ): Promise<number> {
   // `content_digest = NULL` here is the atomic counterpart to
   // the *conditional* clear in `stampTranscodingForVideoSource`:
@@ -1087,7 +1142,7 @@ export async function clearTranscoding(
   // state to preserve), so on the draft path this UPDATE is just
   // re-asserting the same values.
   if (frameSource) {
-    const result = await db
+    const statement = db
       .prepare(
         `UPDATE datasets
            SET transcoding = NULL,
@@ -1109,10 +1164,10 @@ export async function clearTranscoding(
         datasetId,
         uploadId,
       )
-      .run()
-    return result.meta?.changes ?? 0
+    const { writeWithHistory } = await import('./stac-history')
+    return writeWithHistory(db, statement, historyStatements)
   }
-  const result = await db
+  const statement = db
     .prepare(
       `UPDATE datasets
          SET transcoding = NULL,
@@ -1123,8 +1178,8 @@ export async function clearTranscoding(
        WHERE id = ? AND active_transcode_upload_id = ?`,
     )
     .bind(dataRef, now, datasetId, uploadId)
-    .run()
-  return result.meta?.changes ?? 0
+  const { writeWithHistory } = await import('./stac-history')
+  return writeWithHistory(db, statement, historyStatements)
 }
 
 /**
@@ -1186,28 +1241,31 @@ function buildApplyAssetStatement(
   now: string,
 ): D1PreparedStatement {
   if (upload.kind === 'data') {
+    const metadata = sourceMetadataReset(verifiedDigest)
     if (upload.target === 'stream') {
       return db
         .prepare(
           `UPDATE datasets
              SET data_ref = ?,
+                 ${metadata.sql},
                  source_digest = ?,
                  content_digest = NULL,
                  updated_at = ?
            WHERE id = ?`,
         )
-        .bind(upload.target_ref, verifiedDigest, now, datasetId)
+        .bind(upload.target_ref, ...metadata.binds, verifiedDigest, now, datasetId)
     }
     return db
       .prepare(
         `UPDATE datasets
            SET data_ref = ?,
+               ${metadata.sql},
                content_digest = ?,
                source_digest = NULL,
                updated_at = ?
          WHERE id = ?`,
       )
-      .bind(upload.target_ref, verifiedDigest, now, datasetId)
+      .bind(upload.target_ref, ...metadata.binds, verifiedDigest, now, datasetId)
   }
 
   // Auxiliary asset — stamp `*_ref` + atomically merge into the
@@ -1225,6 +1283,31 @@ function buildApplyAssetStatement(
        WHERE id = ?`,
     )
     .bind(upload.target_ref, verifiedDigest, now, datasetId)
+}
+
+/** Trusted upload boundary: invalidate source-bound facts atomically when
+ * replacing an attached source, not when merely changing its encoding/ref.
+ * Equal source/content digests prove byte identity; an absent digest does not.
+ * First attachment preserves metadata authored for that pending source.
+ * Transcode completion/rollback only move representations; they must not
+ * invalidate a same-source re-encode. New-source stamps clear early (even on
+ * published rows), preferring temporarily unknown facts to stale evidence.
+ * resource_kind survives uploads within a product; explicit publisher source/
+ * format PATCHes can designate a different product and reset it separately.
+ * Keep future raw bounds/time SQL writers equally explicit about invalidation:
+ * the schema cannot distinguish omitted assertions from same-value reassertions.
+ */
+function sourceMetadataReset(digest: string): { sql: string; binds: string[] } {
+  const defaults = {
+    bbox_provenance: "'unknown'", bbox_evidence: 'NULL',
+    temporal_semantics: "'unknown'", temporal_evidence: 'NULL',
+  }
+  return {
+    sql: Object.entries(defaults).map(([field, fallback]) =>
+      `${field} = CASE WHEN (data_ref = '' AND source_digest IS NULL AND content_digest IS NULL) OR source_digest = ? OR content_digest = ? THEN ${field} ELSE ${fallback} END`,
+    ).join(', '),
+    binds: Object.keys(defaults).flatMap(() => [digest, digest]),
+  }
 }
 
 const AUX_REF_COLUMN: Record<Exclude<AssetKind, 'data'>, string> = {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   renderOverviewPage,
@@ -186,6 +189,25 @@ describe('renderOverviewPage', () => {
     expect(mount.querySelector('.publisher-overview-pipeline')).not.toBeNull()
     expect(mount.querySelector('.publisher-overview-feedback')).not.toBeNull()
     expect(mount.textContent).toContain('Great')
+  })
+
+  it('counts events awaiting review from the server total, not the page it returned', async () => {
+    const fetchFn = adminFetch({
+      '/api/v1/publish/events?status=proposed': {
+        events: [
+          {
+            id: 'e1',
+            title: 'Snake River Wildfire',
+            status: 'proposed',
+            source: { name: 'NASA EONET' },
+            createdAt: '2026-07-05T00:00:00Z',
+          },
+        ],
+        total: 137,
+      },
+    })
+    await renderOverviewPage(mount, { fetchFn, now: () => NOW })
+    expect(mount.textContent).toContain('137 events awaiting review')
   })
 
   it('hides privileged sections for a non-admin publisher', async () => {

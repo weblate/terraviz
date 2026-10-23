@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Tests for the searchDatasets helper.
  *
@@ -534,6 +537,11 @@ describe('rowOverlapsTimeRange (3pg/D)', () => {
       bbox_s: null,
       bbox_w: null,
       bbox_e: null,
+      bbox_provenance: 'unknown',
+      bbox_evidence: null,
+      temporal_semantics: 'unknown',
+      temporal_evidence: null,
+      resource_kind: 'unknown',
       celestial_body: null,
       radius_mi: null,
       lon_origin: null,

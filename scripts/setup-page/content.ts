@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Editorial content for the generated `/setup` page.
  *
@@ -179,7 +182,7 @@ npm run dev:functions      # http://localhost:8788`,
     automatedNote: [
       'Creates or adopts the D1 database, both KV namespaces, the R2 bucket, and the Vectorize index with its three metadata indexes — and records every ID for you. Re-running adopts what already exists rather than making a second one.',
     ],
-    gate: 'W4 through W8 hold the IDs Cloudflare just printed, and W9 holds the dataset name you intend to use. Nothing creates W9 — an Analytics Engine dataset appears on first write.',
+    gate: 'W4 through W8 hold the IDs Cloudflare just printed, and W9 holds the dataset name you intend to use. No command creates W9 — an Analytics Engine dataset appears on first write. Turning the product on is a separate one-time click, and Phase 8.8 will not deploy without it.',
     gateShort: 'You have written down the six IDs Cloudflare just gave you.',
     anchor: 'phase-2--create-the-cloudflare-resources',
   },
@@ -507,8 +510,19 @@ npm run terraviz -- import-snapshot \\
     duration: '≈20 min',
     aside: 'all tiers · before you go public',
     intro: [
-      '**The repo ships no CSP.** Upstream enforces one at the Cloudflare edge, and edge rules do not travel with a fork — so every fork is unprotected until its operator adds one. Your node works without it; do it anyway before the node faces the public.',
+      '**`public/_headers` ships no CSP for the app.** Its CSPs only stop other sites framing the portal and a few static folders. Upstream enforces an app policy at the Cloudflare edge, and edge rules do not travel with a fork. Every fork is unprotected until its operator adds one. Your node works without it; do it anyway before the node faces the public.',
       'Remember `blob:` — the app uses it for preview tours and screenshots, and omitting it reproduces the "may not load data from blob:" failure. Test playback, VR and a tour before locking it down.',
+    ],
+    body: [
+      {
+        kind: 'note',
+        title: 'If other sites embed the node',
+        body: [
+          'By default any site may show the node in an iframe, as the WordPress plugin does. To limit that, sign in as an admin and open **Settings → Node profile**, then the **Embedding** card. Choose **Only sites I list** or **No other site**. It takes effect within a few minutes, with no redeploy. To allow a page opened from a file (an address starting `file://`), add `file:` to the list.',
+          "The card shows the headers a visitor gets on `/`, and flags an `X-Frame-Options` header or another `frame-ancestors`. Cloudflare's **Add security headers** transform sends `X-Frame-Options: SAMEORIGIN`. With **Any site can embed** it blocks every other site and every page opened from a file. With a list, current browsers ignore it, so if the zone must keep the transform, list the sites. Cloudflare Access blocks embeds too, and the card cannot see it.",
+          'You can use an edge rule instead, with the setting left on **Any site can embed**. An edge rule that *Sets* a CSP replaces the node\'s own; use **Add**, so the portal keeps its `frame-ancestors \'self\'`.',
+        ],
+      },
     ],
     gate: 'Playback, VR and a tour all still work with the policy live.',
     gateShort: 'A CSP is in place and nothing broke.',
@@ -653,6 +667,10 @@ export const TROUBLESHOOTING = [
     fix: "Remote node identity is empty — Phase 9 was not run. The local seed and key-gen paths do **not** write remote D1. The 503's own error text tells you to run `gen:node-key`; that hint is wrong. Use `init-node`.",
   },
   {
+    symptom: 'Deploy fails: "You need to enable Analytics Engine"',
+    fix: 'The product is off on your account until somebody opens it once, and a Function declaring the binding cannot publish without it. Open Workers & Pages → Analytics Engine and create a dataset — name `terraviz_events`, binding `ANALYTICS` — then retry the deployment.',
+  },
+  {
     symptom: 'Ingest returns 204 but nothing lands in Analytics Engine',
     fix: "The binding is missing in the environment serving traffic — check *both* Production and Preview. The function silently skips the write when it is undefined. (A 403 instead means the CORS gate rejected it: curl does not send an Origin header unless you pass one.)",
   },
@@ -694,7 +712,7 @@ export const WEEK_ONE = [
   },
   {
     title: 'Add a Content-Security-Policy',
-    body: "The repo ships none, and upstream's edge policy does not travel with a fork. See Phase 13.7 — and test playback, VR and a tour before you lock it down.",
+    body: "The repo ships none for the app, and upstream's edge policy does not travel with a fork. See Phase 13 — and test playback, VR and a tour before you lock it down.",
     wide: true,
   },
 ]
@@ -748,7 +766,7 @@ export const WORKSHEET: WorksheetField[] = [
   { id: 'W1', label: 'Cloudflare account ID', phase: 0, token: '‹account-id›', placeholder: '32-char hex', note: 'Dashboard sidebar, and in every dashboard URL.', origin: 'asked', fromTool: 'accountId', validator: 'accountId', consumedBy: [5, 10, 13], minTier: 1 },
   { id: 'W2', label: 'Node hostname', phase: 0, token: '‹your-hostname›', placeholder: 'terraviz.your-org.org', note: 'Hostname only. No https://, no trailing path.', origin: 'asked', fromTool: 'hostname', validator: 'hostname', consumedBy: [5, 6, 8, 9, 10, 13, 14], minTier: 1 },
   { id: 'W3', label: 'Git remote', phase: 0, token: '‹owner/repo›', placeholder: 'owner/repo', note: 'Where Pages watches for builds.', origin: 'asked', fromTool: 'githubRepo', validator: 'repoSlug', consumedBy: [5, 14], minTier: 1 },
-  { id: 'TRUST', label: 'Auto-approve domains', phase: 0, token: '‹trusted-domains›', placeholder: 'your-org.org,partner.org', note: 'Optional. Sign-ins from these domains skip the approval queue but land READ-ONLY (role reviewer). It grants nobody admin — the first sign-in does that. Blank means you approve everyone by hand.', origin: 'asked', fromTool: 'trustedPublisherDomains', validator: 'emailDomainList', consumedBy: [8, 11], minTier: 2 },
+  { id: 'TRUST', label: 'Auto-approve domains', phase: 0, token: '‹trusted-domains›', placeholder: 'your-org.org,partner.org', note: 'Optional, and reversible from the Users tab later. Sign-ins from these domains skip the approval queue but land READ-ONLY (role reviewer), able to publish nothing. It grants nobody admin — the first sign-in does that. Blank means every sign-in waits for you, your own team included.', origin: 'asked', fromTool: 'trustedPublisherDomains', validator: 'emailDomainList', consumedBy: [8, 11], minTier: 2 },
   { id: 'W4', label: 'D1 database ID', phase: 2, token: '‹d1-id›', placeholder: 'from wrangler d1 create', note: 'The one value you cannot recover from a later error.', origin: 'discovered', consumedBy: [3, 8], minTier: 1 },
   { id: 'W5', label: 'KV — TELEMETRY_KILL_SWITCH', phase: 2, token: '‹kv-killswitch-id›', placeholder: '32-char hex', origin: 'discovered', consumedBy: [3, 8], minTier: 1 },
   { id: 'W6', label: 'KV — CATALOG_KV', phase: 2, token: '‹catalog-kv-id›', placeholder: '32-char hex', origin: 'discovered', consumedBy: [3, 8], minTier: 2 },

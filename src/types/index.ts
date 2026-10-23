@@ -1,10 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Type definitions for Terraviz project
  */
 
 import type { ColorScale, RenderEncoding } from './color-scale'
+import type { DisplayColorScale } from './unit-scale'
+// Imported rather than restated so the telemetry `mode` field cannot
+// name a geometry the wire format does not have (or miss one it
+// gains). Type-only, so nothing about the shared type barrel reaches
+// the multi-output feature at runtime.
+import type { OutputMode } from '../services/multiOutput/protocol'
 
-export type { ColorScale, RenderEncoding }
+export type { ColorScale, DisplayColorScale, RenderEncoding }
 
 /**
  * Supported dataset formats.
@@ -133,6 +142,24 @@ export interface Dataset {
    * inverted Y conventions. Omitted == false. */
   isFlippedInY?: boolean
 
+  /**
+   * How many source frames this dataset advances per second.
+   *
+   * A property of the dataset, not of the file: the rate is already
+   * baked in by the time anything plays it, either by holding each
+   * frame across a 30 fps container (what the transcode does) or by
+   * encoding at this container rate directly (what a hand-encoded
+   * data video does). Both arrive playing correctly at `playbackRate
+   * = 1`, which is why nothing applies this on load.
+   *
+   * What it *is* needed for is the tour `frameRate` task, which asks
+   * for a rate in dataset frames per second and can only convert that
+   * to a `playbackRate` if it knows what the dataset already advances
+   * at. Omitted means 30 — one source frame per output frame, which
+   * is every dataset that never set it.
+   */
+  playbackFps?: number
+
   /** How the frames encode their pixels. Omitted == a picture
    * (colourised upstream, rendered as-is) — the state of every
    * dataset published before this field existed, and the whole of
@@ -144,7 +171,7 @@ export interface Dataset {
   /** Palette + scale for a `data-luma` dataset. Present only
    * alongside `renderEncoding`; both are dropped together if
    * either is missing or the sidecar fails to parse. */
-  colorScale?: ColorScale
+  colorScale?: DisplayColorScale
 
   // Enriched metadata (from sos_dataset_metadata.json cross-reference)
   enriched?: EnrichedMetadata
@@ -359,7 +386,7 @@ export interface DatasetOverlayOptions {
    *  means the texture is already a picture and is drawn as-is.
    *  This is the field that carries data-encoded mode to all four
    *  render surfaces. */
-  colorScale?: ColorScale
+  colorScale?: DisplayColorScale
   /** Which dataset these options were built from.
    *
    *  Carried so a *frame* can say what it is, rather than a reader
@@ -1044,6 +1071,24 @@ export interface TourCallbacks {
   isPlaying(): boolean
   setPlaybackRate(rate: number): void
   /**
+   * The loaded dataset's own advance rate, in source frames per
+   * second, or undefined when the host does not know it.
+   *
+   * The `frameRate` task asks for a rate in *dataset* frames per
+   * second, and turning that into a `playbackRate` means dividing by
+   * what the dataset already advances at. That was hard-coded to 30
+   * — correct only for a dataset with one source frame per output
+   * frame. A dataset carrying `playbackFps` advances at that rate
+   * instead, whether the file achieves it by holding each frame
+   * across a 30 fps container or by being encoded at that container
+   * rate, and dividing by 30 makes such a tour wrong by the ratio
+   * between them.
+   *
+   * Optional, and absent means 30: a host that never wires it keeps
+   * exactly the behaviour it had.
+   */
+  getPlaybackFps?(): number | undefined
+  /**
    * Seek the loaded dataset to an ISO time (the `setTime` task).
    * Optional — hosts without seekable playback (or older wiring)
    * simply skip the task.
@@ -1155,6 +1200,28 @@ export type ErrorCategory =
 export type ErrorSource =
   | 'caught' | 'window_error' | 'unhandledrejection'
   | 'console_error' | 'console_warn' | 'tauri_panic'
+
+// --- Multi-monitor output (docs/MULTI_MONITOR_PLAN.md rung 13) ---
+
+/** A framebuffer rung by name. The exact pixel width is a machine
+ *  fingerprint; which rung an installation chose is the question.
+ *  `native` is a `projector-warp` output (rung 16), which draws
+ *  projector rasters rather than an equirect frame, so no rung on the
+ *  ladder describes it — bucketing its stored width would name a 2:1
+ *  frame it does not draw. */
+export type FramebufferBucket = '1k' | '2k' | '4k' | '8k' | 'native'
+/** Why an output stopped running — or, for the storm guard, never
+ *  started. `gpu-loss-timeout` and `monitor-gone` are declared now and
+ *  fire when failure-recovery cases 4 and 5 land, so the enum does not
+ *  have to change under a dashboard that already queries it. */
+export type OutputRemovedReason =
+  | 'operator-close' | 'crash' | 'monitor-gone'
+  | 'gpu-loss-timeout' | 'rejected-by-storm-guard'
+/** The six failure modes §3 enumerates, minus the two that are the
+ *  control window's own (a manager crash cannot report itself). Only
+ *  `crash` has a detector today; the rest land with cases 2-5. */
+export type OutputFailureKind =
+  | 'crash' | 'hls-stalled' | 'ipc-silence' | 'gpu-loss' | 'monitor-unplug'
 
 // --- Base event shape ---
 
@@ -1764,6 +1831,72 @@ export interface PublisherActionEvent extends TelemetryEventBase {
   dataset_id: string
 }
 
+/**
+ * Multi-monitor output telemetry (`docs/MULTI_MONITOR_PLAN.md` §3
+ * "Failure recovery", Open Question 3 — decided; rung 13).
+ *
+ * Three events, all Tier A, all emitted by the **control window**.
+ * The output windows themselves emit nothing, and that is a policy
+ * rather than an omission: §3.6's capture-clean rule exists because
+ * the common installation pattern is an HDMI capture card taking a
+ * monitor as input, so anything an output does is on the sphere in
+ * front of an audience — and an output phoning home would be the
+ * same class of leak one layer down. The control window can see
+ * everything worth reporting anyway.
+ *
+ * Tier A because the motivation is installation health, not user
+ * research: an operator running a museum sphere wants a crash to be
+ * visible, and an event that only ships for the fraction of users
+ * who opted into Research would answer "how often do outputs
+ * crash?" with a number nobody can act on. Nothing here is free
+ * text, a coordinate, or a device string, so none of the hashing,
+ * sanitising or rounding invariants apply — every field is a small
+ * categorical enum or a count. The one field that *could* have
+ * identified hardware, the monitor, is reported as an index into the
+ * enumeration and never as the OS-reported display name.
+ */
+export interface OutputAddedEvent extends TelemetryEventBase {
+  event_type: 'output_added'
+  /** Projection geometry the window was spawned as: `sos-equirect`, or
+   *  `projector-warp` for a projector rig's warp meshes (rung 16). */
+  mode: OutputMode
+  /** Framebuffer width as a rung name rather than a pixel count.
+   *  Bucketed because the exact number is a machine fingerprint the
+   *  question ("do installations run big frames?") does not need. */
+  framebuffer_bucket: FramebufferBucket
+  /** Index into the monitor enumeration — 0 is the first enumerated
+   *  display, not necessarily the OS's primary. Never the monitor's
+   *  name, which is a user-set string on macOS and a model number on
+   *  plenty of Windows machines. */
+  monitor_index: number
+}
+
+export interface OutputRemovedEvent extends TelemetryEventBase {
+  event_type: 'output_removed'
+  mode: OutputMode
+  /** Why it stopped running. `operator-close` covers both halves of
+   *  a deliberate close — the panel's Remove button and the window's
+   *  own close — because the distinction matters to the manager's
+   *  bookkeeping and not to anyone reading a dashboard.
+   *  `rejected-by-storm-guard` is a configured output that never
+   *  came back, which is a removal from the operator's side even
+   *  though no window existed to close. */
+  reason: OutputRemovedReason
+}
+
+export interface OutputFailureEvent extends TelemetryEventBase {
+  event_type: 'output_failure'
+  kind: OutputFailureKind
+  /** Recovery attempts made before this fired. Bounded auto-recovery
+   *  collapses into one event carrying its count rather than one
+   *  event per attempt, so a flapping installation reports a rising
+   *  number instead of a rising rate. */
+  retries: number
+  /** True if the output carried on afterwards; false if the failure
+   *  was escalated to the operator. */
+  recovered: boolean
+}
+
 // --- Tier B events ---
 
 export interface DwellEvent extends TelemetryEventBase {
@@ -1809,8 +1942,11 @@ export interface OrbitTurnEvent extends TelemetryEventBase {
    * monitoring per-turn cost shifts (Phase 1d/F replaced the
    * single-round pre-search injection with a tool-calling path
    * that can take 2+ rounds for tool-using turns). 0 / unset on
-   * the user-side `orbit_turn` and on assistant emits from
-   * pre-1d/Y clients.
+   * the user-side `orbit_turn`, on assistant emits from pre-1d/Y
+   * clients, and on turns that never received the LLM's `done`:
+   * those the local engine answered, those that ended in a client
+   * exception, and those cut off because the node withdrew Orbit
+   * mid-turn.
    *
    * Field name chosen so it sorts after `turn_index`
    * alphabetically, preserving the existing AE blob/double
@@ -2036,6 +2172,9 @@ export type TelemetryEvent =
   | MigrationR2ToursEvent
   | PublisherPortalLoadedEvent
   | PublisherActionEvent
+  | OutputAddedEvent
+  | OutputRemovedEvent
+  | OutputFailureEvent
   // Tier B
   | DwellEvent
   | PublisherValidationFailedEvent

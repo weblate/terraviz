@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * 3D translation of the 2D loading screen (`src/styles/loading.css`).
  *
@@ -8,9 +11,11 @@
  * version while the WebXR session is starting up and the dataset
  * texture is decoding.
  *
- * Visible from the moment `vrSession.enterVr()` builds the scene
- * until the dataset texture has a decoded frame. Then fades out via
- * `fadeOut()` and the real globe takes over the same anchor point.
+ * Visible from the moment `vrSession.enterImmersive()` builds the
+ * scene until the dataset texture has a decoded frame — or its video
+ * reports an error, or a fallback timer gives up waiting (see
+ * `vrLoadingHandover.ts`). Then fades out via `fadeOut()` and the real
+ * globe takes over the same anchor point.
  *
  * See {@link file://./../../docs/VR_INVESTIGATION_PLAN.md VR_INVESTIGATION_PLAN.md}
  * Phase 2 — visual polish, loading gate.

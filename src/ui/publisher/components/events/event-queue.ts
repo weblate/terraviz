@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Direction A — the **left master list** of the Events triage queue
  * (`docs/events-tab-handoff/EVENTS_TAB_IMPLEMENTATION_BRIEF.md` §6 A).
@@ -8,7 +11,7 @@
  */
 
 import { t } from '../../../../i18n'
-import { primaryCategory, type ReviewEvent } from './events-model'
+import { pendingLinkCount, primaryCategory, type ReviewEvent } from './events-model'
 
 export interface EventQueueCallbacks {
   onSelect: (eventId: string) => void
@@ -33,7 +36,7 @@ function renderRow(event: ReviewEvent, selected: boolean, cb: EventQueueCallback
   sub.className = 'publisher-events-queue-sub'
   // "…datasets to review" counts only the pairings still awaiting a
   // decision, so it shrinks as the curator resolves them.
-  const count = event.links.filter(l => l.status === 'proposed').length
+  const count = pendingLinkCount(event)
   sub.textContent = `${sourceLabel(event)} · ${t('publisher.events.queue.toReview', { count: String(count) })}`
 
   const row = document.createElement('button')
@@ -45,6 +48,9 @@ function renderRow(event: ReviewEvent, selected: boolean, cb: EventQueueCallback
     'aria-label',
     t('publisher.events.queue.rowAria', {
       title: event.title,
+      // The row shows its source; its name says it too (label in name),
+      // and it is what the Source filter narrows by.
+      source: sourceLabel(event),
       category: cat ?? t('publisher.events.queue.uncategorized'),
       count: String(count),
     }),

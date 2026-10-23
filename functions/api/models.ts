@@ -1,11 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
 /**
  * Cloudflare Pages Function — /api/models
  *
  * Health-check endpoint for the "Test Connection" button.
- * Returns a minimal OpenAI-compatible model list.
+ * Returns a minimal OpenAI-compatible model list, or a 403
+ * `feature_disabled` while the node's `orbit` feature is off.
  */
 
-interface Env {
+import { isOrbitEnabled, orbitDisabledResponse, type OrbitGateEnv } from './_lib/orbit-gate'
+
+interface Env extends OrbitGateEnv {
   AI: unknown
 }
 
@@ -28,6 +34,10 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     headers['Access-Control-Allow-Origin'] = allowed
     headers['Vary'] = 'Origin'
   }
+
+  // Orbit turned off for this node: nothing to connect to. Ahead of
+  // the binding check, which would otherwise call it misconfigured.
+  if (!(await isOrbitEnabled(context.env))) return orbitDisabledResponse(allowed ? headers : {})
 
   // Verify the AI binding is available — if not, the endpoint is misconfigured
   if (!context.env.AI) {
