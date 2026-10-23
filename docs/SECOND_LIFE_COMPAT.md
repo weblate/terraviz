@@ -418,7 +418,10 @@ Outside the desktop app it skips its link to a control window
 (`src/output/main.ts:233`) and draws its idle Earth: day/night line
 for the current time, city lights, clouds, the atmosphere's tint. It
 takes its drawing mode from its own address, and a bare address means
-the LED-sphere unwrap (`src/output/main.ts:83`).
+the LED-sphere unwrap (`src/output/main.ts:83`). The day/night line
+moves as you watch; the clouds stay as they were when the page
+loaded, although the image they come from is replaced every ten
+minutes (§7 item 8).
 
 **On the sphere it was correct** — continents upright, the day/night
 line in the right place, the poles closed — once the media size was
@@ -693,6 +696,40 @@ The work, smallest first:
    the part after `#`, which browsers don't reload for — if Second Life
    passes such a change through to every viewer (§10 question 10).
    Worth one test before designing anything on it.
+8. **Keep the clouds current.** The output page loads its cloud image
+   once, at startup (`src/output/outputScene.ts:983`), and never again.
+   The image it loads is replaced upstream every ten minutes:
+   `clouds_8192.jpg` and `clouds_4096.jpg` on the Science On a Sphere
+   Explorer bucket (`src/utils/deviceCapability.ts:103`) changed at
+   21:15:04 and again at 21:25:04 UTC on 23 October (§11). So a page left
+   open shows the sky from whenever it loaded — and in Second Life,
+   where every visitor's copy loads on its own, two visitors at one
+   globe can see different skies. Three parts:
+   - **Refresh on the producer's schedule**, a minute or so after each
+     ten-minute mark, rather than ten minutes after the page loaded, so
+     every visitor's copy changes at about the same moment.
+   - **Ask before downloading.** The server sends an ETag, so a
+     conditional request costs almost nothing when the file hasn't
+     changed.
+   - **Fetch the size the render can use.** The page takes the
+     8192-wide image (4.9 MB) on anything that isn't a phone
+     (`deviceCapability.ts:106`), and Second Life's browser isn't. Up to
+     a 2048-wide render, the 4096 image (1.0 MB) already carries more
+     detail than can be shown; there is no 2048 image. At ten-minute
+     intervals that is about 29 MB against 6 MB an hour per copy — for
+     a 40-avatar event, roughly 1.2 GB against 240 MB an hour, from a
+     bucket TerraViz doesn't run.
+
+   The day/night line needs none of this. The page works out the sun's
+   position from the clock on every frame it draws
+   (`outputScene.ts:1046`), and draws at least once a second.
+
+   **The main app has the same gap.** Its globe also loads its clouds
+   once (`src/services/earthTileLayer.ts:1700`), so a museum kiosk or a
+   browser tab left open all day shows the morning's clouds. That is a
+   separate change — a different renderer, and nothing to do with
+   Second Life — and a small one, but it's the case far more people
+   meet.
 
 Things this touches beyond the code:
 
@@ -708,7 +745,7 @@ Things this touches beyond the code:
   `terraviz.zyra-project.org` can play that node's streams; a partner
   node's output page needs its own video host to allow it.
 
-Items 1–6 are one code PR. Item 7 waits for the `#` test.
+Items 1–6 and 8 are one code PR. Item 7 waits for the `#` test.
 
 ---
 
@@ -747,7 +784,7 @@ Written down so these don't get re-proposed in six months.
   people in-world, and the cheapest way to answer §10 questions 8 and
   11.
 
-**Phase 1 — the output page's web mode** (§7, items 1–6). One code
+**Phase 1 — the output page's web mode** (§7, items 1–6 and 8). One code
 PR. It turns the idle-Earth globe into a TerraViz dataset globe that
 every visitor sees in step.
 
@@ -763,6 +800,11 @@ a "Right now" kiosk.
 
 Options B and D only if a host needs what they uniquely offer: phones
 or no-browser exhibits for B, a self-hosted world for D.
+
+**Separately, at any time — the main app's clouds** (§7 item 8). The
+same ten-minute refresh for the main globe, a small change of its own,
+useful wherever TerraViz is left running for hours. Nothing in it
+depends on Second Life.
 
 ---
 
@@ -858,6 +900,9 @@ Numbering is kept from the first version, so a reference like
 - `src/output/main.ts:83`, `:233` — the output page reads its mode from its address, and attaches its control-window link only on desktop
 - `src/output/output.css:35` — `object-fit: contain`, the letterboxing behind the black polar caps
 - `src/output/datasetMirror.ts`, `src/output/outputSync.ts` — what plays a dataset on an output and steers its playhead (§7 items 1 and 4)
+- `src/output/outputScene.ts:983`, `:1046` — the output loads its cloud image once; it computes the sun from the clock on every drawn frame (§7 item 8)
+- `src/utils/deviceCapability.ts:103`, `:106` — the cloud images' bucket, and the 8192-wide choice for anything not a phone
+- `src/services/earthTileLayer.ts:1700` — the main globe loads its clouds once too
 - `src/services/multiOutput/mirrorState.ts` — the control side's dataset-to-output mapping (§7 item 1)
 - `src/services/multiOutput/protocol.ts:573`, `:579` — framebuffer widths 1024 / 2048 / 4096 / 8192, default 4096
 - `src/services/heroService.ts`, `functions/api/v1/featured-hero.ts` — the "Right now" pick is computed in the browser; the endpoint returns the raw pin only
@@ -869,5 +914,6 @@ Numbering is kept from the first version, so a reference like
 **Measurements** (from outside Second Life, 23 Oct 2026)
 - Reply sizes in §4.1: `curl` against `https://terraviz.zyra-project.org`. `/api/v1/events` 820 B; `/api/v1/featured?limit=24` 15 B; `/api/v1/featured-hero` 13 B; `/api/v1/catalog` 822,125 B over 180 datasets (mean 4,574 B per record re-serialised compactly, largest 16,170 B)
 - Video CORS in §4.4: `https://video.zyra-project.org/videos/<id>/master.m3u8` returns `Access-Control-Allow-Origin: https://terraviz.zyra-project.org` for that origin and no CORS headers for any other. Renditions 4096×2048 (`avc1.4d4033`, 27,711,200 bps), 2160×1080 (`avc1.4d4032`, 9,011,200 bps), 1440×720 (`avc1.4d4020`, 4,611,200 bps), all with AAC
+- Clouds in §7 item 8: `https://s3.dualstack.us-east-1.amazonaws.com/metadata.sosexplorer.gov/clouds_8192.jpg` (4,886,981 B) and `clouds_4096.jpg` (1,029,784 B), `Last-Modified` 21:15:04 then 21:25:04 UTC, each with an `ETag` and no `Cache-Control`; `clouds_2048.jpg` returns 404
 - Manifests: a video dataset's `/api/v1/datasets/<id>/manifest` returns `{"kind":"video", …, "hls": "<master.m3u8>"}`; an image dataset's returns `{"kind":"image", "variants": [{ "width", "url" }, …]}` (Nighttime Lights: 4096, 2048 and 1024 variants)
 - The output page: `/output/output.html` redirects (308) to `/output/output`, titled "Output — Terraviz"; `/output.html` serves the main app. In headless Chromium at 1024×512 the page draws a 2:1 Earth with no errors, at a 4096×2048 drawing buffer
