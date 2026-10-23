@@ -399,6 +399,16 @@ question 6). If they don't, a video-only page fails even with WebGL
 completely out of the picture, and in-world use would need a
 royalty-free re-encode of the streams (VP9 or AV1).
 
+**Where the page is served from matters.** TerraViz's video host
+grants cross-origin access only to `https://terraviz.zyra-project.org`
+(checked 23 October 2026). A video-only page built into TerraViz
+itself is fine. The same page hosted anywhere else — a partner's site,
+an OpenSimulator grid, a page served by an in-world script — can't
+load the streams through hls.js. A plain `<video>` element doesn't
+need that permission, but it can only play HLS where the browser
+supports HLS natively, and whether Second Life's embedded Chrome does
+is unverified.
+
 **One honest scoping note:** `?embed=1` will not do this. Embed mode
 only hides interface chrome using CSS — "nothing is torn out of the
 boot path" (`src/utils/embedMode.ts`). A video-only page needs a real
@@ -559,3 +569,4 @@ Listed rather than guessed at. Each needs someone to go and look.
 
 **Measurements**
 - Reply sizes in §5 Option A: `curl` against `https://terraviz.zyra-project.org`, 23 Oct 2026, from outside Second Life. `/api/v1/events` 820 B; `/api/v1/featured?limit=24` 15 B; `/api/v1/featured-hero` 13 B; `/api/v1/catalog` 822,125 B over 180 datasets (mean 4,574 B per record re-serialised compactly, largest 16,170 B)
+- Video CORS in §5 Option C: `https://video.zyra-project.org/videos/<id>/master.m3u8` returns `Access-Control-Allow-Origin: https://terraviz.zyra-project.org` for that origin and no CORS headers for any other, 23 Oct 2026. Renditions are 4096×2048, 2160×1080 and 1440×720, H.264 Main (`avc1.4d4033` / `4d4032` / `4d4020`) with AAC
