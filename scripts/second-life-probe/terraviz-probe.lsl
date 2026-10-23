@@ -246,14 +246,11 @@ integer watchFor(string mode)
 // address is unchanged; the pages read only their own parameters.
 show(string mode, string url)
 {
-    if (gWatch == WATCH_HEARTBEAT && gSoakLast != "")
-        llOwnerSay("[probe] Soak ended by a new command. Last heartbeat: " + gSoakLast);
-    ++gRun;
-    gMode = mode;
-    gStarts = 0;
-    arm(watchFor(mode));
-    if (llSubStringIndex(url, "?") == -1) url += "?n=" + (string)gRun;
-    else url += "&n=" + (string)gRun;
+    // Nothing changes until the media has, so a refused change leaves
+    // the page that is still showing watched exactly as it was.
+    integer run = gRun + 1;
+    if (llSubStringIndex(url, "?") == -1) url += "?n=" + (string)run;
+    else url += "&n=" + (string)run;
     integer r = llSetPrimMediaParams(gFace, [
         PRIM_MEDIA_CURRENT_URL, url,
         PRIM_MEDIA_HOME_URL, url,
@@ -265,11 +262,17 @@ show(string mode, string url)
         PRIM_MEDIA_PERMS_CONTROL, PRIM_MEDIA_PERM_NONE]);
     if (r != STATUS_OK)
     {
-        arm(WATCH_NONE);
-        llOwnerSay("[probe] Could not set media on face " + (string)gFace + " (status " + (string)r + ").");
+        llOwnerSay("[probe] Could not set media on face " + (string)gFace + " (status " + (string)r
+            + "). Whatever was showing still is.");
+        return;
     }
-    else
-        llOwnerSay("[probe] Face " + (string)gFace + " now shows " + url);
+    if (watchFor(gMode) == WATCH_HEARTBEAT && gSoakLast != "")
+        llOwnerSay("[probe] Soak ended by a new command. Last heartbeat: " + gSoakLast);
+    gRun = run;
+    gMode = mode;
+    gStarts = 0;
+    arm(watchFor(mode));
+    llOwnerSay("[probe] Face " + (string)gFace + " now shows " + url);
 }
 
 applyTexture()
@@ -405,10 +408,23 @@ default
                 }
                 else if (llSubStringIndex(line, "webgl frames") == 0 && gWatch == WATCH_FRAMES)
                     arm(WATCH_NONE);
-                else if (llSubStringIndex(line, "soak ") == 0 && llSubStringIndex(line, "s, ") != -1 && gWatch == WATCH_HEARTBEAT)
+                else if (llSubStringIndex(line, "soak ") == 0 && watchFor(gMode) == WATCH_HEARTBEAT)
                 {
-                    gSoakLast = line;
-                    llSetTimerEvent(HEARTBEAT_WAIT);
+                    if (llSubStringIndex(line, "s, ") != -1)
+                    {
+                        // Accepted even after the watch fired: a gap that
+                        // recovers is not the end of the soak, and the
+                        // watch has to be back for the one that is.
+                        if (gWatch != WATCH_HEARTBEAT)
+                            llOwnerSay("[probe] Heartbeats resumed, so the gap was not the end of the soak.");
+                        gWatch = WATCH_HEARTBEAT;
+                        gSoakLast = line;
+                        llSetTimerEvent(HEARTBEAT_WAIT);
+                    }
+                    else
+                        // The soak said it cannot run - no WebGL 2 context,
+                        // say. That is an answer, not a page gone quiet.
+                        arm(WATCH_NONE);
                 }
                 llOwnerSay("[page] " + line);
             }
@@ -419,6 +435,9 @@ default
 
     timer()
     {
+        // A timer event already queued when a command cleared the timer
+        // can still arrive; it belongs to a watch that no longer exists.
+        if (gWatch == WATCH_NONE) { llSetTimerEvent(0.0); return; }
         if (gStarts == 0)
             llOwnerSay("[probe] The page never reported starting. Is media auto-play on? Clicking the face starts it.");
         else if (gWatch == WATCH_FRAMES)

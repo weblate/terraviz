@@ -100,8 +100,9 @@ local texture, and it costs nothing.
 | `[probe] No WebGL frame report within 45 seconds` | The page started, then stopped or was unloaded during the WebGL test. Worth checking whether the viewer's media process crashed: on Windows, Event Viewer → Application, an *Application Error* naming `SLPlugin.exe` |
 | `[probe] The page never reported starting` | Usually media auto-play is off. Click the face |
 | `[probe] The page started again without a command` | The viewer reloaded the page on its own. It has done this at a different size, which is worth noting |
-| `[probe] Heartbeats stopped. Last one: soak webgl: …` | How long the soak lasted before the page went quiet |
+| `[probe] Heartbeats stopped. Last one: soak webgl: …` | How long the soak lasted before the page went quiet — unless a `Heartbeats resumed` line follows, in which case it was a gap (a dropped report, region lag) and the soak is still being watched |
 | `[probe] The soak sent no heartbeat within 25 seconds of starting` | It went quiet in its first seconds — the failure bug #5189 describes |
+| `[page] soak webgl: no WebGL 2 context` | This viewer's browser has no WebGL 2, so the soak can't run. An answer in itself; TerraViz needs WebGL 2 |
 | `[probe] Soak ended by a new command` | You switched away; nothing went wrong |
 | `[page] TerraViz stream via hls.js: failed, networkError / manifestLoadError` | Expected. TerraViz's video host only lets pages from TerraViz's own site load its streams through hls.js, so the page falls back to a public test stream to check that video plays at all. (The page tries the browser's own HLS player first, which isn't held to that rule; Second Life's browser had none in October 2026, so that path didn't run) |
 

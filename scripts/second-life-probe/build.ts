@@ -38,7 +38,7 @@ export const MAX_EMBEDDED_CHARACTERS = 8192
 
 /** Windows line endings, and a byte-order mark an editor may have saved. */
 function normalize(text: string): string {
-  return text.replace(/^﻿/, '').replace(/\r\n/g, '\n')
+  return text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
 }
 
 /** Every character the page could not carry into an LSL string literal. */

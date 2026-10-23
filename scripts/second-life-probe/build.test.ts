@@ -46,7 +46,7 @@ describe('second-life probe kit', () => {
   it('ignores a byte-order mark rather than refusing or copying it', () => {
     // Saved invisibly by some Windows editors. Refused, it reads as a
     // mystery character on line 1; copied, it lands ahead of the SPDX line.
-    expect(buildProbeScript(`﻿${page}`, `﻿${template}`)).toBe(committed)
+    expect(buildProbeScript(`\uFEFF${page}`, `\uFEFF${template}`)).toBe(committed)
   })
 
   it('keeps the embedded page small enough to build in a script', () => {
