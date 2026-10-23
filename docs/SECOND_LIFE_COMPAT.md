@@ -79,7 +79,7 @@ Terms used below, from both sides. Skip what you already know.
 | **SLua** | A newer scripting option based on Luau (the Lua dialect Roblox uses). In open beta since December 2025. LSL still works; you choose per script. |
 | **Shared media** (also **media on a prim**, MOAP) | Second Life's feature for showing a live web page on an object's surface. Internally it runs a cut-down copy of Chrome inside each viewer. |
 | **CEF** | Chromium Embedded Framework — the "Chrome as a building block" library that powers shared media. |
-| **HTTP-in** | A web address a script can request for itself, so that a browser — including shared media — can talk *to* the script. Used by the §4 test kit to serve its own test page. |
+| **HTTP-in** | A web address a script can request for itself, so that a browser — including shared media — can talk *to* the script. Used by the test kit in `scripts/second-life-probe/` to serve its own test page. |
 | **Local texture** | An image the viewer loads from your own disk and shows only to you. Nothing is uploaded and it costs nothing; it disappears when you log out. |
 | **PBR** | Physically Based Rendering. The modern material system Second Life adopted. Gives you colour, shininess, bumpiness, and glow — but no custom programming. |
 | **L$** | Linden dollars, the in-world currency. Roughly L$250 to US$1. Uploading a texture costs L$10. |
@@ -210,6 +210,22 @@ Two properties of the method matter for reading the results:
   script, and the LSL was built from that tested page and passed
   `lslint` with no errors. That proves the test was sound. It proves
   nothing about Second Life's browser, which is what §4 is for.
+
+**The kit is in [`scripts/second-life-probe/`](../scripts/second-life-probe/README.md)**,
+with instructions for running it in-world. It has moved on from the
+version that produced §4 in three ways, so a rerun won't match the
+numbers line for line:
+
+- **Media at 2048×1024**, not 1024×512, now that the cap is known
+  (§4.3).
+- **The node check is its own script** (`node-check.lsl`). Measured
+  inside the probe, which carries its whole test page as string
+  constants, one full reply took the script past its limit (§4.1). On
+  its own, its memory reading is what a lean script pays.
+- **An `sos` command** for the output page, and **a fresh address on
+  every command**, because the viewer doesn't reload media whose
+  address hasn't changed — repeating a command used to silently do
+  nothing.
 
 ---
 
@@ -764,7 +780,8 @@ Numbering is kept from the first version, so a reference like
 8. **Do the results hold on the official viewer and on a modest
    GPU?** Everything here is one machine with a very fast card. The
    official viewer reports the same Chromium build, which suggests it
-   behaves the same, but nobody has run it.
+   behaves the same, but nobody has run it. The kit in
+   `scripts/second-life-probe/` reruns §4 anywhere.
 9. **What happened at 11:40?** The one test run that went silent
    (§4.3). Windows Event Viewer → Application, around that time: an
    *Application Error* naming `SLPlugin.exe` and `libcef.dll` would
