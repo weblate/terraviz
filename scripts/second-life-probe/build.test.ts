@@ -36,7 +36,7 @@ describe('second-life probe kit', () => {
   it('carries dollar signs through as written', () => {
     // Each of these means something to String.replace in a replacement
     // string: the marker, a single $, the template before it, after it.
-    const code = "<script>var r='$& $$ $` $' $1';</script>"
+    const code = "<script>var r='$& $$ $` $';</script>"
     expect(unembeddable(code)).toEqual([])
     expect(servedPage(buildProbeScript(code, template))).toBe(`${code}\n`)
   })

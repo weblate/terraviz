@@ -103,8 +103,10 @@ integer runOf(string query)
 }
 
 // Starts, or restarts, the current watch's countdown. The deadline is
-// kept beside the timer because restarting the timer does not withdraw a
+// kept beside the timer because restarting the timer may not withdraw a
 // timer event already queued, and that event must not count as this one.
+// The SL wiki doesn't say either way; a 2006 forum report describes a
+// cleared timer still firing. The deadline is right in either case.
 countdown(float wait)
 {
     gDeadline = llGetTime() + wait;
@@ -130,7 +132,8 @@ integer watchFor(string mode)
 // Every command that changes the page comes through here. A new run
 // gets a new address, because the viewer does not reload media whose
 // address is unchanged; the pages read only their own parameters.
-show(string mode, string url)
+// Returns FALSE if the media was refused.
+integer show(string mode, string url)
 {
     // Nothing changes until the media has, so a refused change leaves
     // the page that is still showing watched exactly as it was.
@@ -150,7 +153,7 @@ show(string mode, string url)
     {
         llOwnerSay("[probe] Could not set media on face " + (string)gFace + " (status " + (string)r
             + "). Whatever was showing still is.");
-        return;
+        return FALSE;
     }
     if (watchFor(gMode) == WATCH_HEARTBEAT && gSoakLast != "")
         llOwnerSay("[probe] Soak ended by a new command. Last heartbeat: " + gSoakLast);
@@ -159,6 +162,7 @@ show(string mode, string url)
     gStarts = 0;
     arm(watchFor(mode));
     llOwnerSay("[probe] Face " + (string)gFace + " now shows " + url);
+    return TRUE;
 }
 
 applyTexture()
@@ -231,10 +235,15 @@ default
                 llOwnerSay("[probe] This object has faces 0 to " + (string)(sides - 1) + ".");
                 return;
             }
-            llClearPrimMedia(gFace);
+            // The old face is cleared only once the new one has taken the
+            // media, so a refused change leaves the old page showing, and
+            // watched, as show() says. Not cleared at all if it is the same
+            // face, which would remove the page just put there.
+            integer old = gFace;
             gFace = face;
+            if (!show("probe", gBase + "?probe")) { gFace = old; return; }
+            if (old != face) llClearPrimMedia(old);
             applyTexture();
-            show("probe", gBase + "?probe");
             return;
         }
         llOwnerSay("[probe] " + HELP);
