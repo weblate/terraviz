@@ -39,6 +39,16 @@
 // own viewer, in the same region (llSetContentType) - a test kit, not an
 // exhibit. The app and the output page come from TerraViz's own site and
 // have no such limit.
+//
+// How it knows a page went quiet. Every viewer near the prim fetches
+// the page, not only the owner's, and only the owner's copy runs, so a
+// fetch says nothing about whether a test is running. The watch is
+// therefore armed by a command, which only the owner can give, and
+// confirmed or cleared by the page's own reports, which only a page
+// that ran can send. Each command's address carries a run number, the
+// page reports to that same address, and a report from an earlier
+// run is ignored, so a page still reporting after a switch cannot pass
+// for the current one.
 
 integer CHAN = 7;
 string  NODE = "https://terraviz.zyra-project.org";
@@ -49,13 +59,22 @@ string  NODE = "https://terraviz.zyra-project.org";
 integer MEDIA_W = 2048;
 integer MEDIA_H = 1024;
 
+// What the current command is waiting to hear from its page.
+integer WATCH_NONE      = 0;
+integer WATCH_FRAMES    = 1;   // the probe's 10-second WebGL report
+integer WATCH_HEARTBEAT = 2;   // a soak's 10-second heartbeats
+float   FRAMES_WAIT     = 45.0;
+float   HEARTBEAT_WAIT  = 25.0; // two missed heartbeats and change
+
 integer gFace = 0;
 string  gBase;          // this script's own web address
 key     gUrlReq;
-integer gLoads;         // makes every address unique, so every command reloads
-integer gAwaitFrames;   // waiting for the page's WebGL frame report
-integer gSoaking;       // a soak page is sending 10-second heartbeats
-string  gSoakLast;      // the most recent heartbeat, reported if they stop
+integer gRun;           // the current command's run number, sent as n=
+string  gMode;          // the current command's page: probe, soak, ...
+integer gServedRun;     // the last run whose page fetch was announced
+integer gStarts;        // how many times the current run's page has started
+integer gWatch;         // WATCH_*
+string  gSoakLast;      // the most recent heartbeat
 integer gTexRot;        // texture rotation in degrees: 0, 90, 180 or 270
 integer gMirror;        // texture flipped left-to-right
 
@@ -68,18 +87,49 @@ string page()
     return s;
 }
 
-// The viewer does not reload media whose address has not changed, so a
-// repeated command would otherwise silently do nothing. Every address
-// gets a counter; the pages read only their own parameters and ignore it.
-string fresh(string url)
+// The run number in a query string, or -1.
+integer runOf(string query)
 {
-    ++gLoads;
-    if (llSubStringIndex(url, "?") == -1) return url + "?n=" + (string)gLoads;
-    return url + "&n=" + (string)gLoads;
+    list q = llParseString2List(query, ["&"], []);
+    integer i;
+    integer len = llGetListLength(q);
+    for (i = 0; i < len; ++i)
+    {
+        string t = llList2String(q, i);
+        if (llGetSubString(t, 0, 1) == "n=") return (integer)llGetSubString(t, 2, -1);
+    }
+    return -1;
 }
 
-setMedia(string url)
+arm(integer watch)
 {
+    gWatch = watch;
+    gSoakLast = "";
+    if (watch == WATCH_FRAMES) llSetTimerEvent(FRAMES_WAIT);
+    else if (watch == WATCH_HEARTBEAT) llSetTimerEvent(HEARTBEAT_WAIT);
+    else llSetTimerEvent(0.0);
+}
+
+integer watchFor(string mode)
+{
+    if (mode == "probe") return WATCH_FRAMES;
+    if (mode == "soak" || mode == "soak2d") return WATCH_HEARTBEAT;
+    return WATCH_NONE;
+}
+
+// Every command that changes the page comes through here. A new run
+// gets a new address, because the viewer does not reload media whose
+// address is unchanged; the pages read only their own parameters.
+show(string mode, string url)
+{
+    if (gWatch == WATCH_HEARTBEAT && gSoakLast != "")
+        llOwnerSay("[probe] Soak ended by a new command. Last heartbeat: " + gSoakLast);
+    ++gRun;
+    gMode = mode;
+    gStarts = 0;
+    arm(watchFor(mode));
+    if (llSubStringIndex(url, "?") == -1) url += "?n=" + (string)gRun;
+    else url += "&n=" + (string)gRun;
     integer r = llSetPrimMediaParams(gFace, [
         PRIM_MEDIA_CURRENT_URL, url,
         PRIM_MEDIA_HOME_URL, url,
@@ -90,7 +140,10 @@ setMedia(string url)
         PRIM_MEDIA_PERMS_INTERACT, PRIM_MEDIA_PERM_OWNER,
         PRIM_MEDIA_PERMS_CONTROL, PRIM_MEDIA_PERM_NONE]);
     if (r != STATUS_OK)
+    {
+        arm(WATCH_NONE);
         llOwnerSay("[probe] Could not set media on face " + (string)gFace + " (status " + (string)r + ").");
+    }
     else
         llOwnerSay("[probe] Face " + (string)gFace + " now shows " + url);
 }
@@ -144,22 +197,34 @@ default
             applyTexture();
             return;
         }
-        if (cmd == "app") { setMedia(fresh(NODE + "/?embed=1")); return; }
+        if (cmd == "app") { show("app", NODE + "/?embed=1"); return; }
         // `/output.html` falls through to the main app; this is the page.
-        if (cmd == "sos") { setMedia(fresh(NODE + "/output/output")); return; }
+        if (cmd == "sos") { show("sos", NODE + "/output/output"); return; }
         if (gBase == "") { llOwnerSay("[probe] Still waiting for a web address from the region."); return; }
-        if (cmd == "probe") setMedia(fresh(gBase + "?probe"));
-        else if (cmd == "image") setMedia(fresh(gBase + "?image"));
-        else if (cmd == "video") setMedia(fresh(gBase + "?video"));
-        else if (cmd == "soak") setMedia(fresh(gBase + "?soak"));
-        else if (cmd == "soak2d") setMedia(fresh(gBase + "?soak2d"));
-        else if (cmd == "face")
+        if (cmd == "probe" || cmd == "image" || cmd == "video" || cmd == "soak" || cmd == "soak2d")
         {
-            llClearPrimMedia(gFace);
-            gFace = llList2Integer(w, 1);
-            setMedia(fresh(gBase + "?probe"));
+            show(cmd, gBase + "?" + cmd);
+            return;
         }
-        else llOwnerSay("[probe] " + HELP);
+        if (cmd == "face")
+        {
+            // Checked before anything is cleared, so a typo cannot leave
+            // the probe pointing at a face the object does not have.
+            string arg = llList2String(w, 1);
+            integer face = (integer)arg;
+            integer sides = llGetNumberOfSides();
+            if (arg == "" || (string)face != arg || face < 0 || face >= sides)
+            {
+                llOwnerSay("[probe] This object has faces 0 to " + (string)(sides - 1) + ".");
+                return;
+            }
+            llClearPrimMedia(gFace);
+            gFace = face;
+            applyTexture();
+            show("probe", gBase + "?probe");
+            return;
+        }
+        llOwnerSay("[probe] " + HELP);
     }
 
     http_request(key id, string method, string body)
@@ -172,40 +237,54 @@ default
                 return;
             }
             gBase = body;
-            setMedia(fresh(gBase + "?probe"));
+            show("probe", gBase + "?probe");
             return;
         }
+        // Headers have to be read before responding.
+        string path = llGetHTTPHeader(id, "x-path-info");
+        integer run = runOf(llGetHTTPHeader(id, "x-query-string"));
         if (method == "GET")
         {
-            // Headers have to be read before responding.
-            string path  = llGetHTTPHeader(id, "x-path-info");
-            string mode  = llList2String(llParseString2List(llGetHTTPHeader(id, "x-query-string"), ["&"], []), 0);
             if (path != "" && path != "/") { llHTTPResponse(id, 404, ""); return; }   // favicon etc.
+            llScriptProfiler(PROFILE_SCRIPT_MEMORY);
             llSetContentType(id, CONTENT_TYPE_HTML);
             llHTTPResponse(id, 200, page());
-            // A fresh page load means a fresh run: say so, since the
-            // viewer sometimes reloads media on its own.
-            llOwnerSay("[probe] Page loaded (" + mode + ")");
-            gSoaking = FALSE;
-            gAwaitFrames = (mode == "probe");
-            if (gAwaitFrames) llSetTimerEvent(45.0); else llSetTimerEvent(0.0);
+            llScriptProfiler(PROFILE_NONE);
+            // Once per run, whoever fetched first; the page's own first
+            // report is what says it ran.
+            if (run != gServedRun)
+            {
+                gServedRun = run;
+                llOwnerSay("[probe] Served the page. Peak script memory while building it: "
+                    + (string)llGetSPMaxMemory() + " of " + (string)llGetMemoryLimit() + " bytes");
+            }
             return;
         }
         if (method == "POST")
         {
             llHTTPResponse(id, 200, "ok");
+            if (run != gRun) return;   // a page from an earlier command, still reporting
             list lines = llParseString2List(body, ["~"], []);
             integer i;
             integer n = llGetListLength(lines);
             for (i = 0; i < n; ++i)
             {
                 string line = llList2String(lines, i);
-                if (llSubStringIndex(line, "webgl frames") == 0) gAwaitFrames = FALSE;
-                if (llSubStringIndex(line, "soak ") == 0 && llSubStringIndex(line, "s, ") != -1)
+                if (llSubStringIndex(line, "mode: ") == 0)
                 {
-                    gSoaking = TRUE;
+                    // The page has started. A second start on the same run
+                    // is the viewer reloading it, which it sometimes does
+                    // unasked and at a different size.
+                    if (++gStarts > 1)
+                        llOwnerSay("[probe] The page started again without a command: the viewer reloaded it.");
+                    arm(watchFor(gMode));
+                }
+                else if (llSubStringIndex(line, "webgl frames") == 0 && gWatch == WATCH_FRAMES)
+                    arm(WATCH_NONE);
+                else if (llSubStringIndex(line, "soak ") == 0 && llSubStringIndex(line, "s, ") != -1 && gWatch == WATCH_HEARTBEAT)
+                {
                     gSoakLast = line;
-                    llSetTimerEvent(25.0);   // two missed heartbeats and change
+                    llSetTimerEvent(HEARTBEAT_WAIT);
                 }
                 llOwnerSay("[page] " + line);
             }
@@ -216,13 +295,16 @@ default
 
     timer()
     {
-        llSetTimerEvent(0.0);
-        if (gAwaitFrames)
-            llOwnerSay("[probe] No WebGL frame report after 45 seconds. The page stopped responding or was unloaded.");
-        if (gSoaking)
-        {
-            gSoaking = FALSE;
+        if (gStarts == 0)
+            llOwnerSay("[probe] The page never reported starting. Is media auto-play on? Clicking the face starts it.");
+        else if (gWatch == WATCH_FRAMES)
+            llOwnerSay("[probe] No WebGL frame report within " + (string)((integer)FRAMES_WAIT)
+                + " seconds. The page stopped responding or the viewer unloaded it.");
+        else if (gWatch == WATCH_HEARTBEAT && gSoakLast == "")
+            llOwnerSay("[probe] The soak sent no heartbeat within " + (string)((integer)HEARTBEAT_WAIT)
+                + " seconds of starting. The page stopped responding or the viewer unloaded it.");
+        else if (gWatch == WATCH_HEARTBEAT)
             llOwnerSay("[probe] Heartbeats stopped. Last one: " + gSoakLast);
-        }
+        arm(WATCH_NONE);
     }
 }

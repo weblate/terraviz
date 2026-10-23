@@ -1,10 +1,7 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 The Zyra Project -->
-<!-- The page terraviz-probe.lsl serves onto a prim through shared media.
-It is embedded in the script one line per LSL string literal, so it must
-never contain a double quote or a backslash: build.ts refuses it if it does.
-Results go back to the script by POST, one line per finding, joined by ~. -->
+<!-- Embedded in terraviz-probe.lsl verbatim: no double quotes or backslashes (see build.ts). -->
 <html><head><meta charset=utf-8><title>TerraViz probe</title>
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:1.6vw monospace}
@@ -17,7 +14,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
 <div id=t>TerraViz probe: starting</div>
 <script>
 var NL=String.fromCharCode(10),Q=String.fromCharCode(34),R=[],sent=0;
-var T=document.getElementById('t'),MODE=location.search.slice(1).split('&')[0],HERE=location.href.split('?')[0];
+var T=document.getElementById('t'),MODE=location.search.slice(1).split('&')[0],HERE=location.href;
 var TV_IMG='https://d3sik7mbbzunjo.cloudfront.net/land/earth_night/2012/nightlights_2048.jpg';
 var TV_HLS='https://video.zyra-project.org/videos/01KQG611HF8YXJNRBEHT0757KT/master.m3u8';
 var OPEN_HLS='https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
@@ -50,12 +47,12 @@ function mp4(s){return 'video/mp4; codecs='+Q+s+Q}
 function mkVideo(id,cls){var v=el('video',id,cls);v.muted=true;v.loop=true;v.autoplay=true;v.playsInline=true;return v}
 function loadHls(cb){if(window.Hls)return cb();var s=document.createElement('script');s.src=HLSJS;s.onload=cb;s.onerror=function(){a('hls.js','could not load from jsdelivr');send()};document.head.appendChild(s)}
 function play(v,url,label,next){
- var done=false;
- function fin(msg){if(done)return;done=true;a(label,msg);send();if(next&&msg.indexOf('PLAYING')!=0)next()}
+ var done=false,h=null;
+ function fin(msg){if(done)return;done=true;var ok=msg.indexOf('PLAYING')==0;if(h&&!ok){h.destroy();h=null}a(label,msg);send();if(next&&!ok)next()}
  v.onerror=function(){fin('failed, media error '+(v.error?v.error.code:'?'))};
  if(url.indexOf('NATIVE:')==0){v.src=url.slice(7)}
  else{v.removeAttribute('src');if(!window.Hls||!Hls.isSupported())return fin('hls.js not supported');
-  var h=new Hls();h.on(Hls.Events.ERROR,function(e,d){if(d.fatal){h.destroy();fin('failed, '+d.type+' / '+d.details)}});
+  h=new Hls();h.on(Hls.Events.ERROR,function(e,d){if(d.fatal)fin('failed, '+d.type+' / '+d.details)});
   h.loadSource(url);h.attachMedia(v)}
  var p=v.play();if(p)p.catch(function(){});
  setTimeout(function(){fin(v.currentTime>0.5?'PLAYING '+v.videoWidth+'x'+v.videoHeight+' at t='+v.currentTime.toFixed(1)+'s':'stalled at t='+v.currentTime.toFixed(1)+'s')},15000);
@@ -86,9 +83,9 @@ function frames(){
  try{c=w.getContext('webgl2')||w.getContext('webgl')}catch(e){}
  if(!c){a('webgl frames','no context');send();return hlsTest()}
  w.addEventListener('webglcontextlost',function(){lost++});
- (function f(){var k=(n%60)/60;c.clearColor(k,1-k,0.5,1);c.clear(c.COLOR_BUFFER_BIT);
+ (function f(){if(!c.isContextLost()){var k=(n%60)/60;c.clearColor(k,1-k,0.5,1);c.clear(c.COLOR_BUFFER_BIT);
   if(n==30){var p=new Uint8Array(4);c.readPixels(0,0,1,1,c.RGBA,c.UNSIGNED_BYTE,p);ok=p[3]==255?'ok':'failed'}
-  n++;if(!stop)requestAnimationFrame(f)})();
+  n++}if(!stop)requestAnimationFrame(f)})();
  setTimeout(function(){stop=true;a('webgl frames',n+' in 10s, context lost '+lost+'x, readback '+ok);send();hlsTest()},10000);
 }
 function soak(kind){
@@ -101,9 +98,9 @@ function soak(kind){
   w.addEventListener('webglcontextlost',function(){lost++})}
  else c=w.getContext('2d');
  (function f(){var k=(n%60)/60;
-  if(kind=='webgl'){c.clearColor(k,1-k,0.5,1);c.clear(c.COLOR_BUFFER_BIT)}
-  else{c.fillStyle='rgb('+Math.round(255*k)+','+Math.round(255*(1-k))+',128)';c.fillRect(0,0,64,64)}
-  n++;requestAnimationFrame(f)})();
+  if(kind=='webgl'){if(!c.isContextLost()){c.clearColor(k,1-k,0.5,1);c.clear(c.COLOR_BUFFER_BIT);n++}}
+  else{c.fillStyle='rgb('+Math.round(255*k)+','+Math.round(255*(1-k))+',128)';c.fillRect(0,0,64,64);n++}
+  requestAnimationFrame(f)})();
  setInterval(function(){a('soak '+kind,Math.round((performance.now()-t0)/1000)+'s, '+n+' frames, context lost '+lost+'x, viewport '+innerWidth+'x'+innerHeight);send()},10000);
 }
 function hlsTest(){loadHls(function(){play(mkVideo('m'),OPEN_HLS,'hls.js test stream')})}

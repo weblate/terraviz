@@ -37,7 +37,7 @@ default
 {
     state_entry()
     {
-        llListen(CHAN, "", llGetOwner(), "api");
+        llListen(CHAN, "", llGetOwner(), "");
         askNode();
     }
 
@@ -50,7 +50,7 @@ default
 
     listen(integer ch, string name, key id, string msg)
     {
-        askNode();
+        if (llToLower(llStringTrim(msg, STRING_TRIM)) == "api") askNode();
     }
 
     http_response(key id, integer status, list meta, string body)
@@ -61,14 +61,20 @@ default
         else return;
         string line = "[node] " + which + ": HTTP " + (string)status + ", " + (string)llStringLength(body) + " characters received";
         integer t = llListFindList(meta, [HTTP_BODY_TRUNCATED]);
-        if (t != -1) line += ", cut off at " + (string)llList2Integer(meta, t + 1) + " bytes";
-        if (status == 200 && which == "events")
+        if (t != -1)
+            // Half a JSON document parses as nothing useful, so say so
+            // rather than report a count read from a failed parse.
+            line += ", cut off at " + (string)llList2Integer(meta, t + 1) + " bytes, so not parsed";
+        else if (status == 200 && llJsonValueType(body, []) != JSON_OBJECT)
+            // A 200 that is not JSON - a challenge page, or a node whose
+            // app answers every path - is the case worth seeing.
+            line += ". Not JSON. Reply starts: " + llGetSubString(body, 0, 100);
+        else if (status == 200 && which == "events")
         {
             integer count = llGetListLength(llJson2List(llJsonGetValue(body, ["events"])));
             line += ". llJsonGetValue read " + (string)count + " event(s)";
             if (count > 0) line += ", first: " + llJsonGetValue(body, ["events", 0, "title"]);
         }
-        // A challenge page from bot protection arrives as HTML, not JSON.
         if (status != 200) line += ". Reply starts: " + llGetSubString(body, 0, 100);
         line += ". Script memory in use: " + (string)llGetUsedMemory() + " of " + (string)llGetMemoryLimit() + " bytes";
         llOwnerSay(line);

@@ -3,7 +3,7 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { buildProbeScript, embeddedLines, PAGE_MARKER, servedPage, unembeddable } from './build'
+import { buildProbeScript, embeddedLines, MAX_EMBEDDED_CHARACTERS, PAGE_MARKER, servedPage, unembeddable } from './build'
 
 const read = (file: string): string =>
   readFileSync(new URL(file, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -41,6 +41,17 @@ describe('second-life probe kit', () => {
   it('reads Windows line endings as the same script', () => {
     const crlf = (s: string) => s.replace(/\n/g, '\r\n')
     expect(buildProbeScript(crlf(page), crlf(template))).toBe(committed)
+  })
+
+  it('ignores a byte-order mark rather than refusing or copying it', () => {
+    // Saved invisibly by some Windows editors. Refused, it reads as a
+    // mystery character on line 1; copied, it lands ahead of the SPDX line.
+    expect(buildProbeScript(`﻿${page}`, `﻿${template}`)).toBe(committed)
+  })
+
+  it('keeps the embedded page small enough to build in a script', () => {
+    const embedded = embeddedLines(page).reduce((sum, line) => sum + line.length + 1, 0)
+    expect(embedded).toBeLessThanOrEqual(MAX_EMBEDDED_CHARACTERS)
   })
 
   it('never asks Second Life for media larger than it allows', () => {

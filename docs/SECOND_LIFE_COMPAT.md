@@ -213,15 +213,28 @@ Two properties of the method matter for reading the results:
 
 **The kit is in [`scripts/second-life-probe/`](../scripts/second-life-probe/README.md)**,
 with instructions for running it in-world. It has moved on from the
-version that produced §4 in three ways, so a rerun won't match the
-numbers line for line:
+version that produced §4, so a rerun won't match those numbers line
+for line:
 
 - **Media at 2048×1024**, not 1024×512, now that the cap is known
-  (§4.3).
+  (§4.3), and the image mode shows the 2048-wide Nighttime Lights frame
+  rather than the 1024 one §4.6 cites.
 - **The node check is its own script** (`node-check.lsl`). Measured
   inside the probe, which carries its whole test page as string
   constants, one full reply took the script past its limit (§4.1). On
-  its own, its memory reading is what a lean script pays.
+  its own, its memory reading is what a lean script pays. The probe
+  reports its own peak instead, each time it serves its page.
+- **The WebGL test stops before the video test starts.** The version
+  that went silent at 11:40 left its WebGL loop running underneath the
+  video (§4.3), so that overlap no longer happens.
+- **A crash watchdog that can't misfire the way the first one could.**
+  It used to be armed whenever the page was fetched. Every nearby
+  viewer fetches it, and pages served by TerraViz itself never reach
+  the script at all, so switching commands or another avatar arriving
+  could produce "the page went quiet" with nothing wrong. Now a command
+  arms it and the page's own reports confirm it. It also covers a soak
+  that dies in its first seconds, which #5189 describes and the first
+  version never reported.
 - **An `sos` command** for the output page, and **a fresh address on
   every command**, because the viewer doesn't reload media whose
   address hasn't changed — repeating a command used to silently do

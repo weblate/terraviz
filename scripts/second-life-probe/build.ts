@@ -27,8 +27,18 @@ export const PAGE_MARKER = '//@@PAGE@@'
 
 const STATEMENT = /^ {4}s \+= "(.*)\\n";$/gm
 
+/** The characters the script carries for the page, past which a page
+ *  edit risks the script running out of memory while it builds the page
+ *  (a Stack-Heap Collision in-world). The version run in-world embedded
+ *  up to 7,347 in a script that also took the node check's 16 KB
+ *  replies, and stayed up — but nothing measured its peak while building
+ *  the page. The probe now reports that peak on every page it serves:
+ *  raise this with a reading from it, not by guessing. */
+export const MAX_EMBEDDED_CHARACTERS = 8192
+
+/** Windows line endings, and a byte-order mark an editor may have saved. */
 function normalize(text: string): string {
-  return text.replace(/\r\n/g, '\n')
+  return text.replace(/^﻿/, '').replace(/\r\n/g, '\n')
 }
 
 /** Every character the page could not carry into an LSL string literal. */
@@ -51,7 +61,8 @@ export function embeddedLines(page: string): string[] {
 export function buildProbeScript(page: string, template: string): string {
   const bad = unembeddable(page)
   if (bad.length > 0) {
-    const sample = bad.slice(0, 5).map((b) => `line ${b.line} ${JSON.stringify(b.char)}`).join(', ')
+    // As a code point, since several of these are invisible when printed.
+    const sample = bad.slice(0, 5).map((b) => `line ${b.line} U+${(b.char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`).join(', ')
     throw new Error(`probe.html has characters an LSL string literal would need escaped: ${sample}`)
   }
   const tpl = normalize(template)
