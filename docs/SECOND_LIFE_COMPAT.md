@@ -733,6 +733,13 @@ The work, smallest first:
        GitHub Actions can (`zyra-scheduler.yml` runs every 15
        minutes), but its schedules are best-effort and can run late,
        which matters for a ten-minute product.
+     - It has to **stream** each image from upstream straight into R2,
+       never hold the whole file in memory first. On the Workers Free
+       plan a run gets 10 ms of CPU. Time spent waiting on the network
+       doesn't count, so a streamed copy should fit, but one that
+       buffers 4.9 MB could fail on every update. That is an estimate,
+       not a measurement, so test it on a free account before relying
+       on it.
    - **Each copy gets its own name, plus a tiny pointer file.** The
      images are stored as, for example, `clouds/4096/<time>.jpg` and
      never overwritten. A name that never changes can be cached at
@@ -745,7 +752,14 @@ The work, smallest first:
        with no clock alignment and no conditional requests in the
        page.
      - The pointer cache must be short (a minute or so). The images
-       can cache forever.
+       can cache forever. Cloudflare caches `.jpg` files by default but
+       never JSON, so the pointer needs a cache rule. Without one,
+       every poll by every visitor is an R2 read.
+     - Visitors read the pointer and the images **straight from the
+       bucket's public address**, never through a Pages Function or
+       the Worker. On the free plan this is what keeps the copy from
+       using up the node's daily request allowance (see "What it
+       costs" below).
      - A rule on the bucket deletes copies older than a day, which
        keeps storage near 1 GB.
    - **The page falls back to upstream if the copy stops.** The pointer
@@ -767,24 +781,82 @@ The work, smallest first:
      rather than by whether the device is a phone. For the 40-avatar
      event, that drops the transfer from about 1.2 GB to 240 MB an hour.
 
+   **Who runs a copy.** Most nodes shouldn't need one. A basic viewer
+   node may have no R2 bucket at all: the bucket's public address
+   (`R2_PUBLIC_BASE`) arrives at Phase 8.5 of the setup guide, with
+   publishing ([`SELF_HOSTING.md`](SELF_HOSTING.md), `:1246`). So:
+   - **TerraViz's own node runs the copy.** It serves Orbit to the
+     public, which the setup guide says is what the paid plan is for
+     ([`SELF_HOSTING.md`](SELF_HOSTING.md) §0.6).
+   - **Other nodes read TerraViz's copy by default**, or read upstream
+     as they do today. Either way there is no Worker, no bucket and
+     nothing to deploy. This needs TerraViz's copy to allow every site
+     to use it. The page asks for the clouds with `crossOrigin`
+     (`outputScene.ts:334`), so the browser draws them as a WebGL
+     texture only if the response's CORS headers allow the page's
+     site. TerraViz's videos appear to come from this same bucket's
+     public address (it serves `videos/…` paths, the key prefix
+     `functions/api/v1/_lib/r2-store.ts:319` gives video bundles),
+     and that address allows only TerraViz's own site (§4.4). So the
+     clouds need a bucket of their own, or a header rule on their own
+     path. Allowing every site on the whole bucket would allow it for
+     the videos too.
+   - **A node that wants to be independent runs its own copy**, and
+     points the cloud-address setting (below) at it. The job fits the
+     free plan if it streams.
+
+   **What it costs.** Almost nothing on either Cloudflare plan. The
+   figures assume a check every 2 minutes, a pointer write on every
+   check, both sizes copied on each change, and copies kept for a day.
+
+   | What gets used | Per month | Free or included | Past the allowance |
+   |---|---|---|---|
+   | Worker runs | about 21,600 | 10M on Paid; 100,000 a day on Free | Paid: $0.30 per million. Free: never billed |
+   | Worker CPU | a few ms a run (estimate) | 30M ms on Paid; 10 ms a run on Free | Paid: $0.02 per million ms |
+   | R2 writes | about 30,000 | 1M | about $0.14 |
+   | R2 storage | about 0.85 GB | 10 GB | about $0.01 |
+   | R2 reads | about 52,000 for each Cloudflare location where someone watches all day, with the pointer cached a minute | 10M | about $0.02 per such location |
+   | Egress | — | R2 charges none | $0 |
+
+   R2's allowances are per account, and R2 bills the same on either
+   plan ([`SELF_HOSTING.md`](SELF_HOSTING.md), `:539`). An account
+   whose datasets already use them up pays the right-hand column:
+   cents a month. Two mistakes would cost more, one in money and one
+   in an outage on the free plan. The design above avoids both:
+   - **A pointer with no cache rule.** Then 40 avatars polling once a
+     minute make about 1.7M R2 reads a month, around $0.60 past the
+     free allowance.
+   - **Visitors reading through a Function.** On **Workers Free** the
+     whole account shares 100,000 requests a day with every API call,
+     map tile and page view on the node (`SELF_HOSTING.md:540`,
+     `:550-559`). When it runs out, the API and map tiles stop until
+     midnight UTC, or the whole app goes down if the project is set to
+     fail closed (`:566-577`). Those same 40 avatars, reading through
+     a Function, would spend about 57,600 a day on clouds alone.
+     Reading from the bucket's address, they spend none. The job's
+     own checks cost about 720 a day, or 144 if it checks every ten
+     minutes. Cloudflare's own pricing example counts cron runs as
+     requests. On Free, the job also uses one of the account's five
+     cron triggers.
+
+   The copy also costs **upstream**. It pulls about 26 GB a month from
+   the Science On a Sphere Explorer bucket whether or not anyone is
+   watching. Today each desktop page load pulls one 4.9 MB image from
+   it. The two break even at about 175 desktop page loads a day: above
+   that, the copy saves them bandwidth, and below it the copy costs
+   them more. Say so when asking.
+
    Two things to settle before building it:
    - **Ask the Science On a Sphere Explorer team** before mirroring
      their product, and credit them. The Credits panel doesn't name the
      cloud source today (`src/ui/creditsPanel.ts` has no mention of
      clouds), so this is the moment to add it.
-   - **Make the cloud address a setting.** A self-hosted node should be
-     able to point at its own copy, or at none, the way
-     `VITE_EARTH_ASSET_BASE` already redirects the other Earth images
-     (`src/config/endpoints.ts:132-135`). The clouds ignore that
-     setting today: their address is fixed in
+   - **Make the cloud address a setting**, with three choices:
+     TerraViz's copy (the default), the node's own copy, or upstream.
+     This works the way `VITE_EARTH_ASSET_BASE` already redirects the
+     other Earth images (`src/config/endpoints.ts:132-135`). The clouds
+     ignore that setting today: their address is fixed in
      `deviceCapability.ts:103`.
-
-   The browser has to be allowed to use the copied image as a WebGL
-   texture. The page asks for the clouds with `crossOrigin`
-   (`outputScene.ts:334`), so the copy must be served with CORS headers
-   that allow every site that draws it. TerraViz's own site, which
-   serves both the main app and the output page, is the case that
-   matters.
 
    The day/night line needs none of this. The page works out the sun's
    position from the clock on every frame it draws
@@ -988,6 +1060,9 @@ Numbering is kept from the first version, so a reference like
 - `src/ui/creditsPanel.ts` — no mention of clouds or their source
 - `wrangler.toml:145-147` — TerraViz's one R2 bucket, `terraviz-assets`, bound as `CATALOG_R2`; the file declares no cron triggers, and Pages Functions can't have them
 - `.github/workflows/zyra-scheduler.yml:26` — the repo's existing schedule, `*/15 * * * *` on GitHub Actions
+- `functions/api/v1/_lib/r2-store.ts:319` — video bundles are stored under `videos/{datasetId}/…` in R2
+- `docs/SELF_HOSTING.md:539` (R2 billed the same on either plan), `:540` and `:550-559` (Workers Free's 100,000 requests a day, shared by every Pages Function request), `:566-577` (what fail open and fail closed do at the limit), `:1246` (`R2_PUBLIC_BASE` arrives at Phase 8.5)
+- Cloudflare's [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and [default cache behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/) pages, read 23 Oct 2026, for the cost table in §7 item 8. They give: Paid $5 a month with 10M requests and 30M CPU ms; Free 100,000 requests a day and 10 ms CPU a run; network waits don't count as CPU; 5 cron triggers on Free; R2 $0.015 per GB-month, $4.50 per million writes, $0.36 per million reads, free allowances of 10 GB, 1M and 10M, no egress fees; JPG cached by default, JSON never. The R2 page doesn't say whether lifecycle deletions are charged; even as writes, 288 a day is a few cents a month
 - `src/services/multiOutput/mirrorState.ts` — the control side's dataset-to-output mapping (§7 item 1)
 - `src/services/multiOutput/protocol.ts:573`, `:579` — framebuffer widths 1024 / 2048 / 4096 / 8192, default 4096
 - `src/services/heroService.ts`, `functions/api/v1/featured-hero.ts` — the "Right now" pick is computed in the browser; the endpoint returns the raw pin only
