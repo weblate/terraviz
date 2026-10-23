@@ -70,7 +70,9 @@ export function buildProbeScript(page: string, template: string): string {
     throw new Error(`probe.template.lsl must contain ${PAGE_MARKER} exactly once`)
   }
   const body = embeddedLines(page).map((line) => `    s += "${line}\\n";`).join('\n')
-  return tpl.replace(PAGE_MARKER, body)
+  // A function, because a replacement *string* reads `$&`, `$'` and the
+  // rest as patterns, and the page is code that must arrive as written.
+  return tpl.replace(PAGE_MARKER, () => body)
 }
 
 /** The page a generated script would serve, reassembled from its statements. */

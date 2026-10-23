@@ -74,6 +74,7 @@ string  gMode;          // the current command's page: probe, soak, ...
 integer gServedRun;     // the last run whose page fetch was announced
 integer gStarts;        // how many times the current run's page has started
 integer gWatch;         // WATCH_*
+float   gDeadline;      // the llGetTime() at which the current watch runs out
 string  gSoakLast;      // the most recent heartbeat
 integer gTexRot;        // texture rotation in degrees: 0, 90, 180 or 270
 integer gMirror;        // texture flipped left-to-right
@@ -225,12 +226,21 @@ integer runOf(string query)
     return -1;
 }
 
+// Starts, or restarts, the current watch's countdown. The deadline is
+// kept beside the timer because restarting the timer does not withdraw a
+// timer event already queued, and that event must not count as this one.
+countdown(float wait)
+{
+    gDeadline = llGetTime() + wait;
+    llSetTimerEvent(wait);
+}
+
 arm(integer watch)
 {
     gWatch = watch;
     gSoakLast = "";
-    if (watch == WATCH_FRAMES) llSetTimerEvent(FRAMES_WAIT);
-    else if (watch == WATCH_HEARTBEAT) llSetTimerEvent(HEARTBEAT_WAIT);
+    if (watch == WATCH_FRAMES) countdown(FRAMES_WAIT);
+    else if (watch == WATCH_HEARTBEAT) countdown(HEARTBEAT_WAIT);
     else llSetTimerEvent(0.0);
 }
 
@@ -419,7 +429,7 @@ default
                             llOwnerSay("[probe] Heartbeats resumed, so the gap was not the end of the soak.");
                         gWatch = WATCH_HEARTBEAT;
                         gSoakLast = line;
-                        llSetTimerEvent(HEARTBEAT_WAIT);
+                        countdown(HEARTBEAT_WAIT);
                     }
                     else
                         // The soak said it cannot run - no WebGL 2 context,
@@ -435,9 +445,15 @@ default
 
     timer()
     {
-        // A timer event already queued when a command cleared the timer
-        // can still arrive; it belongs to a watch that no longer exists.
+        // A timer event already queued when a command cleared or restarted
+        // the countdown can still arrive. With nothing armed it belongs to
+        // a watch that no longer exists; with the deadline still ahead it
+        // belongs to an earlier countdown, and the current one runs on.
+        // Half a second of slack, so a timer that fires on time is never
+        // sent round again for a rounding difference.
         if (gWatch == WATCH_NONE) { llSetTimerEvent(0.0); return; }
+        float left = gDeadline - llGetTime();
+        if (left > 0.5) { llSetTimerEvent(left); return; }
         if (gStarts == 0)
             llOwnerSay("[probe] The page never reported starting. Is media auto-play on? Clicking the face starts it.");
         else if (gWatch == WATCH_FRAMES)
