@@ -12,10 +12,13 @@ someone new to both. §0 is a glossary covering both sides; skip it if
 you don't need it. Every claim about TerraViz cites a file and line.
 Every claim about Second Life cites a public source in §9.
 
-**Last reviewed:** 2026-08-09 (initial scoping from Eric's brief: he
-spent significant time building content and writing LSL in Second
-Life, and asked whether TerraViz could be compatible with the
-platform).
+**Last reviewed:** 2026-10-23 (after merging eleven weeks of `main`:
+repository citations refreshed, #5189 re-checked and still open, and
+API reply sizes measured against the production node instead of
+inferred from schemas — §5 Option A changed as a result. Initial
+scoping 2026-08-09 from Eric's brief: he spent significant time
+building content and writing LSL in Second Life, and asked whether
+TerraViz could be compatible with the platform).
 
 **Revisit when any of the following becomes true:**
 
@@ -92,7 +95,7 @@ question. It's four, and they have very different answers:
 |---|---|---|
 | 1 | Can the TerraViz web app run inside Second Life? | **No**, not today. §3 |
 | 2 | Can TerraViz's data appear on an in-world globe? | **Yes**, with a caveat about how frames get there. §4, §5 Option B |
-| 3 | Can in-world objects talk to a TerraViz server? | **Yes**, cheaply, today. §5 Option A |
+| 3 | Can in-world objects talk to a TerraViz server? | **Yes**, cheaply, today — pending one in-world check. §5 Option A |
 | 4 | Can a *live* TerraViz globe exist in a Second-Life-style world? | **Yes** — on OpenSimulator. §5 Option D |
 
 The trap is answering (1) and stopping. It's the hardest and the
@@ -148,23 +151,35 @@ TerraViz draws everything with WebGL — the graphics card. Three
 places in the code make this concrete:
 
 - The globe is a custom 3D sphere drawn into the map engine
-  (`src/services/mapRenderer.ts:1434-1435`).
+  (`src/services/mapRenderer.ts:1506-1508`).
 - Video datasets are handed to the graphics card as a fresh texture
-  every frame (`setVideoTexture`, `src/services/mapRenderer.ts:1485`).
+  every frame (`setVideoTexture`, `src/services/mapRenderer.ts:1557`).
 - The hover-value readout inspects individual pixels through a
   dedicated graphics context — and **deliberately refuses to fall
   back** to a slower non-graphics path if one isn't available
-  (`src/services/glLumaSampler.ts:131-141`). That refusal is
+  (`src/services/glLumaSampler.ts:134-144`). That refusal is
   intentional: a wrong number is worse than no number.
+- Before any of that runs, the app checks for **WebGL 2
+  specifically** and shows a troubleshooting screen if it's missing
+  (`src/utils/webglSupport.ts`). There is deliberately no fallback to
+  the older WebGL 1, because the map engine (MapLibre 6) dropped
+  WebGL 1 outright. So partial WebGL support in an embedded browser is
+  not enough — it has to be WebGL 2.
 
 Second Life's only way to run a web page in-world is **shared media**,
 which is that cut-down Chrome painted onto an object's surface.
 
 **WebGL in that browser is broken.** Bug
-[secondlife/viewer#5189](https://github.com/secondlife/viewer/issues/5189),
-filed 28 December 2025, reports that WebGL content goes blank and
-unresponsive after a few frames while the rest of the viewer keeps
-working. It's open, unassigned, and has no target date.
+[secondlife/viewer#5189](https://github.com/secondlife/viewer/issues/5189)
+was filed on 28 December 2025 by a Linden Lab developer — so this is
+known inside the company, not just a resident complaint. Loading a
+standard WebGL demo makes the media surface go blank and stop
+responding after a few seconds while the rest of the viewer keeps
+working. The attached crash logs show the media process
+(`SLPlugin.exe`) dying with an access violation inside the embedded
+Chrome library (`libcef.dll`). As of October 2026 it is still open
+and unassigned, has no target date, and was automatically labelled
+*stale* in February.
 
 There's some history here. Second Life's move to Chrome-based media
 in 2015 was announced with the promise that it would render "HTML5,
@@ -202,15 +217,15 @@ it.
 TerraViz stores every dataset as **equirectangular** frames — that
 unrolled-world-map rectangle, twice as wide as tall. The publisher
 tools say so outright: "the dataset's data *is* a 2:1 equirectangular
-image" (`src/ui/publisher/components/asset-uploader.ts:94`,
-`src/ui/publisher/components/dataset-form.ts:1662`), and the globe
+image" (`src/ui/publisher/components/asset-uploader.ts:98`,
+`src/ui/publisher/components/dataset-form.ts:1705`), and the globe
 renderer wraps them that way rather than using a map projection
-(`src/services/mapRenderer.ts:1434-1435`).
+(`src/services/mapRenderer.ts:1506-1508`).
 
 That is *exactly* the image shape a 3D sphere expects when you wrap a
 texture around it — in Second Life just as much as in TerraViz's own
 3D code, which notes the same alignment at
-`src/services/photorealEarth.ts:203`.
+`src/services/photorealEarth.ts:206`.
 
 **So there's no conversion work at all.** A TerraViz frame is already
 a correct globe texture for an in-world sphere: no reprojection, no
@@ -224,8 +239,8 @@ question.
 Everything that depends on running a program on the graphics card.
 Palette switching, contrast stretch, and thresholds all work by
 rebuilding a 256-colour lookup table
-(`src/types/color-scale.ts:173`); the hover readout converts a pixel's
-brightness back into a real measurement (`:227`).
+(`src/types/color-scale.ts:176`); the hover readout converts a pixel's
+brightness back into a real measurement (`:230`).
 
 Second Life gives you materials, not programs. You get colour,
 shininess, bumpiness, and glow — nothing you can write code into. **So
@@ -261,38 +276,76 @@ limits are the entire design constraint:
 | Methods | GET, POST, PUT, DELETE |
 | Custom headers | Allowed, up to 4,096 characters total |
 
-The 16 KB reply cap drives everything. TerraViz's existing public
-endpoints return JSON shaped for browsers — `/api/v1/featured` sends
-back `{ datasets: [{ id, title, abstract_snippet, thumbnail_url,
-categories, position }] }`, which blows the budget at even modest
-result counts, and would need a JSON parser written in LSL to read.
+The 16 KB reply cap is the main constraint, so here are real numbers
+rather than estimates from the schemas — measured against the
+production node (`terraviz.zyra-project.org`) on 23 October 2026:
 
-**Don't make in-world scripts parse that.** Add a few tiny text
-endpoints alongside it instead:
+| Endpoint | Reply size today | Fits in-world? |
+|---|---|---|
+| `/api/v1/events` | 820 bytes (1 event) | **Yes**, even under the 2 KB default |
+| `/api/v1/featured?limit=24` | 15 bytes — empty, nothing curated yet | Yes today. Full, roughly 14 KB (24 records at an estimated ~600 bytes, given the 280-character summary cap): only with the cap raised to 16 KB |
+| `/api/v1/featured-hero` | 13 bytes — `{"hero":null}`, no pin set | Yes, but see below |
+| `/api/v1/catalog` | **822 KB** (180 datasets, ~4.6 KB each) | **No** — 50× over the cap. The largest single dataset record is about 16 KB, the entire budget on its own |
+
+Two things follow.
+
+**Reading JSON is not the problem.** LSL has had native JSON
+functions since May 2013 (`llJsonGetValue`, `llJson2List`), and SLua
+has its own. An in-world script can read the existing events reply
+today with no server changes. *(An earlier version of this document
+said scripts would need a hand-written JSON parser. That was wrong.)*
+
+**The real gaps are the catalog's size, and where the "Right now"
+pick happens.** The catalog can never come in-world whole, so
+anything that browses or searches needs a paged or trimmed reply.
+And the hero shown on the catalog's landing page isn't stored
+anywhere a script can ask for it. `src/services/heroService.ts`
+*computes* it in the browser through a four-step chain: a curator pin
+if one is live, else the freshest approved current event, else a
+real-time dataset updated in the last 24 hours, else nothing. The
+server's `/api/v1/featured-hero` returns only the raw pin, and
+deliberately doesn't even check its date window
+(`functions/api/v1/featured-hero.ts`). An in-world kiosk would have to
+rebuild that whole chain in LSL — or ask an endpoint that resolves it
+on the server.
+
+So the proposal narrows to one small, purpose-built reply, plus an
+optional second:
 
 ```
-GET /api/v1/lsl/hero    → id|title|iso_time|thumb_url
-GET /api/v1/lsl/events  → one pipe-separated record per line
+GET /api/v1/lsl/hero    → id|title|iso_time|thumb_url    (the resolved pick)
+GET /api/v1/lsl/events  → one pipe-separated record per line    (optional)
 ```
 
-Pipe-separated lines are one function call to split apart
-(`llParseString2List` in LSL, `string.split` in SLua), need no parser,
-and leave plenty of headroom. These are thin projections over data the
-node already serves, cached the same way as their JSON siblings.
+The hero endpoint earns its place because it moves *logic*, not just
+formatting. A server-resolved hero would help every other
+non-browser host too — a kiosk display, the WordPress plugin — so it
+may deserve a less Second-Life-specific name. The events variant only
+matters once the event list outgrows what a script can comfortably
+hold, since an LSL script gets 64 KB of memory in total. Pipe-separated
+lines are one call to split (`llParseString2List` in LSL,
+`string.split` in SLua).
 
-What you can build on it, easiest first:
+What you can build, easiest first:
 
-- **A "Right now" kiosk** — floating text plus the current featured
-  dataset's thumbnail, refreshed on a timer well within the rate
-  limit.
-- **An events board** driven by the approved-events data the catalog
-  already uses.
 - **A handoff link** — `llLoadURL` opening
   `https://<node>/?embed=1&dataset=<id>` in the visitor's browser. The
   embed URL format is already stable and documented
-  ([`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md)), so **this
-  particular piece needs no code changes at all.** It's the one thing
-  in this document that could ship this afternoon.
+  ([`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md)), so **this needs no
+  code changes at all.** It could ship this afternoon.
+- **An events board** reading `/api/v1/events` directly with
+  `llJsonGetValue`. Also no server changes.
+- **A "Right now" kiosk** — floating text plus the hero dataset's
+  thumbnail, refreshed on a timer well inside the rate limit. This is
+  the one that needs the resolved-hero endpoint.
+
+One practical note: production currently has no featured datasets
+and no hero pin, so a kiosk today could only ever show the
+approved-event or real-time fallbacks, or nothing.
+
+All of the above assumes Second Life's servers can reach the node in
+the first place. Every measurement here came from outside Second
+Life, so that's unverified (§8, question 7).
 
 Option A doesn't fight the platform anywhere. Best value per hour by a
 wide margin.
@@ -335,6 +388,16 @@ build that crashes on WebGL.
 If it does: on a flat panel that's a video wall. On a **sphere**, the
 equirectangular frame wraps around and you get a moving globe with no
 3D programming anywhere in the stack.
+
+**A second gate behind the first: video format.** WebGL isn't the
+only hurdle. TerraViz's streams are H.264 video
+(`cli/lib/ffmpeg-hls.ts:24`, `:286`), and stock builds of the
+embedded-Chrome library leave H.264 switched off for licensing
+reasons — Google's own Chrome adds it back. Whether the copies inside
+Second Life's viewer and Firestorm include it is unverified (§8,
+question 6). If they don't, a video-only page fails even with WebGL
+completely out of the picture, and in-world use would need a
+royalty-free re-encode of the streams (VP9 or AV1).
 
 **One honest scoping note:** `?embed=1` will not do this. Embed mode
 only hides interface chrome using CSS — "nothing is torn out of the
@@ -446,6 +509,17 @@ Listed rather than guessed at. Each needs someone to go and look.
 5. **What does shared media do to server load?** Unmodelled. It
    becomes a real question the first time an event puts forty avatars
    in one region.
+6. **Can the embedded browser play H.264 video?** Stock builds of the
+   embedded-Chrome library ship without it, and TerraViz's streams are
+   H.264 (§5 Option C). A one-line browser check settles it, per
+   viewer.
+7. **Will the production node answer requests from Second Life's
+   servers?** The node sits behind Cloudflare, whose bot protection
+   can block automated traffic from cloud server ranges, depending on
+   how the site is configured. In-world script requests are exactly
+   that kind of traffic. Every request measured for §5 Option A came
+   from outside Second Life, so Option A's premise stays unverified
+   until a script actually tries.
 
 ---
 
@@ -461,18 +535,27 @@ Listed rather than guessed at. Each needs someone to go and look.
 - [June 2026 fee changes](https://modemworld.me/2026/06/08/ll-announces-second-life-fee-changes-reductions-increases/) — pricing movement (§8 q3)
 
 **Constraints**
-- [secondlife/viewer#5189](https://github.com/secondlife/viewer/issues/5189) — the WebGL crash; CEF 139.0.7258.139, Dullahan 1.24.0, filed 28 Dec 2025, still open
+- [secondlife/viewer#5189](https://github.com/secondlife/viewer/issues/5189) — the WebGL crash; filed by a Linden Lab developer 28 Dec 2025; `SLPlugin.exe` access violation in `libcef.dll`; CEF 139.0.7258.139, Dullahan 1.24.0; still open and unassigned as of 23 Oct 2026, stale-labelled Feb 2026
 - [Project Valhalla, 2015](https://modemworld.me/2015/10/08/vallhalla-cef-comes-to-second-life/) — the original Chrome-in-Second-Life announcement and its WebGL promise
 - [`llSetPrimMediaParams`](https://wiki.secondlife.com/wiki/LlSetPrimMediaParams) — 1024px behaviour, whitelist cap, one-face-per-call, permissions
 - [`llHTTPRequest`](https://wiki.secondlife.com/wiki/LlHTTPRequest) — reply and request size limits, rate limits, timeout, header rules
+- [`llJsonGetValue`](https://wiki.secondlife.com/wiki/LlJsonGetValue) — native JSON parsing in LSL since 20 May 2013 (server 13.05.20)
+- [`llSetContentType`](https://wiki.secondlife.com/wiki/LlSetContentType) and [`llHTTPResponse`](https://wiki.secondlife.com/wiki/LlHTTPResponse) — a script can serve an HTML page, rendered only for the object's owner, in their viewer, in the same region; no size limit beyond script memory; 25 seconds to answer
 - [`osSetDynamicTextureURL`](http://opensimulator.org/wiki/OsSetDynamicTextureURL) and [OpenSimulator](https://en.wikipedia.org/wiki/OpenSimulator) — dynamic textures, 0.9.3.0, linked worlds
 
 **This repository**
-- `src/services/mapRenderer.ts:1434-1435,1485` — the equirectangular globe; per-frame video texture upload
-- `src/services/glLumaSampler.ts:131-141` — graphics card required, no fallback by design
-- `src/types/color-scale.ts:173,227` — the colour lookup table; brightness-to-measurement conversion
-- `src/ui/publisher/components/asset-uploader.ts:94`, `components/dataset-form.ts:1662` — the 2:1 equirectangular contract
-- `src/services/photorealEarth.ts:203` — the same sphere-wrapping alignment in TerraViz's own 3D code
+- `src/services/mapRenderer.ts:1506-1508,1557` — the equirectangular globe; per-frame video texture upload
+- `src/services/glLumaSampler.ts:134-144` — graphics card required, no fallback by design
+- `src/utils/webglSupport.ts` — the WebGL 2 preflight; no WebGL 1 fallback, because MapLibre 6 dropped it
+- `src/types/color-scale.ts:176,230` — the colour lookup table; brightness-to-measurement conversion
+- `src/ui/publisher/components/asset-uploader.ts:98`, `components/dataset-form.ts:1705` — the 2:1 equirectangular contract
+- `src/services/photorealEarth.ts:206` — the same sphere-wrapping alignment in TerraViz's own 3D code
 - `src/utils/embedMode.ts` — embed mode is CSS-only (§5 Option C)
-- `functions/api/v1/featured.ts:1-30` — the JSON shape Option A must not ask scripts to parse
+- `src/services/heroService.ts` — the "Right now" pick is computed in the browser (§5 Option A)
+- `functions/api/v1/featured-hero.ts` — returns the raw pin only, no window check
+- `functions/api/v1/featured.ts`, `functions/api/v1/_lib/featured-datasets.ts:182` — the featured reply shape; 280-character summary cap
+- `cli/lib/ffmpeg-hls.ts:24,286` — TerraViz's streams are H.264 (`libx264`)
 - [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md) — the stable handoff URL format
+
+**Measurements**
+- Reply sizes in §5 Option A: `curl` against `https://terraviz.zyra-project.org`, 23 Oct 2026, from outside Second Life. `/api/v1/events` 820 B; `/api/v1/featured?limit=24` 15 B; `/api/v1/featured-hero` 13 B; `/api/v1/catalog` 822,125 B over 180 datasets (mean 4,574 B per record re-serialised compactly, largest 16,170 B)
