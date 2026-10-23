@@ -704,32 +704,100 @@ The work, smallest first:
    21:15:04 and again at 21:25:04 UTC on 23 October (§11). So a page left
    open shows the sky from whenever it loaded — and in Second Life,
    where every visitor's copy loads on its own, two visitors at one
-   globe can see different skies. Three parts:
-   - **Refresh on the producer's schedule**, a minute or so after each
-     ten-minute mark, rather than ten minutes after the page loaded, so
-     every visitor's copy changes at about the same moment.
-   - **Ask before downloading.** The server sends an ETag, so a
-     conditional request costs almost nothing when the file hasn't
-     changed.
-   - **Fetch the size the render can use.** The page takes the
-     8192-wide image (4.9 MB) on anything that isn't a phone
-     (`deviceCapability.ts:106`), and Second Life's browser isn't. Up to
-     a 2048-wide render, the 4096 image (1.0 MB) already carries more
-     detail than can be shown; there is no 2048 image. At ten-minute
-     intervals that is about 29 MB against 6 MB an hour per copy — for
-     a 40-avatar event, roughly 1.2 GB against 240 MB an hour, from a
-     bucket TerraViz doesn't run.
+   globe can see different skies.
+
+   Refreshing is the easy half. The hard half is where every refresh
+   comes from. Today each copy of the page downloads straight from that
+   bucket, which TerraViz doesn't run, and it takes the 8192-wide image
+   (4.9 MB) on anything that isn't a phone (`deviceCapability.ts:106`).
+   Second Life's browser isn't a phone. At one download every ten
+   minutes that is about 29 MB an hour per copy, so a 40-avatar event
+   pulls roughly 1.2 GB an hour from someone else's bucket.
+
+   So the plan is to **keep a copy of the clouds in TerraViz's own
+   storage** and have every page read that copy. Four parts:
+
+   - **A small scheduled job copies the clouds into R2.** R2 is the
+     Cloudflare storage TerraViz already uses for its datasets (one
+     bucket, `terraviz-assets`, bound as `CATALOG_R2`;
+     `wrangler.toml:145-147`). Visitors' reads of it cost no egress
+     fees. The job checks upstream every couple of minutes with a
+     conditional request: the server sends an ETag, so a check costs
+     almost nothing when nothing has changed. It copies both sizes
+     only when they have. That is about 5.9 MB every ten minutes, or
+     roughly 850 MB a day, however many people are watching. That is
+     less than one 40-avatar event's hour.
+     - It has to be a **Cloudflare Worker with a cron trigger**, which
+       is a new thing to deploy. Pages Functions, where the rest of
+       TerraViz's server code lives, can't run on a schedule.
+       GitHub Actions can (`zyra-scheduler.yml` runs every 15
+       minutes), but its schedules are best-effort and can run late,
+       which matters for a ten-minute product.
+   - **Each copy gets its own name, plus a tiny pointer file.** The
+     images are stored as, for example, `clouds/4096/<time>.jpg` and
+     never overwritten. A name that never changes can be cached at
+     Cloudflare's edge indefinitely, so most reads never reach R2.
+     That matters because R2 charges per read. A small
+     `clouds/latest.json` names the newest images.
+     - Pages check the pointer every minute or two, and download an
+       image only when the pointer names a new one. Every visitor's
+       copy therefore changes within a minute or two of the others,
+       with no clock alignment and no conditional requests in the
+       page.
+     - The pointer cache must be short (a minute or so). The images
+       can cache forever.
+     - A rule on the bucket deletes copies older than a day, which
+       keeps storage near 1 GB.
+   - **The page falls back to upstream if the copy stops.** The pointer
+     records when the job last checked upstream, as well as when the
+     images last changed. If the last check is more than about 30
+     minutes old, the job has stopped. The page then reads the upstream
+     bucket directly, as it does today. It does the same if the pointer
+     can't be read at all.
+     - The page has to use the check time, not the change time, for
+       this. If the producer itself stops updating, the copy is still
+       as current as upstream, and switching to upstream gains nothing.
+   - **Fetch the size the render can use.** Up to a 2048-wide render,
+     the 4096 image (1.0 MB) already holds more detail than can be
+     shown. That covers all of Second Life, whose media can't exceed
+     2048 wide (§4.3). There is no 2048 image. The 8192 image is only
+     worth its size on LED-sphere outputs set to a 4096 or 8192
+     framebuffer, and on the main app on a large screen. The output
+     page knows its framebuffer width, so it should choose by that
+     rather than by whether the device is a phone. For the 40-avatar
+     event, that drops the transfer from about 1.2 GB to 240 MB an hour.
+
+   Two things to settle before building it:
+   - **Ask the Science On a Sphere Explorer team** before mirroring
+     their product, and credit them. The Credits panel doesn't name the
+     cloud source today (`src/ui/creditsPanel.ts` has no mention of
+     clouds), so this is the moment to add it.
+   - **Make the cloud address a setting.** A self-hosted node should be
+     able to point at its own copy, or at none, the way
+     `VITE_EARTH_ASSET_BASE` already redirects the other Earth images
+     (`src/config/endpoints.ts:132-135`). The clouds ignore that
+     setting today: their address is fixed in
+     `deviceCapability.ts:103`.
+
+   The browser has to be allowed to use the copied image as a WebGL
+   texture. The page asks for the clouds with `crossOrigin`
+   (`outputScene.ts:334`), so the copy must be served with CORS headers
+   that allow every site that draws it. TerraViz's own site, which
+   serves both the main app and the output page, is the case that
+   matters.
 
    The day/night line needs none of this. The page works out the sun's
    position from the clock on every frame it draws
    (`outputScene.ts:1046`), and draws at least once a second.
 
-   **The main app has the same gap.** Its globe also loads its clouds
-   once (`src/services/earthTileLayer.ts:1700`), so a museum kiosk or a
-   browser tab left open all day shows the morning's clouds. That is a
-   separate change — a different renderer, and nothing to do with
-   Second Life — and a small one, but it's the case far more people
-   meet.
+   **The main app has the same gap, and would read the same copy.** Its
+   globe also loads its clouds once (`src/services/earthTileLayer.ts:1700`,
+   from the address set at `earthTileLayer.ts:87`), so a museum kiosk or
+   a browser tab left open all day shows the morning's clouds. Fixing
+   it is a separate change, in a different renderer and nothing to do
+   with Second Life. It is a small one, and far more people see this
+   case. With the copy in place it uses the same pointer and the same
+   fallback as the output page.
 
 Things this touches beyond the code:
 
@@ -745,7 +813,12 @@ Things this touches beyond the code:
   `terraviz.zyra-project.org` can play that node's streams; a partner
   node's output page needs its own video host to allow it.
 
-Items 1–6 and 8 are one code PR. Item 7 waits for the `#` test.
+Items 1–6 and the page's half of item 8 (refreshing, choosing a size,
+reading the copy) are one code PR. The cloud copy itself is a separate
+change: it is a new Worker, and the main app reads it too. It is best
+landed first, so the page can be tested against it. It doesn't have to
+be, though, because a page that finds no pointer reads upstream. Item 7
+waits for the `#` test.
 
 ---
 
@@ -784,9 +857,15 @@ Written down so these don't get re-proposed in six months.
   people in-world, and the cheapest way to answer §10 questions 8 and
   11.
 
-**Phase 1 — the output page's web mode** (§7, items 1–6 and 8). One code
-PR. It turns the idle-Earth globe into a TerraViz dataset globe that
-every visitor sees in step.
+**Before or alongside Phase 1 — the cloud copy** (§7 item 8). The
+scheduled Worker that keeps the clouds in TerraViz's own R2, with its
+pointer file. A new deployable, so it is its own PR. Nothing in it
+depends on Second Life, and everything after it that draws clouds reads
+from it.
+
+**Phase 1 — the output page's web mode** (§7, items 1–6 and the page's
+half of 8). One code PR. It turns the idle-Earth globe into a TerraViz
+dataset globe that every visitor sees in step, under current clouds.
 
 **Phase 2 — an in-world globe controller.** An LSL object that applies
 the §5 recipe, sets the media at 2048×1024, spins the globe, and offers
@@ -802,9 +881,10 @@ Options B and D only if a host needs what they uniquely offer: phones
 or no-browser exhibits for B, a self-hosted world for D.
 
 **Separately, at any time — the main app's clouds** (§7 item 8). The
-same ten-minute refresh for the main globe, a small change of its own,
-useful wherever TerraViz is left running for hours. Nothing in it
-depends on Second Life.
+main globe gets the same refresh, reading the same copy and falling
+back the same way. It is a small change of its own, useful wherever
+TerraViz is left running for hours, and nothing in it depends on Second
+Life.
 
 ---
 
@@ -901,8 +981,13 @@ Numbering is kept from the first version, so a reference like
 - `src/output/output.css:35` — `object-fit: contain`, the letterboxing behind the black polar caps
 - `src/output/datasetMirror.ts`, `src/output/outputSync.ts` — what plays a dataset on an output and steers its playhead (§7 items 1 and 4)
 - `src/output/outputScene.ts:983`, `:1046` — the output loads its cloud image once; it computes the sun from the clock on every drawn frame (§7 item 8)
-- `src/utils/deviceCapability.ts:103`, `:106` — the cloud images' bucket, and the 8192-wide choice for anything not a phone
-- `src/services/earthTileLayer.ts:1700` — the main globe loads its clouds once too
+- `src/output/outputScene.ts:334` — the cloud image is requested with `crossOrigin = 'anonymous'`, so any copy must send CORS headers
+- `src/utils/deviceCapability.ts:103`, `:106` — the cloud images' bucket, fixed in code, and the 8192-wide choice for anything not a phone
+- `src/services/earthTileLayer.ts:87`, `:1700` — the main globe takes the same cloud address, and loads its clouds once too
+- `src/config/endpoints.ts:132-135` — `VITE_EARTH_ASSET_BASE` redirects the other Earth images; the cloud address doesn't read it
+- `src/ui/creditsPanel.ts` — no mention of clouds or their source
+- `wrangler.toml:145-147` — TerraViz's one R2 bucket, `terraviz-assets`, bound as `CATALOG_R2`; the file declares no cron triggers, and Pages Functions can't have them
+- `.github/workflows/zyra-scheduler.yml:26` — the repo's existing schedule, `*/15 * * * *` on GitHub Actions
 - `src/services/multiOutput/mirrorState.ts` — the control side's dataset-to-output mapping (§7 item 1)
 - `src/services/multiOutput/protocol.ts:573`, `:579` — framebuffer widths 1024 / 2048 / 4096 / 8192, default 4096
 - `src/services/heroService.ts`, `functions/api/v1/featured-hero.ts` — the "Right now" pick is computed in the browser; the endpoint returns the raw pin only
