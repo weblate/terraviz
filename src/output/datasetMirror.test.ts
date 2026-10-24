@@ -193,6 +193,44 @@ describe('racing loads', () => {
     // The loser is released rather than leaked — it holds a decoder.
     expect(disposed).toEqual(['A'])
   })
+
+  // Found in review. Asking for the dataset already on screen needs no
+  // load, and that early return used to skip the generation, so a load
+  // still in flight was not superseded. It then installed and released
+  // the picture the operator had gone back to.
+  it('lets a return to the dataset on screen supersede a load in flight', async () => {
+    const { loader, pending, disposed, source } = deferredLoader()
+    const mirror = createDatasetMirror({ loader })
+    const x = dataset({ id: 'X', url: 'https://cdn.example/x.m3u8' })
+    const xLoad = mirror.apply(x)
+    await until(() => pending.length === 1, 'X to start loading')
+    pending[0].resolve(source('X'))
+    await xLoad
+
+    const aLoad = mirror.apply(dataset({ id: 'A', url: 'https://cdn.example/a.m3u8' }))
+    await until(() => pending.length === 2, 'A to start loading')
+    await mirror.apply(x)
+    pending[1].resolve(source('A'))
+    await aLoad
+
+    expect(mirror.currentDataset()?.id).toBe('X')
+    expect(mirror.current()?.element).toEqual({ tag: 'X' })
+    expect(disposed).toEqual(['A'])
+  })
+
+  it('lets an apply of nothing supersede a load in flight, from idle', async () => {
+    const { loader, pending, disposed, source } = deferredLoader()
+    const mirror = createDatasetMirror({ loader })
+    const aLoad = mirror.apply(dataset({ id: 'A', url: 'https://cdn.example/a.m3u8' }))
+    await until(() => pending.length === 1, 'A to start loading')
+    await mirror.apply(null)
+    pending[0].resolve(source('A'))
+    await aLoad
+
+    expect(mirror.current()).toBeNull()
+    expect(mirror.currentDataset()).toBeNull()
+    expect(disposed).toEqual(['A'])
+  })
 })
 
 describe('dispose', () => {

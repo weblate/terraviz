@@ -125,6 +125,13 @@ export function createDatasetMirror(
     async apply(next) {
       if (disposed) return
 
+      // Every apply is the newest, including one that needs no load:
+      // going back to the dataset on screen, or to nothing from idle,
+      // must supersede a load still in flight. Bumped after the early
+      // return, that load installed anyway and released the picture
+      // the caller had just gone back to (found in review).
+      const mine = ++generation
+
       if (!needsReload(dataset, next)) {
         // Same pixels, new metadata — keep the decoder, take the
         // overlay. The scene re-reads `currentDataset()` for its
@@ -132,8 +139,6 @@ export function createDatasetMirror(
         dataset = next
         return
       }
-
-      const mine = ++generation
 
       if (!next) {
         dataset = null
