@@ -128,8 +128,8 @@ export function imageCandidates(variants: readonly Variant[], fallback: string |
 /** A dataset to show, and other addresses for the same picture. */
 export interface WebDataset {
   dataset: MirroredDataset
-  /** Addresses to try in order if `dataset.url` will not load. The rest
-   *  of an image's candidates; none for a video. */
+  /** Addresses to try in order if `dataset.url` will not load: the rest
+   *  of an image's candidates, or a video's single file after its stream. */
   alternateUrls: string[]
 }
 
@@ -191,9 +191,11 @@ export async function fetchWebDataset(
     throw new WebDatasetError('bad_response', `manifest for ${id} says ${String(manifest.kind)}, the record says ${kind}`)
   }
 
+  // A video tries its stream, then its single file, as the main app
+  // falls back (`datasetLoader`); an image tries its sizes.
   const urls =
     kind === 'video'
-      ? [str(manifest.hls) ?? directFile(manifest.files)].filter((u): u is string => u !== undefined)
+      ? [...new Set([str(manifest.hls), directFile(manifest.files)].filter((u): u is string => u !== undefined))]
       : imageCandidates(variantsOf(manifest.variants), str(manifest.fallback), opts.frameWidth)
   const [url, ...alternateUrls] = urls
   if (!url) throw new WebDatasetError('not_playable', `manifest for ${id} names nothing to play`)

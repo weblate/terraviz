@@ -34,6 +34,7 @@ import {
   type FramebufferWidth,
 } from '../services/multiOutput/protocol'
 import { normalizeRotationOffset } from '../services/multiOutput/outputPersistence'
+import { MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE } from '../utils/time'
 
 /**
  * Where the clip should be, shared by every copy of the page.
@@ -79,9 +80,13 @@ export interface WebOutputSettings {
   clock: WebClock
 }
 
-/** Faster than this is almost certainly a typo, and a very large rate
- *  sends the playhead round a short clip several times a frame. */
-export const MAX_WEB_RATE = 16
+/** The rates a web clock will play: the player's own limits. Faster is
+ *  almost certainly a typo, and sends the playhead round a short clip
+ *  several times a frame. Slower is clamped by the control law to the
+ *  minimum, so the element outran its clock and was seeked back every
+ *  few seconds (found in review). Either reads as rate 1. */
+export const MIN_WEB_RATE = MIN_PLAYBACK_RATE
+export const MAX_WEB_RATE = MAX_PLAYBACK_RATE
 
 /** The shape of a node dataset id. Anything else would reach the API as
  *  a path segment, so it is refused here rather than escaped there. */
@@ -128,7 +133,7 @@ function readClock(params: URLSearchParams): WebClock {
   return {
     positionS: t !== null && t >= 0 ? t : 0,
     atUnixS: at !== null && at > 0 ? at : null,
-    rate: rate !== null && rate > 0 && rate <= MAX_WEB_RATE ? rate : 1,
+    rate: rate !== null && rate >= MIN_WEB_RATE && rate <= MAX_WEB_RATE ? rate : 1,
     paused: truthy(params, 'paused'),
   }
 }

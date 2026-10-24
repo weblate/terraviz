@@ -92,6 +92,13 @@ describe('fetchWebDataset', () => {
     expect(ds.url).toBe('https://v.example/1080.mp4')
   })
 
+  it('falls back from the stream to the single file, as the main app does', async () => {
+    const manifest = { ...VIDEO_MANIFEST, files: [{ quality: '1080p', width: 1920, link: 'https://v.example/1080.mp4' }] }
+    const { dataset: ds, alternateUrls } = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(VIDEO_RECORD, manifest) })
+    expect(ds.url).toBe(VIDEO_MANIFEST.hls)
+    expect(alternateUrls).toEqual(['https://v.example/1080.mp4'])
+  })
+
   it('picks the image variant the frame can use', async () => {
     const record = { ...VIDEO_RECORD, format: 'image/jpg', startTime: undefined, endTime: undefined }
     const manifest = {

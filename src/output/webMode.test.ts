@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_WEB_RATE,
+  MIN_WEB_RATE,
   defaultWebFramebufferWidth,
   mergedParams,
   readWebSettings,
@@ -165,10 +166,11 @@ describe('the clock', () => {
   })
 
   it('falls back to rate 1 for a rate it will not play', () => {
-    for (const bad of ['0', '-1', 'fast', String(MAX_WEB_RATE + 1)]) {
+    for (const bad of ['0', '-1', 'fast', String(MAX_WEB_RATE + 1), '0.05']) {
       expect(readWebSettings('', `#t=1&rate=${bad}`).clock.rate).toBe(1)
     }
     expect(readWebSettings('', `#t=1&rate=${MAX_WEB_RATE}`).clock.rate).toBe(MAX_WEB_RATE)
+    expect(readWebSettings('', `#t=1&rate=${MIN_WEB_RATE}`).clock.rate).toBe(MIN_WEB_RATE)
   })
 
   it('tells a changed clock from one a # change left alone', () => {
