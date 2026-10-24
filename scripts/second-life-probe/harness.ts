@@ -181,9 +181,14 @@ export async function testPage(page: string, only?: string): Promise<boolean> {
       }
       const url = `http://127.0.0.1:${port}/?${run.query}&n=1`
       const end = Date.now() + run.deadlineMs
+      // Counted from the browser's side as well as the page's: a reload
+      // that never reports, because it failed or went somewhere else,
+      // shows up only here. A change to the # alone requests nothing.
+      let documents = 0
+      tab.on('request', (r) => { if (r.isNavigationRequest() && r.frame() === tab.mainFrame()) documents++ })
       // Each page reports its mode once per load, so a second is a reload,
       // and the run stops there rather than waiting out its deadline.
-      const reloaded = () => loads(lines) > 1
+      const reloaded = () => loads(lines) > 1 || documents > 1
       await tab.goto(url)
       const hashAfter = run.hashAfter
       if (hashAfter && await until(() => hashAfter(lines) || reloaded(), end) && !reloaded()) await tab.goto(`${url}#h=1`)
@@ -194,6 +199,7 @@ export async function testPage(page: string, only?: string): Promise<boolean> {
 
       if (!finished && !reloaded()) problems.push(`did not reach its last report within ${run.deadlineMs / 1000} s`)
       if (loads(lines) !== 1) problems.push(`the page loaded ${loads(lines)} times`)
+      if (documents !== 1) problems.push(`the browser requested the page ${documents} times`)
       for (const match of run.expect) if (!has(match)(lines)) problems.push(`no "${match}" line`)
       for (const prefix of run.fails ?? []) if (has(prefix)(lines)) problems.push(`reported "${prefix}"`)
 

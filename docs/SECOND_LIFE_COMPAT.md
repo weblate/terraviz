@@ -709,21 +709,46 @@ The work, smallest first:
    that does.
    - **The globe's media address reaches every viewer near it.** The
      in-world script sets the address, and it knows who touched the
-     globe, so it can check the presenter list. A click inside the web
-     page, by contrast, changes only that visitor's copy.
+     globe, so it can check the presenter list.
+   - **So all control has to go through the script.**
+     - Inside the page, what one visitor does stays in their own copy.
+     - A *navigation* doesn't: a visitor whose interaction permission
+       allows it can move the page to a new address, and their viewer
+       broadcasts it to everyone (`LLVOVolume::mediaNavigated`, §11),
+       limited only by the media's URL whitelist.
+     - So the globe's media has to be non-interactive (interaction
+       permission "none"), or one click could go around the presenter
+       list.
    - **The address can carry the whole clock**: the dataset; when
-     paused, the exact time it is paused at; when playing, the moment
-     playback started and the rate.
-     - Each copy works out its position from that and its own
+     paused, the exact time it is paused at; when playing, a position
+     in the clip, the moment that position was current, and the rate.
+     - Each copy works out where it should be as that position, plus
+       the time since that moment multiplied by the rate.
+     - Every pause, resume and jump writes a new position and moment.
+       Resuming at 40 s and at 70 s are then different addresses,
+       which "the moment play was pressed" on its own can't tell
+       apart.
+     - Each copy reads the time since that moment from its own
        computer's clock. That keeps copies close as long as visitors'
        clocks are set from internet time, which most are.
-     - The output's existing steering moves a video to the target
-       position (`syncByRatio` in `src/output/outputSync.ts`).
-     - A paused time is exact, so every copy lands on the same frame.
      - This also settles the worry about datasets with a real time
        axis. A hurricane season is anchored to the moment someone
        pressed play, not to the time of day. Only the idle live Earth
        follows the real clock, and it should.
+   - **"Exactly the same frame" needs a new paused path.**
+     - The output's existing steering moves a video toward its target.
+       That's `syncByRatio` in `src/output/outputSync.ts`, or, for a
+       dataset with a time axis, the `computeSiblingSyncCorrection`
+       it calls from `src/utils/time.ts`.
+     - But it leaves anything within 0.15 s of the target alone,
+       paused or not (`outputSync.ts:290`, `:372-374`;
+       `SIBLING_HARD_SEEK_THRESHOLD_S`, `src/utils/time.ts:259`).
+       Two paused viewers could then sit several frames apart at
+       30 fps.
+     - A paused globe should instead seek to the paused time whatever
+       the drift, and stay there.
+     - The desktop outputs' tolerance stays as it is; it's measured
+       for playback, and nobody asked them for a frame.
    - **The catch is reloading.** Changing the address makes every
      viewer reload the page and re-buffer its video. Changing only the
      part after `#` might avoid that (§10 question 10). The viewer's
@@ -1031,7 +1056,9 @@ dataset globe that every visitor sees in step, under current clouds.
 the §5 recipe, sets the media at 2048×1024 and spins the globe. It also
 carries the controls §7 item 4 asks for: the presenter list, pause,
 jump, a dataset menu, and the return to the live Earth when nobody has
-used the globe for a while. Each control rewrites the media address.
+used the globe for a while. Each control rewrites the media address,
+and the media itself stays non-interactive so that the controls are the
+only way in.
 It is the in-world half of Phase 1.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
@@ -1163,6 +1190,7 @@ Numbering is kept from the first version, so a reference like
 - `indra/newview/llviewermedia.cpp:2582`, `:2611` (`navigateTo`) — the new address is recorded first, and a page whose priority is "unloaded" returns there, so it loads the latest address when it next gets priority; `:2692` starts a headers-only request to learn the type; `:2775` treats a missing type as `text/html`
 - `indra/newview/llviewermedia.cpp:1702` (`initializeMedia`) — the browser plugin is kept unless the new type needs a different plugin
 - `indra/newview/llviewermedia.cpp:1977` (`loadURI`) and `indra/llcommon/lluri.cpp:291`, `:185` — the address is escaped part by part, and the `#` part keeps `#` and `=`, so `#h=1` reaches the browser as written
+- `indra/newview/llvovolume.cpp:2825`, `:2842`, `:2846`, `:2868` (`mediaNavigated`) — a navigation made inside a viewer's copy of the page is checked against the media's URL whitelist and the visitor's interaction permission. If either refuses it, it bounces back (`:2861`). If both allow it, it is broadcast as the object's new address, for every viewer
 - `indra/newview/llviewermedia.cpp:3530` — the viewer already recognises a `#`-only change of location reported by the browser as internal navigation (its comment cites SL-1005)
 - `indra/newview/llviewermedia.cpp:86-87`, `:258-271` (`setMaxInstances`) — 8 in-world media at once by default, 2 fewer on a machine with under 8 GB of memory, never below 6
 - `indra/newview/llviewermedia.cpp:727`, `:769`, `:779`, `:785`, `:798`, `:813`, `:818` (`updateMedia`) — past the limit, unloaded; off screen, hidden; the first `PluginInstancesNormal` at normal priority; the next `PluginInstancesLow` at low priority, scaled to their on-screen size; any more as "slideshow"; with the viewer window minimised, everything hidden; with it out of focus, nothing above low. `:599` (`priorityComparitor`) ranks larger on-screen area first
