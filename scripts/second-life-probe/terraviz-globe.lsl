@@ -26,15 +26,18 @@
 // a web browser applies without reloading the page. Whether every Second
 // Life viewer passes a #-only change on without reloading is still being
 // tested: the probe kit's /7 hash answers it for your viewer. If yours
-// reloads, "/8 steer query" puts every change before the # instead. That
-// always reloads the page, which restarts its video for every visitor.
+// reloads, "/8 steer query" puts every change before the # instead, which
+// always reloads. A reload doesn't lose the moment, since the address
+// says what it is, but each globe shows the plain live Earth for a few
+// seconds while its dataset loads again.
 //
 // A SMOKE-TEST SCRIPT, NOT YET THE EXHIBIT
 // Only the owner can change the globe, by chat. The exhibit version -
-// a presenter list, controls visitors can touch, and a return to the live
-// Earth after the last visitor leaves - is Phase 2 of the plan, and not
-// built. Visitors who touch the globe are told what it shows, and offered
-// a link to explore it in the full app.
+// a presenter list, controls visitors can touch, and an automatic return
+// to the live Earth after the last visitor leaves - is Phase 2 of the
+// plan, and not built. A left-click on the globe only focuses its media;
+// a visitor who right-clicks it and chooses Touch is told in chat what it
+// shows, with a link to it in the full app.
 //
 // MORE
 //   The Second Life plan, and what was tested in-world:
@@ -66,17 +69,28 @@
 //   /8 rotation <degrees>  the longitude at the centre of the picture, east
 //   /8 spin <degrees/s>    turn the whole sphere; /8 spin off stops it
 //   /8 debug on|off        TerraViz's diagnostic readout, drawn on the globe
-//   /8 width 1024|2048     the picture's resolution (reloads the page)
-//   /8 telemetry on|off    anonymous counts, see below (reloads the page)
+//   /8 width 1024|2048     the picture's resolution
+//   /8 telemetry on|off    anonymous counts (reloads every visitor's page)
 //   /8 steer hash|query    where changes go in the address (see above)
 //   /8 status              the current address and state
 //   /8 upright             stand the poles upright again
 //
+// TELEMETRY
+// "/8 telemetry on" has each visitor's page report, anonymously and only
+// in the first minute after it loads, which dataset it showed and
+// anything that failed. Every reload reports again as a new visit, so
+// the privacy policy asks the owner of a measured globe to change only
+// what comes after the #: this script refuses "/8 steer query" while
+// telemetry is on. The hover text and the object's description say the
+// globe is measured, as the policy also asks. If the probe's /7 hash
+// found your viewer reloads on a # change anyway, leave telemetry off.
+//
 // Channel 8 rather than the probe's 7, so one command never reaches both
 // kinds of object at once.
 
-// The TerraViz node the globe shows. Change it to test another node, or a
-// preview build: the README says which address a preview has.
+// The TerraViz node the globe shows, with no slash at the end. Change it
+// to test another node, or a preview build: the README says which address
+// a preview has.
 string  NODE = "https://terraviz.zyra-project.org";
 integer CHAN = 8;
 integer FACE = 0;              // a sphere has only face 0
@@ -99,13 +113,15 @@ list PRESETS = [
     "lights",     "01KQG629957NPZN7NTW4VK6FW0", "Nighttime Lights (still image)"
 ];
 
-// The page plays rates from 1/12 to 12.8 and reads anything outside as 1
-// (docs/EMBED_URL_GRAMMAR.md). Held a little inside 1/12, because an
+// The page plays rates from 0.0834 to 12.8 and reads anything outside as
+// 1 (docs/EMBED_URL_GRAMMAR.md). Held a little inside 0.0834, because an
 // address carries three decimal places and 0.083 would read as 1.
 float   MIN_RATE = 0.084;
 float   MAX_RATE = 12.8;
 
+// The characters and length the page accepts in a dataset id.
 string  ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+integer ID_MAX = 128;
 
 // What the globe shows. The address is built from these alone.
 string  gDataset;       // the node's dataset id, or "" for the live Earth
@@ -121,6 +137,7 @@ integer gTelemetry;
 integer gWidth = 2048;
 integer gHash = TRUE;   // changes go after the #
 
+integer gMediaReady;    // every media setting has been put on the face once
 float   gSpin;          // degrees a second, 0 for still
 key     gReq;           // the dataset check in flight, if any
 string  gReqId;         // the id it checks
@@ -166,8 +183,9 @@ float since(list t)
 }
 
 // Makes gPos the position as of now. Every visitor's page counts on from
-// this moment by its own computer's clock, so copies agree as closely as
-// those clocks do, and the region's clock shifts all of them alike.
+// this moment by its own computer's clock. If the region's clock is off,
+// every copy is off alike while playing, and the error shows only at a
+// pause or a resume, as a jump of that error times the rate.
 anchor()
 {
     list t = now();
@@ -194,7 +212,8 @@ float position()
 }
 
 // A plain decimal with at most three places, as the page reads numbers:
-// no exponent, no padding. LSL's own (string) gives six places.
+// no exponent, no padding. LSL's own (string) gives six places. For
+// values under a million, which every caller holds to.
 string num(float f)
 {
     string sign = "";
@@ -236,7 +255,7 @@ integer isNumber(string s)
 integer isId(string s)
 {
     integer n = llStringLength(s);
-    if (n < 1 || n > 128) return FALSE;
+    if (n < 1 || n > ID_MAX) return FALSE;
     integer i;
     for (i = 0; i < n; ++i)
         if (llSubStringIndex(ID_CHARS, llGetSubString(s, i, i)) == -1) return FALSE;
@@ -245,12 +264,14 @@ integer isId(string s)
 
 // The output page's address for the current state.
 // Before the #: the setup, fixed for the life of a page, so changing it
-// reloads every copy. After it: everything a session changes. It always
-// has something after the #, because a change from an address with one
-// to an address without one is a reload, not a #-only change.
+// reloads every copy. That is only fit=fill and telemetry, which the page
+// must have when it loads, since it counts its minute from then. After
+// it: everything a session changes. It always has something after the #,
+// because a change from an address with one to an address without one is
+// a reload, not a #-only change.
 string address()
 {
-    string setup = "fit=fill&width=" + (string)gWidth;
+    string setup = "fit=fill";
     if (gTelemetry) setup += "&telemetry=1";
     list live = [];
     if (gDataset != "")
@@ -263,7 +284,7 @@ string address()
             if (gRate != 1.0) live += ["rate=" + num(gRate)];
         }
     }
-    live += ["rotation=" + num(gRotation)];
+    live += ["width=" + (string)gWidth, "rotation=" + num(gRotation)];
     if (gDebug) live += ["debug=1"];
     string sep = "#";
     if (!gHash) sep = "&";
@@ -291,16 +312,18 @@ restore(list s)
     gHash = llList2Integer(s, 11);
 }
 
-// Puts the current state on the face. The first call sets everything;
-// later ones only the address. Each call sleeps the script for a second.
+// Puts the current state on the face. Every setting goes until one call
+// carrying them all has succeeded, and only the address after that: a
+// face given only an address takes media's defaults for the rest, which
+// let anyone click it. Each call sleeps the script for a second.
 // The media is not interactive for anyone, so no visitor's click can
 // move it to another address: a viewer broadcasts such a navigation to
 // everyone near the globe (docs/SECOND_LIFE_COMPAT.md section 7, item 4).
-integer setMedia(integer everything)
+integer setMedia()
 {
     string url = address();
     list p = [PRIM_MEDIA_CURRENT_URL, url, PRIM_MEDIA_HOME_URL, url];
-    if (everything) p += [
+    if (!gMediaReady) p += [
         PRIM_MEDIA_AUTO_PLAY, TRUE,
         PRIM_MEDIA_AUTO_SCALE, FALSE,
         PRIM_MEDIA_AUTO_ZOOM, FALSE,
@@ -315,15 +338,20 @@ integer setMedia(integer everything)
         llOwnerSay("[globe] Second Life refused the media (status " + (string)r + "). The globe is unchanged.");
         return FALSE;
     }
+    gMediaReady = TRUE;
     return TRUE;
 }
 
-// What a visitor sees over the globe and in its description.
+// What a visitor sees over the globe and in its description. The
+// description carries the telemetry notice whether or not the hover text
+// is on.
 describe()
 {
     string what = "The live Earth: today's clouds and the real day and night";
     if (gDataset != "") what = gTitle;
-    llSetObjectDesc(llGetSubString("TerraViz globe: " + what, 0, 126));
+    string desc = "TerraViz globe: " + what;
+    if (gTelemetry) desc = "TerraViz globe. Counts anonymous use: " + NODE + "/privacy";
+    llSetObjectDesc(llGetSubString(desc, 0, 126));
     if (!HOVER_TEXT) { llSetText("", ZERO_VECTOR, 0.0); return; }
     string s = "TerraViz globe\n" + what;
     if (gTelemetry) s += "\nThis globe counts anonymous use: " + NODE + "/privacy";
@@ -335,18 +363,33 @@ describe()
 // agreeing.
 integer commit(list saved)
 {
-    if (!setMedia(FALSE)) { restore(saved); return FALSE; }
+    if (!setMedia()) { restore(saved); return FALSE; }
     describe();
     llOwnerSay("[globe] Address: " + address());
     return TRUE;
+}
+
+// Stops a spin and lines every viewer up again. The spin is drawn by each
+// viewer, and outlives a reset since it belongs to the prim. A viewer
+// drops the turn it has drawn only when an update brings a rotation
+// different from the last one the region sent, and the region's rotation
+// never moved, so setting it again alone changes nothing on screen. A
+// small turn first, then the real rotation, are two different updates.
+// From the viewer's source (llviewerobject.cpp); not yet seen in-world.
+stopSpin()
+{
+    rotation rest = llGetRot();
+    llTargetOmega(ZERO_VECTOR, 0.0, 0.0);
+    llSetRot(rest * llAxisAngle2Rot(<0.0, 0.0, 1.0>, 0.01));
+    llSetRot(rest);
+    gSpin = 0.0;
 }
 
 // The spin axis is the region's vertical, since llTargetOmega spins a
 // root prim about region axes, and upright() stands the poles on it.
 upright()
 {
-    llTargetOmega(ZERO_VECTOR, 0.0, 0.0);
-    gSpin = 0.0;
+    stopSpin();
     // A default sphere has its poles on its local X axis and wraps its
     // texture pole to pole, so a world map lands sideways. Turning -90
     // degrees about Y carries local X to world up; the texture turns 90.
@@ -358,14 +401,24 @@ upright()
 
 // Asks the node for the dataset before showing it: a mistyped id is
 // caught here rather than turning every visitor's globe to the live Earth.
-check(string id, string described)
+// FALSE if Second Life wouldn't send the request.
+integer check(string id, string described)
 {
+    // Only the start of the reply is read, since a whole record can run
+    // past 12 KB, which would cost this script twice that in memory. This
+    // node's serializer puts id, slug, title and format first, and
+    // dataset-serializer.test.ts holds it to that for this script's sake;
+    // the order is not part of the published contract.
+    key req = llHTTPRequest(NODE + "/api/v1/datasets/" + id, [HTTP_BODY_MAXLENGTH, 2048], "");
+    if (req == NULL_KEY)
+    {
+        llOwnerSay("[globe] Second Life is limiting this object's web requests. Try again in a minute.");
+        return FALSE;
+    }
+    gReq = req;
     gReqId = id;
     gReqTitle = described;
-    // Only the start of the reply is read. The record's id, slug, title
-    // and format come first, and a whole record can run past 12 KB, which
-    // would cost this script twice that in memory.
-    gReq = llHTTPRequest(NODE + "/api/v1/datasets/" + id, [HTTP_BODY_MAXLENGTH, 2048], "");
+    return TRUE;
 }
 
 show(string id, string title)
@@ -386,10 +439,12 @@ default
     state_entry()
     {
         llListen(CHAN, "", llGetOwner(), "");
+        while (llGetSubString(NODE, -1, -1) == "/") NODE = llDeleteSubString(NODE, -1, -1);
         if (llGetObjectName() == "Object") llSetObjectName("TerraViz globe");
         if (UPRIGHT_ON_START) upright();
+        else stopSpin();
         anchor();
-        if (setMedia(TRUE))
+        if (setMedia())
         {
             describe();
             llOwnerSay("[globe] Showing the live Earth from " + NODE + ". Address: " + address());
@@ -406,9 +461,11 @@ default
 
     touch_start(integer n)
     {
-        // Whether a click on a face with non-interactive media reaches
-        // this event is untested in-world. If it doesn't, the hover text
-        // and the object's description still say what this is.
+        // A left-click never gets here: a viewer hands a click on a face
+        // with media to the media (lltoolpie.cpp). Right-click and Touch
+        // does. The link goes in the chat text, where viewers make it
+        // clickable, since llLoadURL would sleep the script ten seconds a
+        // touch and hold up the owner's commands.
         string what = "the live Earth, with today's clouds and the real day and night";
         string url = NODE + "/";
         if (gDataset != "")
@@ -416,14 +473,13 @@ default
             what = gTitle;
             url = NODE + "/?dataset=" + gDataset;
         }
+        // Each link ends its line, so no punctuation joins the link.
+        string say = "This globe is TerraViz, a free, open-source globe for Earth data, most of it from "
+            + "NOAA's Science On a Sphere collection. It is showing " + what + ".\nExplore it in your web "
+            + "browser: " + url;
+        if (gTelemetry) say += "\nThis globe counts anonymous use: " + NODE + "/privacy";
         integer i;
-        for (i = 0; i < n; ++i)
-        {
-            key who = llDetectedKey(i);
-            llRegionSayTo(who, 0, "This globe is TerraViz, a free, open-source globe for Earth data, most of it "
-                + "from NOAA's Science On a Sphere collection. It is showing " + what + ".");
-            llLoadURL(who, "Explore this in TerraViz, in your web browser?", url);
-        }
+        for (i = 0; i < n; ++i) llRegionSayTo(llDetectedKey(i), 0, say);
     }
 
     listen(integer ch, string name, key id, string msg)
@@ -462,12 +518,12 @@ default
                     + " list nor a dataset id. Ids are letters, digits, - and _.");
                 return;
             }
-            check(dataset, described);
-            llOwnerSay("[globe] Asking the node about " + dataset + "...");
+            if (check(dataset, described)) llOwnerSay("[globe] Asking the node about " + dataset + "...");
             return;
         }
         if (cmd == "earth")
         {
+            gReq = NULL_KEY;   // a /8 show still waiting on the node is overtaken
             gDataset = "";
             gTitle = "";
             gPaused = FALSE;
@@ -506,7 +562,7 @@ default
             if (llGetListLength(mmss) == 2 && isNumber(llList2String(mmss, 0)) && isNumber(llList2String(mmss, 1)))
                 to = llList2Float(mmss, 0) * 60.0 + llList2Float(mmss, 1);
             else if (isNumber(arg)) to = (float)arg;
-            if (to < 0.0 || to > 1000000.0)
+            if (to < 0.0 || to > 100000.0)
             {
                 llOwnerSay("[globe] Jump to where? Seconds into the clip, like 90, or minutes and seconds, like 1:30.");
                 return;
@@ -519,8 +575,11 @@ default
         }
         if (cmd == "rate")
         {
-            float r = (float)arg;
-            if (!isNumber(arg) || r < MIN_RATE || r > MAX_RATE)
+            // Rounded to what the address will carry, so the script times
+            // the clip at the rate every copy plays it.
+            float r = -1.0;
+            if (isNumber(arg)) r = (float)num((float)arg);
+            if (r < MIN_RATE || r > MAX_RATE)
             {
                 llOwnerSay("[globe] A rate from " + num(MIN_RATE) + " to " + num(MAX_RATE) + ", where 1 is the clip's own speed.");
                 return;
@@ -532,9 +591,15 @@ default
         }
         if (cmd == "rotation")
         {
-            if (!isNumber(arg)) { llOwnerSay("[globe] Rotation in degrees east, like 90 or -75."); return; }
+            if (!isNumber(arg) || llFabs((float)arg) > 3600.0)
+            {
+                llOwnerSay("[globe] Rotation in degrees east, like 90 or -75.");
+                return;
+            }
             float r = (float)arg;
-            gRotation = r - 360.0 * (float)llFloor(r / 360.0);
+            r = (float)num(r - 360.0 * (float)llFloor(r / 360.0));
+            if (r >= 360.0) r = 0.0;
+            gRotation = r;
             if (commit(saved)) llOwnerSay("[globe] " + num(gRotation) + " degrees east is at the centre of the picture.");
             return;
         }
@@ -543,9 +608,7 @@ default
             float rate = (float)arg;
             if (larg == "off" || (isNumber(arg) && rate == 0.0))
             {
-                // Spinning is drawn by each viewer, so stopping leaves each
-                // at its own angle; setting the rotation again lines them up.
-                upright();
+                stopSpin();
                 llOwnerSay("[globe] Spin off.");
                 return;
             }
@@ -572,20 +635,31 @@ default
         {
             if (arg != "1024" && arg != "2048") { llOwnerSay("[globe] width 1024, or width 2048."); return; }
             gWidth = (integer)arg;
-            if (commit(saved)) llOwnerSay("[globe] Width " + arg + ". That is part of the setup, before the #, "
-                + "so every visitor's page reloads.");
+            if (commit(saved)) llOwnerSay("[globe] Width " + arg + ". The picture changes size at once, and the "
+                + "video's resolution follows at the next dataset.");
             return;
         }
         if (cmd == "telemetry")
         {
             if (larg != "on" && larg != "off") { llOwnerSay("[globe] telemetry on, or telemetry off."); return; }
+            if (larg == "on" && !gHash)
+            {
+                llOwnerSay("[globe] Not while changes go before the #: each would reload every visitor's page, "
+                    + "and each reload reports again as a new visit. Say /" + (string)CHAN + " steer hash first.");
+                return;
+            }
             gTelemetry = (larg == "on");
             if (!commit(saved)) return;
             if (gTelemetry)
+            {
+                string where = "The object's description now says so";
+                if (HOVER_TEXT) where = "The hover text and the object's description now say so";
                 llOwnerSay("[globe] Telemetry on. In the first minute after each visitor's page loads, it reports "
                     + "anonymously which dataset it showed and anything that failed, then nothing more. A viewer "
-                    + "that sends Global Privacy Control reports nothing. The hover text now says so, as the "
-                    + "policy asks: " + NODE + "/privacy. Every visitor's page reloaded to pick this up.");
+                    + "that sends Global Privacy Control reports nothing. " + where + ", as the policy asks: "
+                    + NODE + "/privacy. Every visitor's page reloaded to pick this up. Change only what comes "
+                    + "after the # from here on, which every other command does.");
+            }
             else
                 llOwnerSay("[globe] Telemetry off. Every visitor's page reloaded to pick this up.");
             return;
@@ -593,13 +667,20 @@ default
         if (cmd == "steer")
         {
             if (larg != "hash" && larg != "query") { llOwnerSay("[globe] steer hash, or steer query."); return; }
+            if (larg == "query" && gTelemetry)
+            {
+                llOwnerSay("[globe] Not while telemetry is on: each change would reload every visitor's page, and "
+                    + "each reload reports again as a new visit. Say /" + (string)CHAN + " telemetry off first.");
+                return;
+            }
             gHash = (larg == "hash");
             if (!commit(saved)) return;
             if (gHash)
                 llOwnerSay("[globe] Changes now go after the #, which a browser applies without a reload.");
             else
-                llOwnerSay("[globe] Changes now go before the #, so each one reloads every visitor's page "
-                    + "and restarts its video. For viewers that reload on a # change anyway.");
+                llOwnerSay("[globe] Changes now go before the #, so each one reloads every visitor's page: the "
+                    + "globe shows the plain live Earth for a few seconds, then the same moment. For viewers that "
+                    + "reload on a # change anyway.");
             return;
         }
         if (cmd == "status")
@@ -622,7 +703,7 @@ default
 
     http_response(key id, integer status, list meta, string body)
     {
-        if (id != gReq) return;   // an earlier /8 show, overtaken by a later one
+        if (id != gReq) return;   // overtaken by a later /8 show, or by /8 earth
         gReq = NULL_KEY;
         if (status == 404)
         {
@@ -644,14 +725,25 @@ default
             {
                 title = llJsonGetValue(llGetSubString(body, 0, f - 1) + "}", ["title"]);
                 if (title == JSON_INVALID || title == JSON_NULL) title = "";
-                string rest = llGetSubString(body, f + 11, f + 40);
-                if (llSubStringIndex(rest, "tour/") == 0)
+                string rest = llGetSubString(body, f + 11, f + 60);
+                integer q = llSubStringIndex(rest + "\"", "\"");
+                string format = "";
+                if (q > 0) format = llGetSubString(rest, 0, q - 1);
+                // The page shows only images and videos, and refuses the
+                // rest without retrying, which would leave every visitor's
+                // globe on the live Earth.
+                if (llSubStringIndex(format, "image/") != 0 && llSubStringIndex(format, "video/") != 0)
                 {
-                    llOwnerSay("[globe] " + gReqId + " is a tour. A tour drives the full app, and a globe can't "
-                        + "show one. The globe is unchanged.");
+                    string kind = "a " + format;
+                    if (llSubStringIndex(format, "tour/") == 0) kind = "a tour, which drives the full app";
+                    llOwnerSay("[globe] " + gReqId + " is " + kind + ". A globe shows only images and videos. "
+                        + "The globe is unchanged.");
                     return;
                 }
             }
+            else
+                llOwnerSay("[globe] Couldn't read " + gReqId + "'s format from the node's reply, so it couldn't be "
+                    + "checked. Showing it anyway. If it won't load, every visitor's globe shows the live Earth.");
         }
         else
             llOwnerSay("[globe] Couldn't check " + gReqId + " with the node (HTTP " + (string)status + "). "

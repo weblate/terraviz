@@ -1148,9 +1148,12 @@ yet.
 - **An in-world script to smoke-test it**,
   [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
   writes these addresses from chat commands: setup before the `#`, the
-  dataset, clock, rotation and debug readout after it. It is checked
-  with `lslint`, and `globe.test.ts` holds what it writes to what
-  `webMode.ts` reads. It hasn't run in-world yet.
+  dataset, clock, width, rotation and debug readout after it. It is
+  checked with `lslint`, and `globe.test.ts` holds the keys and values
+  it writes, and which half of the address each goes in, to what
+  `webMode.ts` reads. With telemetry on it refuses to steer before the
+  `#`, which the privacy policy asks of a measured globe. It hasn't run
+  in-world yet.
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
   the visitor's connection can play the stream at all. One exception:
@@ -1297,8 +1300,9 @@ It is the in-world half of Phase 1.
 does the recipe, the media, the spin, pause, jump, rate, rotation and
 dataset switching. It is driven by its owner in chat, with
 non-interactive media. It has no presenter list, no controls visitors
-can touch, and no return to the live Earth, which all wait on the open
-questions in §7 item 4.
+can touch, and no automatic return to the live Earth after the last
+visitor leaves (`/8 earth` is the owner's, by hand), which all wait on
+the open questions in §7 item 4.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.

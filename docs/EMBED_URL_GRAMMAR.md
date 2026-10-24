@@ -124,6 +124,9 @@ replaces the same key before it. A browser applies a change to the
 part after `#` without reloading the page, and the page re-reads its
 address on every such change. So a fixed setup can sit in the query,
 and anything a controller changes during a session belongs after `#`.
+Keep a `#` in the address for the whole session: a change from an
+address with a fragment to one without is an ordinary navigation, and
+reloads every copy.
 Whether Second Life passes a fragment-only change on to every visitor
 is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 
@@ -295,5 +298,5 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 - `src/services/deepLinkService.ts` — `/dataset/:id` path form and native `zyra://` links
 - `src/styles/embed.css` — the chrome-hiding rules `embed=1` switches on
 - `src/output/webMode.ts` — the output page's reader; `webOutput.ts` — how it is applied; `webDataset.ts` — the dataset fetch; `webClock.ts` — the shared clock
-- `scripts/second-life-probe/terraviz-globe.lsl` — an in-world composer of output-page addresses. Its `globe.test.ts` fails if a key it writes stops being read, so a change to the output page's parameters lands in front of that test
+- `scripts/second-life-probe/terraviz-globe.lsl` — an in-world composer of output-page addresses, and of a main-app `/?dataset=` link for visitors. Its `globe.test.ts` fails if a key it writes is renamed or removed, or stops accepting a value the script writes; a change in what a value does is not caught there
 - [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7 — why the output page takes these parameters

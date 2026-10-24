@@ -8,7 +8,9 @@ import { MAX_WEB_RATE, MIN_WEB_RATE, readWebSettings } from '../../src/output/we
 // LSL compiles only in-world, so nothing here runs the script. These
 // tests hold what it writes to what the output page reads, which is the
 // part that can drift without anyone in Second Life noticing: a renamed
-// key or a narrowed range leaves every globe quietly showing a default.
+// key, a value the page no longer takes or a narrowed range leaves every
+// globe quietly showing a default. A change in what a value *means* is
+// not caught here; that is the grammar's v2 rule.
 
 const read = (file: string): string =>
   readFileSync(new URL(file, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -32,6 +34,19 @@ function body(script: string, signature: string): string {
 /** The string literals in some LSL source. */
 const literals = (source: string): string[] => [...source.matchAll(/"([^"]*)"/g)].map((m) => m[1])
 
+/** The `key=value` segments in some literals; a value is empty where the script appends one. */
+const segments = (source: string): Array<{ key: string; value: string }> =>
+  literals(source)
+    .flatMap((literal) => literal.split('&'))
+    .filter((segment) => segment.includes('='))
+    .map((segment) => ({ key: segment.slice(0, segment.indexOf('=')), value: segment.slice(segment.indexOf('=') + 1) }))
+
+const address = body(globe, 'string address()')
+/** What address() puts before the #: the lines that build `setup`. */
+const setupKeys = segments(address.split('\n').filter((line) => /\bsetup\b/.test(line)).join('\n')).map((s) => s.key)
+/** What it puts after: the lines that build `live`. */
+const liveKeys = segments(address.split('\n').filter((line) => /\blive\b/.test(line)).join('\n')).map((s) => s.key)
+
 const BARE = readWebSettings('', '')
 const ID = '01KQG611HF8YXJNRBEHT0757KT'
 
@@ -44,13 +59,9 @@ describe('second-life globe script', () => {
     expect(chan).not.toBe(constant(read('./node-check.lsl'), 'integer', 'CHAN'))
   })
 
-  it('writes exactly these keys, and the page reads each one', () => {
-    const keys = literals(body(globe, 'string address()'))
-      .flatMap((literal) => literal.split('&'))
-      .filter((segment) => segment.includes('='))
-      .map((segment) => segment.slice(0, segment.indexOf('=')))
+  it('writes exactly these keys, and the page acts on each one', () => {
     // Pinned, so a key added to the script has to be added here, with a
-    // sample the page must act on.
+    // sample the page must act on where the script appends the value.
     const samples: Record<string, string> = {
       fit: 'fill',
       width: '1024',
@@ -63,19 +74,34 @@ describe('second-life globe script', () => {
       rotation: '90',
       debug: '1',
     }
-    expect(new Set(keys)).toEqual(new Set(Object.keys(samples)))
-    for (const key of keys) {
-      expect(readWebSettings(`?${key}=${samples[key]}`, ''), key).not.toEqual(BARE)
-      expect(readWebSettings('', `#${key}=${samples[key]}`), key).not.toEqual(BARE)
+    const written = segments(address)
+    expect(new Set(written.map((s) => s.key))).toEqual(new Set(Object.keys(samples)))
+    for (const { key, value } of written) {
+      // A value written as a literal is checked as written: `telemetry=on`
+      // would read as off, and so would `paused=yes` in a page that
+      // stopped taking it.
+      const sample = value === '' ? samples[key] : value
+      expect(readWebSettings(`?${key}=${sample}`, ''), `${key}=${sample}`).not.toEqual(BARE)
+      expect(readWebSettings('', `#${key}=${sample}`), `#${key}=${sample}`).not.toEqual(BARE)
     }
   })
 
+  it('puts only what the page needs at load before the #', () => {
+    // Everything before the # reloads every copy when it changes, and a
+    // measured globe must not reload (docs/PRIVACY.md). telemetry has to
+    // be there, since the page counts its minute from when it loaded.
+    expect(new Set(setupKeys)).toEqual(new Set(['fit', 'telemetry']))
+    expect(new Set(liveKeys)).toEqual(new Set(['dataset', 't', 'paused', 'at', 'rate', 'width', 'rotation', 'debug']))
+    // Something always follows the #: the rotation and width go in
+    // unconditionally, so no change can drop the fragment and reload.
+    expect(address).toMatch(/^ {4}live \+= \["width=" \+ \(string\)gWidth, "rotation=" \+ num\(gRotation\)\];$/m)
+  })
+
   it('composes addresses the page reads as meant', () => {
-    // The shapes address() builds: setup in the query, the session after
-    // the #, which always holds at least the rotation.
+    // The shapes address() builds: setup in the query, the session after the #.
     const playing = readWebSettings(
-      '?fit=fill&width=2048&telemetry=1',
-      `#dataset=${ID}&t=61.2&at=1792865189.482&rate=2&rotation=90&debug=1`,
+      '?fit=fill&telemetry=1',
+      `#dataset=${ID}&t=61.2&at=1792865189.482&rate=2&width=2048&rotation=90&debug=1`,
     )
     expect(playing).toEqual({
       datasetId: ID,
@@ -87,21 +113,21 @@ describe('second-life globe script', () => {
       clock: { positionS: 61.2, atUnixS: 1792865189.482, rate: 2, paused: false },
     })
 
-    const paused = readWebSettings('?fit=fill&width=2048', `#dataset=${ID}&t=30.5&paused=1&rotation=0`)
+    const paused = readWebSettings('?fit=fill', `#dataset=${ID}&t=30.5&paused=1&width=2048&rotation=0`)
     expect(paused.clock).toEqual({ positionS: 30.5, atUnixS: null, rate: 1, paused: true })
     expect(paused.telemetry).toBe(false)
     expect(paused.debug).toBe(false)
 
     // "/8 steer query" joins the two halves with & instead of #.
-    const steered = readWebSettings(`?fit=fill&width=2048&dataset=${ID}&t=61.2&at=1792865189.482&rotation=90`, '')
-    const hashed = readWebSettings('?fit=fill&width=2048', `#dataset=${ID}&t=61.2&at=1792865189.482&rotation=90`)
+    const steered = readWebSettings(`?fit=fill&dataset=${ID}&t=61.2&at=1792865189.482&width=2048&rotation=90`, '')
+    const hashed = readWebSettings('?fit=fill', `#dataset=${ID}&t=61.2&at=1792865189.482&width=2048&rotation=90`)
     expect(steered).toEqual(hashed)
 
-    const earth = readWebSettings('?fit=fill&width=2048', '#rotation=0')
+    const earth = readWebSettings('?fit=fill', '#width=2048&rotation=0')
     expect(earth.datasetId).toBeNull()
   })
 
-  it('keeps its rates inside what the page plays, at the three places it writes', () => {
+  it('keeps its rates inside what the page plays, at the three decimal places it writes', () => {
     // The page reads a rate outside its range as 1, so a limit that
     // rounds outside it would quietly play at normal speed.
     for (const name of ['MIN_RATE', 'MAX_RATE']) {
@@ -110,6 +136,19 @@ describe('second-life globe script', () => {
       expect(written, name).toBeLessThanOrEqual(MAX_WEB_RATE)
       expect(readWebSettings('', `#rate=${written}`).clock.rate, name).toBe(written)
     }
+  })
+
+  it('accepts exactly the dataset ids the page does', () => {
+    // A character the script lets through and the page refuses turns
+    // every visitor's globe to the live Earth; one the script refuses
+    // and the page takes is a dataset the owner cannot show.
+    const chars = JSON.parse(constant(globe, 'string', 'ID_CHARS')) as string
+    const pageTakes = (id: string) => readWebSettings(`?dataset=${encodeURIComponent(id)}`, '').datasetId === id
+    const printable = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i))
+    expect(new Set(chars)).toEqual(new Set(printable.filter(pageTakes)))
+    const max = Number(constant(globe, 'integer', 'ID_MAX'))
+    expect(pageTakes('A'.repeat(max))).toBe(true)
+    expect(pageTakes('A'.repeat(max + 1))).toBe(false)
   })
 
   it('knows presets by lowercase names, with ids the page accepts', () => {
@@ -138,9 +177,13 @@ describe('second-life globe script', () => {
   it('gives no one the media to click', () => {
     // A visitor who can interact can navigate the face, and a viewer
     // broadcasts that navigation to everyone near the globe
-    // (docs/SECOND_LIFE_COMPAT.md section 7, item 4).
-    const media = body(globe, 'integer setMedia(integer everything)')
+    // (docs/SECOND_LIFE_COMPAT.md section 7, item 4). The permissions
+    // go with every call until one has carried them, since a face given
+    // only an address takes defaults that let anyone click.
+    const media = body(globe, 'integer setMedia()')
     expect(media).toContain('PRIM_MEDIA_PERMS_INTERACT, PRIM_MEDIA_PERM_NONE')
     expect(media).toContain('PRIM_MEDIA_PERMS_CONTROL, PRIM_MEDIA_PERM_NONE')
+    expect(media).toMatch(/if \(!gMediaReady\) p \+= \[/)
+    expect(media).toMatch(/gMediaReady = TRUE;\s+return TRUE;/)
   })
 })

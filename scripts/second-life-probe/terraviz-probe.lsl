@@ -17,7 +17,7 @@
 // sphere wraps a picture, and whether a change to the part of an address
 // after # reaches the page without a reload. It is a test kit, not an
 // exhibit: its test page renders only for the object's owner. For a
-// globe that visitors see, use terraviz-globe.lsl, beside this script.
+// globe that visitors see, use terraviz-globe.lsl, in a sphere of its own.
 //   What the tests found, and the plan they led to (sections 3-5, 7):
 //     https://github.com/zyra-project/terraviz/blob/main/docs/SECOND_LIFE_COMPAT.md
 //   How to run it, and how to read what it says:

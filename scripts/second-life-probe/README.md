@@ -34,7 +34,7 @@ This folder holds three LSL scripts:
 | `node-check.lsl` | **Optional, beside the probe.** Asks the TerraViz node for data and says what that costs a script's memory. |
 | `probe.html`, `probe.template.lsl` | What `terraviz-probe.lsl` is generated from. Edit these. |
 | `build.ts`, `index.ts`, `harness.ts`, `build.test.ts` | The probe's generator, its command line, a headless-browser check of the page, and the tests that keep the generated script in step. |
-| `globe.test.ts` | Holds the globe script to what the output page reads: each key it writes, its rate limits, its preset ids. |
+| `globe.test.ts` | Holds the globe script to what the output page reads: each key and value it writes, which half of the address each goes in, its rate limits, the dataset ids it accepts. |
 
 ## The globe
 
@@ -46,14 +46,14 @@ This folder holds three LSL scripts:
 - No L$. Nothing here uploads anything.
 - **Which node the globe shows.** The script's first setting, `NODE`, is
   `https://terraviz.zyra-project.org`. To test a build before it reaches
-  that site, point `NODE` at its preview deploy:
-  `https://<alias>.terraviz.pages.dev`, where the alias is the branch
-  name lowercased, with each `/` as `-`, cut to 28 characters and with
-  any trailing `-` dropped. The CI run's Deploy step prints it as the
-  "Deployment alias URL". A preview reads the same catalog, so the
-  script's dataset names work there too. A node without the output
-  page's web mode ignores the settings and shows the live Earth whatever
-  you ask for.
+  that site, point `NODE` at its preview deploy, with no slash at the
+  end: `https://<alias>.terraviz.pages.dev`. The alias is the branch name
+  lowercased, with every character that isn't a letter or a digit as `-`,
+  cut to 28 characters and with any trailing `-` dropped. The CI run's
+  Deploy step prints it as the "Deployment alias URL". A preview reads
+  the same catalog, so the script's dataset names work there too. A node
+  without the output page's web mode ignores the settings and shows the
+  live Earth whatever you ask for.
 
 ### Setting it up
 
@@ -81,42 +81,51 @@ command that changes the globe also says the address it set.
 
 | Command | What it does |
 |---|---|
-| `/8 show <name or id>` | Asks the node about the dataset, then shows it playing from its start. A mistyped id or a tour is refused, and the globe is left as it was. |
+| `/8 show <name or id>` | Asks the node about the dataset, then shows it playing from its start. A mistyped id, or anything that isn't an image or a video (a tour, say), is refused, and the globe is left as it was. |
 | `/8 list` | The names `show` knows: `hurricanes`, `sst`, `smoke` (a data-encoded forecast clipped to one region), `quakes` and `lights` (a still image). Any id from the node's catalog works too. |
-| `/8 earth` | Back to the live Earth. |
+| `/8 earth` | Back to the live Earth. It also cancels a `show` still waiting on the node. |
 | `/8 pause`, `/8 play` | Every visitor stops on, or starts from, the same frame. |
 | `/8 jump <s or m:ss>` | Go to that point in the clip, paused or playing. Past the end, the page wraps round the clip. |
-| `/8 rate <speed>` | From 0.084 to 12.8; 1 is the clip's own speed. |
+| `/8 rate <speed>` | From 0.084 to 12.8; 1 is the clip's own speed. Rounded to three decimal places, as the address carries it. |
 | `/8 rotation <degrees>` | The longitude at the centre of the picture, in degrees east. Which way that faces in-world depends on how the sphere is turned. |
 | `/8 spin <degrees a second>`, `/8 spin off` | Turns the whole sphere. Each viewer draws the spin for itself, so visitors don't all see the same side at once: leave it off when someone will point at a place. |
 | `/8 debug on`, `/8 debug off` | TerraViz's diagnostic readout, drawn on the globe: the dataset's id (`data`), how far the video is from the shared clock (`sync`), the frame rate (`fps`), the graphics card (`gpu`) and the picture's size (`buf`). |
-| `/8 width 1024`, `/8 width 2048` | The picture's resolution. Part of the setup, so every visitor's page reloads. |
-| `/8 telemetry on`, `/8 telemetry off` | Anonymous counts, below. Reloads every visitor's page. |
-| `/8 steer hash`, `/8 steer query` | Where changes go in the address, below. |
+| `/8 width 1024`, `/8 width 2048` | The picture's resolution. It changes size at once, and the video's resolution follows at the next dataset. |
+| `/8 telemetry on`, `/8 telemetry off` | Anonymous counts, below. Reloads every visitor's page once. |
+| `/8 steer hash`, `/8 steer query` | Where changes go in the address, below. `query` is refused while telemetry is on. |
 | `/8 status` | What it's showing, where the clip is, and the address. |
 | `/8 upright` | Stands the poles upright again and stops any spin. |
 
 ### How it steers every visitor
 
-The address has two halves. The setup sits before the `#`: `fit=fill`, so
-the picture fills the face, `width`, and `telemetry`. Everything a
-session changes sits after it: the dataset, the clock (`t`, `at`, `rate`,
-`paused`), `rotation` and `debug`. A browser applies a change after the
-`#` without reloading the page, so a pause or a jump should reach every
-visitor without restarting their video.
+The address has two halves. Before the `#` is only what the page must
+have when it loads: `fit=fill`, so the picture fills the face, and
+`telemetry`, since the page counts its one minute from when it loaded.
+Everything a session changes sits after it: the dataset, the clock (`t`,
+`at`, `rate`, `paused`), `width`, `rotation` and `debug`. A browser
+applies a change after the `#` without reloading the page.
 
 Whether every Second Life viewer passes a `#`-only change on without
 reloading is still being tested (`SECOND_LIFE_COMPAT.md` §10 question 10).
 The probe's `/7 hash`, below, answers it for your viewer. If yours
-reloads anyway, `/8 steer query` puts every change before the `#`.
-That always reloads, which restarts the video, but is at least
-consistent.
+reloads anyway, `/8 steer query` puts every change before the `#`, which
+always reloads, and is at least consistent.
+
+**A reload doesn't lose the moment**, because the address says what it
+is: a reloaded page lands back on the same frame, or the same point in
+the clip. What gives a reload away is the wait. The globe shows the
+plain live Earth for a few seconds while the dataset loads again, the
+readout's `data` line reads `—` meanwhile, and `fps` starts counting
+again.
 
 The clock is a position and the moment it was current, so each copy
 works out where the clip should be now from its own computer's clock.
 Copies agree as closely as visitors' clocks do, and most are set from
-internet time. The moment comes from the region's clock, and if that is
-off, every copy is off by the same amount, which no one can see.
+internet time. The moment comes from the region's clock. If that is
+off, every copy is off alike while the clip plays, and it shows only at
+a pause or a resume: every copy jumps by the clock's error times the
+rate. That is nothing to see at rate 1, and about a second for every
+80 ms of error at 12.8.
 
 ### Smoke-testing the output page
 
@@ -129,12 +138,12 @@ of the checks read it.
 2. **A video.** `/8 show hurricanes`. Within a few seconds it should
    play, with `sync` settling to within a few tens of milliseconds and
    `fps` near 30.
-3. **Pause and play.** `/8 pause`, then `/8 status` and `/8 play`.
-   **Watch whether the video restarts** at each one. If it carries on
-   from where it was, your viewer took the change without a reload,
-   which is the answer the clock plan hopes for. If it starts over
-   every time, the viewer reloaded the page: note it, and check with
-   the probe's `/7 hash`.
+3. **Pause and play: does a change reload the page?** `/8 pause`, wait,
+   then `/8 play`, watching the globe at each. Without a reload the
+   video simply stops and starts. A reload shows the plain live Earth
+   for a few seconds first, with `data` reading `—`, before the video
+   comes back at the right moment. Note which, and check it with the
+   probe's `/7 hash`.
 4. **The same frame for everyone.** With a second avatar beside the
    globe, or a friend, `/8 pause`, and compare the two views. They should
    show exactly the same frame. Playing, they should be close.
@@ -147,10 +156,16 @@ of the checks read it.
 8. **Refusals.** `/8 show NOSUCHID` is refused by the node, and the
    tour `/8 show 01KQG656807DATQ88JYYSRGF8Y` by the script. The globe
    shouldn't change for either.
-9. **Back to the Earth.** `/8 earth`.
-10. **Telemetry, optional.** `/8 telemetry on` reloads every page and adds
-    a line to the hover text saying the globe counts anonymous use,
-    which the privacy policy asks an owner to say. Each page reports
+9. **A visitor's touch.** The second avatar right-clicks the globe and
+   chooses **Touch**. They should get a chat line saying what it shows,
+   with a link to it in the full app. A left-click only focuses the
+   media.
+10. **Back to the Earth.** `/8 earth`.
+11. **Telemetry, optional, and only if step 3 found no reload.** Each
+    reload reports again as a new visit, which the privacy policy asks a
+    measured globe to avoid. `/8 telemetry on` reloads every page once,
+    and the hover text and the object's description then say the globe
+    counts anonymous use, as the policy also asks. Each page reports
     which dataset it showed and anything that failed, in its first
     minute only, anonymously. Then `/8 show hurricanes` within that
     minute. The rows appear in Grafana's product-health dashboard, in
@@ -160,8 +175,8 @@ of the checks read it.
     finds out. `/8 telemetry off` when done.
 
 When you report results, say which viewer and version (Help → About),
-which graphics card and which operating system, and what the readout
-showed for `sync`, `fps` and `gpu`.
+which graphics card and which operating system, what step 3 showed, and
+what the readout showed for `sync`, `fps` and `gpu`.
 
 ### Things that will trip you up
 
@@ -172,14 +187,16 @@ showed for `sync`, `fps` and `gpu`.
   same.
 - **Each change takes a second.** Second Life pauses a script for a
   second whenever it sets media, so commands in quick succession queue.
-- **Clicking the globe** should tell a visitor what it shows and offer a
-  link to it in the full app. Whether a click on a face with
-  non-clickable media reaches the script hasn't been tested. If it
-  doesn't, the hover text and the object's description still say what
-  it is.
-- **A reset puts the globe back on the live Earth**, and stands it
-  upright again. Set `UPRIGHT_ON_START` to `FALSE` for a mesh globe with
-  its own texture mapping.
+- **A left-click on the globe does nothing for the script.** A viewer
+  hands a click on a face with media to the media, whatever the media's
+  permissions. Right-click and Touch reaches it.
+- **Spin off lines the viewers up again** by nudging the sphere's
+  rotation and setting it back, since each viewer keeps the angle it had
+  drawn. That is read from the viewer's source and hasn't been seen
+  in-world.
+- **A reset puts the globe back on the live Earth**, stops any spin, and
+  stands it upright again. Set `UPRIGHT_ON_START` to `FALSE` for a mesh
+  globe with its own texture mapping, which keeps its own rotation.
 
 ## The probe
 
@@ -322,10 +339,20 @@ comes from one machine.
 ## Changing the kit
 
 **The globe** is edited directly. `globe.test.ts` holds it to the output
-page: every key the script writes must be one the page reads, its rate
-limits must survive being written to three places, and its preset ids
-must be ones the page accepts. A key added to the script fails that test
-until it is added there too, with a sample the page acts on.
+page:
+- every key the script writes, and every value it writes as written,
+  must be one the page acts on;
+- only `fit` and `telemetry` may go before the `#`, and something always
+  follows it;
+- its rate limits must survive being written to three decimal places;
+- it must accept exactly the dataset ids the page does, presets
+  included.
+
+A key added to the script fails that test until it is added there too,
+with a sample the page acts on. A change in what a value *means* isn't
+caught there. The script also reads the dataset record's first fields
+from a cut-off reply, and `functions/api/v1/_lib/dataset-serializer.test.ts`
+holds the node's field order to that.
 
 ```
 npx vitest run scripts/second-life-probe
@@ -353,9 +380,9 @@ video modes need the network.
 
 LSL compiles only in-world, so to catch syntax errors first, run
 [`lslint`](https://github.com/Makopo/lslint) over all three scripts. It
-builds with `make` on Linux. On the globe it reports two conditions that
-are always true or false, which are its constant settings, and nothing
-else.
+builds with `make` on Linux. On the globe it reports three conditions
+that are always true or false, which are its constant settings, and
+nothing else.
 
 `NODE` at the top of each script names the TerraViz node. Point it at
 your own to test a self-hosted node; video from it plays in the app only
