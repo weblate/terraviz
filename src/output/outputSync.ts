@@ -406,15 +406,30 @@ export interface PlayheadSync {
   sync(video: SyncTarget | null, state: SyncInputs): SyncOutcome
 }
 
+/**
+ * A gap between two calls longer than this means steering stopped (a
+ * hidden tab, an occluded media face, a paused web clock), and a seek
+ * left outstanding across it cannot be timed: the measurement is
+ * dropped rather than closed. Closed, the gap was recorded as the
+ * seek's cost, and a 60 s gap set a 90 s floor that stopped the element
+ * seeking for good (found in review). Steering calls once per frame, and
+ * the slowest measured frame is ~300 ms (WebKitGTK at 4096x2048), so a
+ * second is well clear of a running loop.
+ */
+export const STEER_GAP_DISCARD_MS = 1000
+
 export function createPlayheadSync(nowMs: () => number = () => performance.now()): PlayheadSync {
   let lastSeekAtMs = Number.NEGATIVE_INFINITY
   let awaitingSeek = false
   let lastSeekCostS = 0
   let steering: SyncTarget | null = null
+  let lastCallAtMs = Number.NEGATIVE_INFINITY
 
   return {
     sync(video, state) {
       const now = nowMs()
+      const sinceLastCallMs = now - lastCallAtMs
+      lastCallAtMs = now
 
       // A different element is a different measurement. `datasetMirror`
       // builds one per load and disposes the last, so a seek left
@@ -432,7 +447,9 @@ export function createPlayheadSync(nowMs: () => number = () => performance.now()
       // Closed *before* steering, not after: this call is the first one
       // that can act on what the seek actually cost, and acting on it a
       // frame later is one more seek the loop gets to issue.
-      if (awaitingSeek && video && !video.seeking) {
+      if (awaitingSeek && sinceLastCallMs > STEER_GAP_DISCARD_MS) {
+        awaitingSeek = false
+      } else if (awaitingSeek && video && !video.seeking) {
         lastSeekCostS = (now - lastSeekAtMs) / 1000
         awaitingSeek = false
       }

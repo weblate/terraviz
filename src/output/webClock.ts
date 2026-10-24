@@ -47,10 +47,23 @@
  * then always the short way round. An element that played to its end is
  * at the same point of the loop as one at its start, and the law's
  * `play()` rewinds it there, so the loop needs no case of its own.
+ *
+ * **On a short loop, one slow seek can end seeking.** Round the loop no
+ * error exceeds half the clip, and the seek-cost floor is 1.5 times the
+ * last seek's cost, so a seek costing a third of the clip or more leaves
+ * nothing big enough to seek again. A 6 s first seek, network fetch
+ * included, does that to a 16 s loop. The copy then converges by the
+ * trim alone, the short way round, within about twice the clip's length.
+ * Capping the floor below half the clip was tried and lets almost
+ * nothing through, because the trim shrinks the error first. Capping it
+ * lower restores the seek loop the floor exists to prevent, on exactly
+ * the links that make seeks slow. The real answer is the slow-link
+ * design in `docs/SECOND_LIFE_COMPAT.md` §7 (buffer, then join), which
+ * is undecided.
  */
 
 import type { WebClock } from './webMode'
-import { createPlayheadSync, syncVideoToState, type SyncOutcome, type SyncTarget } from './outputSync'
+import { createPlayheadSync, type SyncOutcome, type SyncTarget } from './outputSync'
 import type {
   MirroredDataset,
   MirroredPlayback,
@@ -68,6 +81,19 @@ export const EXACT_PAUSE_EPS_S = 0.001
  *  frame or more away is the wrong frame, and is retried. Half a frame at
  *  30 fps. */
 export const HELD_TOLERANCE_S = 1 / 60
+
+/** How many times a paused seek that landed a frame or more away is
+ *  made again. Once is enough for a seek that landed on a hole in what
+ *  was buffered. An engine that reports the frame's own timestamp rather
+ *  than the time written would otherwise be re-seeked after every
+ *  landing, forever (found in review). */
+export const PAUSED_RESEEKS = 1
+
+/** A position the loop counts as its start: a seek written a hair short
+ *  of the end, where the millisecond rounding of the law's target can
+ *  put one just after a wrap, lands on the end and waits for a `play()`
+ *  to rewind it. */
+const END_AS_START_S = 0.001
 
 /** `value` wrapped into [0, period), for a clip that loops. A value
  *  already inside is returned untouched: the modulo arithmetic would
@@ -179,7 +205,8 @@ function loopView(element: SyncTarget): LoopView {
     },
     set currentTime(seen: number) {
       const d = element.duration
-      element.currentTime = wrap(seen + view.centreS - d / 2, d)
+      const real = wrap(seen + view.centreS - d / 2, d)
+      element.currentTime = real > d - END_AS_START_S ? 0 : real
     },
     get playbackRate() {
       return element.playbackRate
@@ -213,13 +240,14 @@ export function createWebClockSteer(
   // handed the real element, and the law here has to see `loopView`.
   const playhead = createPlayheadSync(deps.monotonicMs)
   let view: LoopView | null = null
-  /** The paused target this steer last seeked to. Held so a readback
-   *  a hair off does not earn a seek every frame, but only within
-   *  `HELD_TOLERANCE_S`: an element that is a frame or more away has not
-   *  been seeked there, whatever was held. It once held at any distance,
-   *  so a dataset switch at the same paused time left the new element at
-   *  0 while fresh copies sat on the frame (found in review). */
-  let heldS: number | null = null
+  /** The paused target this steer last seeked to, and how many times
+   *  it has seeked there again. Held so a readback a hair off does not
+   *  earn a seek every frame, but only within `HELD_TOLERANCE_S`: an
+   *  element a frame or more away has not been seeked there, whatever
+   *  was held, and gets up to `PAUSED_RESEEKS` more. It once held at any
+   *  distance, so a dataset switch at the same paused time left the new
+   *  element at 0 while fresh copies sat on the frame (found in review). */
+  let held: { targetS: number; reseeks: number } | null = null
 
   return {
     steer(video, clock, nowMs, readAtMs) {
@@ -230,7 +258,7 @@ export function createWebClockSteer(
       const targetS = clockTargetS(clock, nowMs, readAtMs, d)
 
       if (!clock.paused) {
-        heldS = null
+        held = null
         if (!view || view.element !== video) view = loopView(video)
         view.centreS = targetS
         const inputs = clipClockInputs(d / 2, d, clock.rate)
@@ -241,18 +269,25 @@ export function createWebClockSteer(
         })
       }
 
+      // A new view on the next play: the playhead layer keys its memory on
+      // the view, so this drops a seek left outstanding when the clock
+      // paused, which would otherwise be timed against the whole pause.
+      view = null
       if (!video.paused) video.pause()
       // Mid-seek, `currentTime` already reads the target while the old
       // frame is still on the glass; measuring it would be fiction.
       if (video.seeking) return { kind: 'seeking', driftS: null, seeked: false }
       const driftS = video.currentTime - targetS
-      const alreadyAimed = heldS === targetS && Math.abs(driftS) < HELD_TOLERANCE_S
-      if (Math.abs(driftS) > EXACT_PAUSE_EPS_S && !alreadyAimed) {
-        video.currentTime = targetS
-        heldS = targetS
-        return { kind: 'paused', driftS, seeked: true }
+      if (Math.abs(driftS) <= EXACT_PAUSE_EPS_S) return { kind: 'paused', driftS, seeked: false }
+      if (held?.targetS !== targetS) {
+        held = { targetS, reseeks: 0 }
+      } else if (Math.abs(driftS) < HELD_TOLERANCE_S || held.reseeks >= PAUSED_RESEEKS) {
+        return { kind: 'paused', driftS, seeked: false }
+      } else {
+        held.reseeks++
       }
-      return { kind: 'paused', driftS, seeked: false }
+      video.currentTime = targetS
+      return { kind: 'paused', driftS, seeked: true }
     },
   }
 }

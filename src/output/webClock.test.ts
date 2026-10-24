@@ -114,6 +114,19 @@ describe('createWebClockSteer', () => {
       advance(ms: number) {
         mono += ms
       },
+      /** Serve a seek on `v` for `ms`, steering every 100 ms as a running
+       *  loop does; then land it. Returns the wall-clock offset reached. */
+      serve(v: SyncTarget, c: WebClock, ms: number, wallFromMs = 0): number {
+        ;(v as { seeking: boolean }).seeking = true
+        let wall = wallFromMs
+        for (let t = 0; t < ms; t += 100) {
+          mono += 100
+          wall += 100
+          steer.steer(v, c, LOADED_AT + wall, LOADED_AT)
+        }
+        ;(v as { seeking: boolean }).seeking = false
+        return wall
+      },
     }
   }
 
@@ -129,18 +142,15 @@ describe('createWebClockSteer', () => {
     // The first browser run's case. A seek that takes 2 s lands the copy
     // 2 s behind, and the seek-cost floor then declines to seek for
     // anything that small. The ratio path stopped there, at rate 1.
-    const { steer, advance } = harness()
+    const { steer, serve } = harness()
     const v = video({ duration: 200, currentTime: 40 })
     const playing = clock({ positionS: 50, atUnixS: AT })
 
     expect(steer.steer(v, playing, LOADED_AT, LOADED_AT).seeked).toBe(true)
     expect(v.currentTime).toBe(50)
-    ;(v as { seeking: boolean }).seeking = true
-    advance(2_000)
-    steer.steer(v, playing, LOADED_AT + 2_000, LOADED_AT)
-    ;(v as { seeking: boolean }).seeking = false
+    const wall = serve(v, playing, 2_000)
 
-    const outcome = steer.steer(v, playing, LOADED_AT + 2_000, LOADED_AT)
+    const outcome = steer.steer(v, playing, LOADED_AT + wall, LOADED_AT)
     expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-2, 6), seeked: false })
     expect(v.currentTime).toBe(50)
     expect(v.playbackRate).toBeGreaterThan(1)
@@ -167,12 +177,16 @@ describe('createWebClockSteer', () => {
       const { steer, advance } = harness()
       const v = video({ duration: 16, currentTime: 3 })
       const at = (t: number) => clock({ positionS: t, atUnixS: AT })
-      // One slow seek: the floor is now 1.5 x 2 s.
+      // One slow seek, measured at 2.1 s: the floor is now 3.15 s.
       steer.steer(v, at(10), LOADED_AT, LOADED_AT)
       ;(v as { seeking: boolean }).seeking = true
-      advance(2_000)
-      steer.steer(v, at(10), LOADED_AT, LOADED_AT)
+      for (let t = 0; t < 2_000; t += 100) {
+        advance(100)
+        steer.steer(v, at(10), LOADED_AT, LOADED_AT)
+      }
       ;(v as { seeking: boolean }).seeking = false
+      advance(100)
+      steer.steer(v, at(10), LOADED_AT, LOADED_AT)
       advance(2_000)
       // Short of the wrap, a second behind: speed up, no seek.
       v.currentTime = 15.5
@@ -198,6 +212,69 @@ describe('createWebClockSteer', () => {
       expect(v.play).toHaveBeenCalled()
       expect(v.currentTime).toBe(16)
     })
+  })
+
+  it('converges by the trim alone, the short way, after one slow seek on a short loop', () => {
+    // A 6 s seek on a 16 s loop sets a 9 s floor, more than any error
+    // round the loop can be, so nothing seeks again (found in review, and
+    // left so on purpose: see the module doc). What must hold is that
+    // the trim then closes the gap the short way round.
+    const { steer, serve } = harness()
+    const v = video({ duration: 16, currentTime: 3 })
+    const playing = clock({ positionS: 10, atUnixS: AT })
+    steer.steer(v, playing, LOADED_AT, LOADED_AT)
+    const wall = serve(v, playing, 6_000)
+    // Landed at 10 with the clock at 16, which is 0: 6 s behind round the loop.
+    const outcome = steer.steer(v, playing, LOADED_AT + wall, LOADED_AT)
+    expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-6, 6), seeked: false })
+    expect(v.playbackRate).toBeGreaterThan(1)
+  })
+
+  it('does not time a seek across a pause', () => {
+    // Found in review: a pause while a seek was in flight was recorded as
+    // the seek's cost, and the floor stopped the copy seeking for good.
+    const { steer, advance } = harness()
+    const v = video({ duration: 200, currentTime: 3 })
+    steer.steer(v, clock({ positionS: 50, atUnixS: AT }), LOADED_AT, LOADED_AT)
+    ;(v as { seeking: boolean }).seeking = true
+    // Paused at 50 while the seek is served; the pause lasts a minute.
+    for (let t = 0; t < 60_000; t += 100) {
+      advance(100)
+      steer.steer(v, clock({ positionS: 50, paused: true }), LOADED_AT, LOADED_AT)
+    }
+    ;(v as { seeking: boolean }).seeking = false
+    v.currentTime = 50
+    // Resumed, then the address jumps 5 s: a seek, not a trim.
+    const resumed = clock({ positionS: 55, atUnixS: AT })
+    expect(steer.steer(v, resumed, LOADED_AT, LOADED_AT).seeked).toBe(true)
+  })
+
+  it('does not time a seek across a pause shorter than a steering gap', () => {
+    // The playhead layer drops a measurement across a gap of a second or
+    // more; a shorter pause would still be timed, so the paused branch
+    // drops it too.
+    const { steer, advance } = harness()
+    const v = video({ duration: 200, currentTime: 3 })
+    steer.steer(v, clock({ positionS: 50, atUnixS: AT }), LOADED_AT, LOADED_AT)
+    ;(v as { seeking: boolean }).seeking = true
+    for (let t = 0; t < 900; t += 100) {
+      advance(100)
+      steer.steer(v, clock({ positionS: 50, paused: true }), LOADED_AT, LOADED_AT)
+    }
+    ;(v as { seeking: boolean }).seeking = false
+    v.currentTime = 50
+    // Timed across the pause, 0.9 s would set a 1.35 s floor and trim this.
+    expect(steer.steer(v, clock({ positionS: 51, atUnixS: AT }), LOADED_AT, LOADED_AT).seeked).toBe(true)
+  })
+
+  it('never writes a seek a hair short of the end, where it would wait for a rewind', () => {
+    const { steer } = harness()
+    // Half of this clip is not a whole millisecond, so the law's target,
+    // rounded to one, sits a sliver short of the view's centre, and a
+    // seek to just past the wrap came out a sliver before it.
+    const v = video({ duration: 10.0007, currentTime: 6 })
+    steer.steer(v, clock({ positionS: 0.0002, atUnixS: AT }), LOADED_AT, LOADED_AT)
+    expect(v.currentTime).toBeLessThan(1)
   })
 
   it('takes a clock with no anchor from when this copy read it', () => {
@@ -243,7 +320,7 @@ describe('createWebClockSteer', () => {
     expect(steer.steer(v, clock({ positionS: 60, paused: true }), LOADED_AT, LOADED_AT).seeked).toBe(true)
   })
 
-  it('seeks a paused element again when the first seek landed a frame away', () => {
+  it('seeks a paused element again when the first seek landed a frame away, but only once', () => {
     const { steer } = harness()
     const v = video({ currentTime: 10, paused: true })
     const paused = clock({ positionS: 50, paused: true })
@@ -251,6 +328,18 @@ describe('createWebClockSteer', () => {
     v.currentTime = 50 + HELD_TOLERANCE_S * 3
     expect(steer.steer(v, paused, LOADED_AT, LOADED_AT).seeked).toBe(true)
     expect(v.currentTime).toBe(50)
+    // An engine that lands it there every time is left there, rather
+    // than re-seeked after every landing.
+    v.currentTime = 50 + HELD_TOLERANCE_S * 3
+    expect(steer.steer(v, paused, LOADED_AT, LOADED_AT).seeked).toBe(false)
+    expect(steer.steer(v, paused, LOADED_AT, LOADED_AT).seeked).toBe(false)
+  })
+
+  it('wraps a paused t past the end of the clip', () => {
+    const { steer } = harness()
+    const v = video({ duration: 100, currentTime: 0, paused: true })
+    steer.steer(v, clock({ positionS: 130, paused: true }), LOADED_AT, LOADED_AT)
+    expect(v.currentTime).toBe(30)
   })
 
   it('seeks the new element after a dataset switch at the same paused time', () => {

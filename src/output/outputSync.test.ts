@@ -761,6 +761,40 @@ describe('the measurement belongs to one element', () => {
     expect(out.seeked).toBe(true)
     expect(second.currentTime).toBeCloseTo(50)
   })
+
+  it('drops a seek left outstanding across a gap in steering, rather than timing the gap', () => {
+    // A hidden tab stops the loop with a seek in flight. Closed on the
+    // first frame back, the gap was recorded as the seek's cost and the
+    // floor stopped the element seeking for good (found in review).
+    let clock = 0
+    const playhead = createPlayheadSync(() => clock)
+    const video = target({ currentTime: 10 })
+    expect(playhead.sync(video, inputs()).seeked).toBe(true)
+    ;(video as { seeking: boolean }).seeking = true
+
+    clock += 60_000
+    ;(video as { seeking: boolean }).seeking = false
+    // Back, and 5 s out: an ordinary correction, not one under a 90 s floor.
+    video.currentTime = 45
+    expect(playhead.sync(video, inputs()).seeked).toBe(true)
+  })
+
+  it('still times a seek served while steering ran', () => {
+    let clock = 0
+    const playhead = createPlayheadSync(() => clock)
+    const video = target({ currentTime: 10 })
+    playhead.sync(video, inputs())
+    ;(video as { seeking: boolean }).seeking = true
+    for (let ms = 0; ms < 2_000; ms += 100) {
+      clock += 100
+      playhead.sync(video, inputs())
+    }
+    ;(video as { seeking: boolean }).seeking = false
+    clock += 100
+    // 2.1 s of seek: a 3.15 s floor, so 1 s out is trimmed, not seeked.
+    video.currentTime = 49
+    expect(playhead.sync(video, inputs()).seeked).toBe(false)
+  })
 })
 
 /**
