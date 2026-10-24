@@ -1013,36 +1013,108 @@ before Phase 1 starts (§9).
 in-world yet, so this was built on the page half working whichever way
 it comes out. The parameters are in
 [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md) as an additive v1
-change.
-- **Items 1–3, 5 and 6 are as planned:** `dataset`, `fit=fill`,
-  `width`, `rotation`, and a video stream capped at the narrowest
-  rendition at least as wide as the picture. `src/output/webMode.ts`
-  reads the address, `webDataset.ts` asks the node for the dataset,
-  and `main.ts` wires them in.
-- **Item 4 changed in one place.** The clock is in the address as
+change. Four review agents read it, and their findings are fixed, not
+just noted. This was AI review, and no person outside the session that
+wrote it has reviewed it yet.
+- **Items 1–3, 5 and 6 are in.** The parameters are `dataset`,
+  `fit=fill`, `width` and `rotation`. The video stream is capped at the
+  narrowest rendition at least as wide as the picture.
+  `src/output/webMode.ts` reads the address, `webDataset.ts` asks the
+  node for the dataset, and `webOutput.ts` puts them together.
+  - **`rotation` names the longitude at the centre of the picture.**
+    The first version passed it straight to the scene, whose offset
+    turns the picture the other way, so `rotation=90` showed 90°W.
+  - **An address with no `width` gets the narrowest size that covers
+    the page as displayed**, up to 4096. A Second Life face is at most
+    2048 wide, so a globe gets the 2160 stream rather than the
+    27.7 Mbps 4096 one without anyone writing `width=2048`.
+- **Item 4 changed in two places.** The clock is in the address as
   planned (`t`, `at`, `rate`, `paused`), read again on every change to
   the part after `#`, and paused copies seek to the exact time.
-  Playing copies were to reuse `syncByRatio`, but the first browser run
-  showed that path holds whatever offset its seek leaves: 2.7 s, and a
-  different amount on every visitor's copy. The clip's own seconds now
-  go to the dated law, `computeSiblingSyncCorrection`, which trims the
-  offset away. Against a local file a copy settles within a few
-  milliseconds in about ten seconds (`src/output/webClock.ts`). Against
-  TerraViz's stream from the build sandbox it couldn't: the sandbox's
-  network gave about 4.5 Mbps, below the 9 Mbps rendition, so the video
-  kept stalling. A visitor on a slow connection would see the same.
+  - **Dated, not by ratio.** Playing copies were to reuse
+    `syncByRatio`, but the first browser run showed that path holds
+    whatever offset its seek leaves: 2.7 s, and a different amount on
+    every visitor's copy. The clip's own seconds now go to the dated
+    law, `computeSiblingSyncCorrection`, which trims the offset away.
+  - **Round the loop.** That law measures error along a line, and
+    these clips loop. Just past a wrap it read a copy 0.7 s behind as
+    15 s ahead, and trimmed the wrong way. The law now sees the video
+    measured round the loop (`src/output/webClock.ts`).
+  - **Measured:** against a local file, a copy settles within a few
+    milliseconds in about ten seconds, across the loop point too.
+  - **Not measured on TerraViz's stream.** The build sandbox's network
+    gave about 4.5 Mbps, below the 9 Mbps rendition, so the video kept
+    stalling. Its proxy hands each transfer over whole, which the
+    player's bandwidth probe reads as a fast link, so the player never
+    stepped down to a rendition the link could carry. A visitor on a
+    slow connection would step down, but stall the same way below the
+    lowest one.
+- **Every copy shows the same thing when something fails.** A dataset
+  that will not show leaves the live Earth up on every copy. Before,
+  a copy that had been showing A kept it while a fresh one showed
+  nothing. A failure that may pass is retried, every 5 minutes at the
+  slowest.
 - **Item 8, the page's half, is partly in.** The output re-fetches its
   clouds on the producer's schedule, timed from the image's own
-  `Last-Modified` so visitors' copies change together, and fetches the
-  4096 image for pictures up to 2048 wide
-  (`src/output/cloudRefresh.ts`). It does this on desktop too.
-  **Reading TerraViz's copy and the cloud-address setting are left to
-  the cloud-copy change,** because there is no copy to read yet. Until
-  then every page reads upstream, which is the fallback the plan
-  already gives it.
+  `Last-Modified` so visitors' copies change together. It fetches the
+  4096 image for pictures up to 2048 wide (`src/output/cloudRefresh.ts`).
+  It does this on desktop too.
+  - **Reading TerraViz's copy and the cloud-address setting are left
+    to the cloud-copy change,** because there is no copy to read yet.
+    Until then every page reads upstream, which is the fallback the
+    plan already gives it.
+  - **The copy can make visitors' clocks irrelevant here.** Each copy
+    times its next check from its own computer's clock, so a clock
+    that is wrong costs alignment with other visitors (bounded, never
+    the refresh itself). The response's `Date` header would remove
+    that, but a page can read it only if the server exposes it.
+    TerraViz's copy can expose it (`Access-Control-Expose-Headers`).
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
   the visitor's connection can play the stream at all.
+- **"What does a visitor see when their viewer can't keep up?"**
+  (above) is still Eric's to answer, and the Video Streaming Engineer's
+  review gave a recommendation for it. Today a copy on a link too slow
+  for its rendition seeks every few seconds, landing behind each time.
+  The rate trim also asks for up to 25% more bandwidth exactly when
+  there is too little. The recommendation is to give up resolution
+  first, then smooth motion, and never correct time:
+  - **Short loops: buffer, then join.** Hold the frame at the clock's
+    target while the clip downloads in order, then join with one seek
+    inside what is buffered. From then on the link no longer matters.
+  - **Long clips:** let hls.js adapt, trim upward only with a segment
+    buffered ahead, and aim each seek at where the target will be when
+    it lands, on a segment boundary.
+  - **Below the lowest rendition: step.** Pause, and every few seconds
+    seek exactly to the clock's target, so visitors see the right moment
+    at a low frame rate.
+  - **A lower rendition**, around 1024×512 at 1.5–2 Mbps, would suit
+    1024-wide faces and slow links. Data-encoded datasets have one
+    rendition by design, so they would always need buffering or stepping.
+- **Found in review and not yet done:**
+  - **Each copy loops on its own idea of the clip's length.** Before
+    and after a stream's last segment arrives, `duration` can differ by
+    a fraction of a frame. Copies wrap on different periods and drift
+    apart a little every loop. This is unmeasured: logging `duration`
+    before and after on the production stream would settle it. The fix
+    would be to wrap on the playlist's total duration.
+  - **Startup costs a segment it throws away.** hls.js downloads a
+    probe segment to measure bandwidth, about 3.4 MB at 1440, before
+    loading from the start and then seeking to the clock. Starting at
+    the clock's target would save a segment, and so would skipping the
+    probe.
+  - **Credit.** A CC-BY dataset on a prim reaches every visitor with no
+    credit, because the page shows nothing but the picture. The Phase 2
+    controller's hover text could carry it. That's a decision for the
+    maintainer.
+  - **The manifest has no published schema**, and the output page is
+    now a third reader of it. A `manifest.schema.json` beside the other
+    v1 schemas would pin what Second Life globes rely on.
+  - **No way to tell whether a node supports web mode.** An older node
+    ignores the parameters and shows the live Earth.
+  - **No test pins the overlay** against the control window's
+    `overlayForMirror(wireToDataset(…))`. A renamed wire field would not
+    fail type-check in `webDataset.ts`, which reads fields by name.
 
 ---
 
