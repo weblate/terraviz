@@ -1121,6 +1121,12 @@ yet.
     whichever rendition it plays, such as the playlist's total
     duration, used both where the target wraps (`clockTargetS`) and
     where the error is measured round the loop (`loopView`).
+  - **A copy that fell back to a video's single file stays on it.**
+    Its stream is not tried again once the file has loaded, and the clock
+    wraps on each element's own length. If the file and the stream differ
+    in length, that copy loops on a different period from the others,
+    the same drift as above, and the same fix (one agreed period) covers
+    it.
   - **Startup costs a segment it throws away.** hls.js downloads a
     probe segment to measure bandwidth, about 3.4 MB at 1440, before
     loading from the start and then seeking to the clock.

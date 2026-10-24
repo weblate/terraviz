@@ -136,7 +136,7 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 | `debug` | present | The output's debug readout, drawn on the picture. | off |
 | `t` | seconds into the clip, 0 or more | Where the clip is. A `t` past the clip's end wraps round it, paused or playing. | `0` |
 | `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when this copy read the address: at load, or at the `#` change that last changed the clock |
-| `rate` | 0.0625 to 16 | Playback speed; `1` is the clip's own. These are the player's own limits. | `1` |
+| `rate` | 0.0834 to 12.8 | Playback speed; `1` is the clip's own. The player's own limits are 0.0625 to 16, and a copy needs room above and below the rate to catch up or fall back, so values outside this narrower range read as `1`. | `1` |
 | `paused` | present | Hold `t` exactly. Every copy shows the same frame. | playing |
 
 - **`dataset` is narrower than the main app's.** The app also resolves
