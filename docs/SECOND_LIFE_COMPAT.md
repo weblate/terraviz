@@ -1012,7 +1012,7 @@ depends on Second Life, and everything after it that draws clouds reads
 from it.
 
 **First, the `#` test** (§10 question 10). One in-world session with
-the kit's `/7 hash`, ideally with a second avatar. It changes none of
+the kit's `/7 hash`, on each viewer that matters. It changes none of
 Phase 1's code. It does decide whether each pause, jump and switch
 costs every visitor a reload, and so whether Phase 2 needs a server.
 
@@ -1082,9 +1082,13 @@ Numbering is kept from the first version, so a reference like
     viewer without a reload?** It decides how a globe is steered live,
     for the clock (§7 item 4) and the camera (item 7) alike. The kit's
     `/7 hash` tests it.
-    - The test page answers for your own viewer.
-    - A second avatar watching `/7 app` or `/7 sos` answers for
-      everyone else, which is the half that matters.
+    - The test page answers for every viewer of the kind you run. A
+      script's change reaches every viewer the same way, the owner's
+      included: as an update to the object.
+    - Another kind of viewer (the official one, the phone app) needs
+      its user to run their own copy of the probe. A second avatar
+      watching `/7 app` or `/7 sos` can confirm a reload but not a
+      quiet success, since nothing on those pages changes visibly.
     - In headless Chromium a `#` change mid-video arrives without a
       reload and the video keeps playing (§11). That is what a browser
       does; whether the viewer passes the change on is the open part.
@@ -1174,4 +1178,4 @@ Numbering is kept from the first version, so a reference like
 - Clouds in §7 item 8: `https://s3.dualstack.us-east-1.amazonaws.com/metadata.sosexplorer.gov/clouds_8192.jpg` (4,886,981 B) and `clouds_4096.jpg` (1,029,784 B), `Last-Modified` 21:15:04 then 21:25:04 UTC, each with an `ETag` and no `Cache-Control`; `clouds_2048.jpg` returns 404
 - Manifests: a video dataset's `/api/v1/datasets/<id>/manifest` returns `{"kind":"video", …, "hls": "<master.m3u8>"}`; an image dataset's returns `{"kind":"image", "variants": [{ "width", "url" }, …]}` (Nighttime Lights: 4096, 2048 and 1024 variants)
 - The output page: `/output/output.html` redirects (308) to `/output/output`, titled "Output — Terraviz"; `/output.html` serves the main app. In headless Chromium at 1024×512 the page draws a 2:1 Earth with no errors, at a 4096×2048 drawing buffer
-- The `#` test in a browser (24 Oct 2026): the kit's harness plays the probe's video in headless Chromium and changes only the address's `#` part mid-video. The page reported `hash: #h=1, video t=14.5s, playing, readyState 4` and loaded once. Navigating with a changed query instead made it load twice, so the check can fail. This is Chromium's behaviour, not Second Life's (§10 question 10)
+- The `#` test in a browser (24 Oct 2026): the kit's harness plays the probe's video in headless Chromium and changes only the address's `#` part mid-video. The page reported `hash: #h=1, video t=14.3s, playing, readyState 4`, and it had still loaded only once 3 s later. The check fails on each way this could go wrong: a changed query, which reloads the page; a reload half a second after the report; a change that pauses the video; and a page with no `#` listener. This is Chromium's behaviour, not Second Life's (§10 question 10)

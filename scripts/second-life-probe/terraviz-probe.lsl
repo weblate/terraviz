@@ -82,9 +82,11 @@ string  gSoakLast;      // the most recent heartbeat
 integer gTexRot;        // texture rotation in degrees: 0, 90, 180 or 270
 integer gMirror;        // texture flipped left-to-right
 
-string  gUrl;           // the address the face shows, without any # part
+float   HASH_WAIT = 30.0;   // how long an answer to /7 hash is waited for
+string  gUrl;           // the address show() gave the face, without any # part
 integer gHashes;        // how many # changes this script has made
-float   gHashAt;        // the llGetTime() of the latest, or 0 if none is pending
+float   gHashAt;        // the llGetTime() of the latest, or 0 if none is waited on
+float   gHashSaidAt;    // when the page reported taking it, or 0
 
 string HELP = "Commands on /7: probe, image, video, app, sos, soak, soak2d, globe, turn, mirror, reset, face N, hash";
 
@@ -113,6 +115,7 @@ string page()
     s += "var OPEN_HLS='https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';\n";
     s += "var HLSJS='https://cdn.jsdelivr.net/npm/hls.js@1.6.15/dist/hls.min.js';\n";
     s += "function a(k,v){R.push(k+': '+v);T.textContent=R.slice(-14).join(NL)}\n";
+    s += "function md(m){a('mode',m+(location.hash?' '+location.hash:''))}\n";
     s += "function send(){var s=R.slice(sent);sent=R.length;if(s.length)fetch(HERE,{method:'POST',body:s.join('~')}).catch(function(){})}\n";
     s += "window.onerror=function(m){a('page error',m);send()};\n";
     s += "function el(tag,id,cls){var e=document.createElement(tag);if(id)e.id=id;if(cls)e.className=cls;document.body.appendChild(e);return e}\n";
@@ -152,7 +155,7 @@ string page()
     s += "}\n";
     s += "function probe(){\n";
     s += "grat(document.getElementById('g').getContext('2d'));\n";
-    s += "a('mode','probe');\n";
+    s += "md('probe');\n";
     s += "a('chrome',(navigator.userAgent.split('Chrome/')[1]||'?').split(' ')[0]);\n";
     s += "a('viewport',innerWidth+'x'+innerHeight+' at '+devicePixelRatio+'x');\n";
     s += "var v=document.createElement('video');\n";
@@ -183,7 +186,7 @@ string page()
     s += "}\n";
     s += "function soak(kind){\n";
     s += "grat(document.getElementById('g').getContext('2d'));\n";
-    s += "a('mode','soak '+kind);send();\n";
+    s += "md('soak '+kind);send();\n";
     s += "var w=el('canvas','w'),c=null,n=0,lost=0,t0=performance.now();\n";
     s += "w.width=64;w.height=64;\n";
     s += "if(kind=='webgl'){try{c=w.getContext('webgl2')}catch(e){}\n";
@@ -198,14 +201,14 @@ string page()
     s += "}\n";
     s += "function hlsTest(){loadHls(function(){play(mkVideo('m'),OPEN_HLS,'hls.js test stream')})}\n";
     s += "function image(){\n";
-    s += "a('mode','image');\n";
+    s += "md('image');\n";
     s += "var i=el('img',null,'full');\n";
     s += "i.onload=function(){a('TerraViz image','loaded '+i.naturalWidth+'x'+i.naturalHeight);send();T.style.display='none'};\n";
     s += "i.onerror=function(){a('TerraViz image','failed to load');send()};\n";
     s += "i.src=TV_IMG;\n";
     s += "}\n";
     s += "function video(){\n";
-    s += "a('mode','video');\n";
+    s += "md('video');\n";
     s += "var v=mkVideo(null,'full');\n";
     s += "function viaOpen(){play(v,OPEN_HLS,'test stream via hls.js (not TerraViz data)')}\n";
     s += "function viaHlsjs(){loadHls(function(){play(v,TV_HLS,'TerraViz stream via hls.js',viaOpen)})}\n";
@@ -217,7 +220,6 @@ string page()
     s += "a('hash',location.hash+(v?', video t='+v.currentTime.toFixed(1)+'s, '+(v.paused?'paused':'playing')+', readyState '+v.readyState:', no video'));send()};\n";
     s += "if(MODE=='image')image();else if(MODE=='video')video();\n";
     s += "else if(MODE=='soak')soak('webgl');else if(MODE=='soak2d')soak('2d');else probe();\n";
-    s += "if(location.hash){a('loaded with',location.hash);send()}\n";
     s += "</script></body></html>\n";
     return s;
 }
@@ -254,6 +256,17 @@ arm(integer watch)
     if (watch == WATCH_FRAMES) countdown(FRAMES_WAIT);
     else if (watch == WATCH_HEARTBEAT) countdown(HEARTBEAT_WAIT);
     else llSetTimerEvent(0.0);
+}
+
+// Milliseconds since the latest # change, or -1 once nothing is waited
+// on. Past HASH_WAIT a report no longer answers that change: the face's
+// address still carries the #, so every later reload carries it too.
+integer hashAge()
+{
+    if (gHashAt <= 0.0) return -1;
+    float age = llGetTime() - gHashAt;
+    if (age > HASH_WAIT) { gHashAt = 0.0; return -1; }
+    return llRound(age * 1000.0);
 }
 
 integer watchFor(string mode)
@@ -295,6 +308,7 @@ integer show(string mode, string url)
     gMode = mode;
     gUrl = url;
     gHashAt = 0.0;
+    gHashSaidAt = 0.0;
     gStarts = 0;
     arm(watchFor(mode));
     llOwnerSay("[probe] Face " + (string)gFace + " now shows " + url);
@@ -359,21 +373,41 @@ default
             // same page: no reload, just a hashchange event. Whether Second
             // Life's viewers pass such a change on, and how, is the test.
             // The run number is before the #, so the page keeps its run.
+            // The change reaches every viewer the same way, the owner's
+            // included - as an update to the object - so the owner's own
+            // viewer answers for every viewer of its kind.
             if (gUrl == "") { llOwnerSay("[probe] Show a page first: video, probe, app or sos."); return; }
+            // The face's own address rather than show()'s: a click inside
+            // the app navigates it, and the viewer reports that back.
+            string url = llList2String(llGetPrimMediaParams(gFace, [PRIM_MEDIA_CURRENT_URL]), 0);
+            if (url == "") url = gUrl;
+            integer cut = llSubStringIndex(url, "#");
+            if (cut > 0) url = llGetSubString(url, 0, cut - 1);
             integer h = gHashes + 1;
-            integer r = llSetPrimMediaParams(gFace, [PRIM_MEDIA_CURRENT_URL, gUrl + "#h=" + (string)h]);
+            url += "#h=" + (string)h;
+            // Timed from before the call, because the call sleeps the
+            // script for a second after the address has already changed.
+            // Home too, so a viewer reloading to its home address keeps it.
+            float t = llGetTime();
+            integer r = llSetPrimMediaParams(gFace, [PRIM_MEDIA_CURRENT_URL, url, PRIM_MEDIA_HOME_URL, url]);
             if (r != STATUS_OK)
             {
                 llOwnerSay("[probe] Could not change the address (status " + (string)r + ").");
                 return;
             }
             gHashes = h;
-            gHashAt = llGetTime();
-            string how = "The page should report it without starting again.";
+            gHashAt = t;
+            gHashSaidAt = 0.0;
+            string said = "[probe] Changed only the part after # to h=" + (string)h + ". ";
             if (gMode == "app" || gMode == "sos")
-                how = "This page can't report, so watch it, and ask anyone else there to: if it starts over, their viewer reloaded it.";
-            llOwnerSay("[probe] Changed only the part after # to h=" + (string)h + ". " + how
-                + " Nothing at all within half a minute means the viewer didn't pass it on.");
+                llOwnerSay(said + "This page can't report, so watching it shows one thing only: if it starts over, "
+                    + "the viewer reloaded it. If it doesn't, the change may have arrived quietly or not at all. "
+                    + "The test page tells those apart: /7 video, then /7 hash.");
+            else if (gStarts == 0)
+                llOwnerSay(said + "But the page hasn't reported starting (is media auto-play on?), "
+                    + "so its silence means nothing. Click the face, then try again.");
+            else
+                llOwnerSay(said + "If no answer about it comes within half a minute, the viewer didn't pass it on.");
             return;
         }
         if (gBase == "") { llOwnerSay("[probe] Still waiting for a web address from the region."); return; }
@@ -455,25 +489,50 @@ default
                 {
                     // The page has started. A second start on the same run
                     // is the viewer reloading it, which it sometimes does
-                    // unasked and at a different size.
+                    // unasked and at a different size. The line ends with
+                    // the # part the page loaded with, if any, so a reload
+                    // soon after /7 hash says which of three things it was.
+                    integer age = hashAge();
                     if (++gStarts > 1)
-                        llOwnerSay("[probe] The page started again without a command: the viewer reloaded it.");
+                    {
+                        string after = " ms after the # change. ";
+                        if (age < 0)
+                            llOwnerSay("[probe] The page started again without a command: the viewer reloaded it.");
+                        else if (gHashSaidAt > 0.0)
+                            llOwnerSay("[probe] The viewer then reloaded the page anyway, " + (string)age + after
+                                + "Count the change as costing a reload.");
+                        else if (llSubStringIndex(line + " ", " #h=" + (string)gHashes + " ") != -1)
+                            llOwnerSay("[probe] The viewer reloaded the page to apply the change, " + (string)age + after
+                                + "Here, a change after # costs a reload.");
+                        else
+                            llOwnerSay("[probe] The viewer reloaded the page " + (string)age + after
+                                + "But the reload lost the # part, so the change didn't arrive at all.");
+                        if (age >= 0) gHashAt = 0.0;
+                    }
                     arm(watchFor(gMode));
                 }
                 else if (llSubStringIndex(line, "webgl frames") == 0 && gWatch == WATCH_FRAMES)
                     arm(WATCH_NONE);
-                else if (llSubStringIndex(line, "hash: ") == 0 && gHashAt > 0.0)
+                else if (llSubStringIndex(line, "hash: #h=" + (string)gHashes + ",") == 0 && gHashSaidAt == 0.0)
                 {
+                    // Only the latest change's report counts, and only once.
                     // The time includes the report's own trip back, so the
-                    // page saw the change sooner than this, not later.
-                    llOwnerSay("[probe] The page took the change without reloading. The script heard back "
-                        + (string)llRound((llGetTime() - gHashAt) * 1000.0) + " ms after making it.");
-                    gHashAt = 0.0;
-                }
-                else if (llSubStringIndex(line, "loaded with: ") == 0 && gHashAt > 0.0)
-                {
-                    llOwnerSay("[probe] The viewer reloaded the page to apply the change, so here a change after # costs a reload.");
-                    gHashAt = 0.0;
+                    // page saw the change sooner than this, never later.
+                    // The wait stays open, so a reload that follows the
+                    // report is caught by the mode line above.
+                    integer age = hashAge();
+                    if (age >= 0)
+                    {
+                        string video = "";
+                        if (llSubStringIndex(line, ", playing, readyState 3") != -1
+                            || llSubStringIndex(line, ", playing, readyState 4") != -1)
+                            video = " The video kept playing.";
+                        else if (llSubStringIndex(line, ", no video") == -1)
+                            video = " But the video wasn't playing normally at that moment (see the next line).";
+                        llOwnerSay("[probe] The page took the change without reloading, at most " + (string)age
+                            + " ms after the script made it." + video);
+                        gHashSaidAt = llGetTime();
+                    }
                 }
                 else if (llSubStringIndex(line, "soak ") == 0 && watchFor(gMode) == WATCH_HEARTBEAT)
                 {
