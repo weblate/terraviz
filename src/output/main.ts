@@ -42,7 +42,7 @@ import { createDatasetMirror, createDefaultMediaLoader } from './datasetMirror'
 import { IDENTITY_PARAMS } from './equirectRtt'
 import { createWebClockSteer } from './webClock'
 import { fetchWebDataset } from './webDataset'
-import { readWebSettings, type WebClock, type WebOutputSettings } from './webMode'
+import { readWebSettings, rotationOffsetRadFor, type WebOutputSettings } from './webMode'
 import {
   OVERLAY_REFRESH_MS,
   createDebugOverlay,
@@ -74,11 +74,6 @@ import {
 } from '../services/multiOutput/protocol'
 import { cloudTextureUrlForWidth } from '../utils/deviceCapability'
 import { logger } from '../utils/logger'
-
-/** A clock for an address that names none: from the start of the clip,
- *  at the clip's own speed, from when this page loaded. Each copy then
- *  runs on its own, which is all one viewer needs. */
-const OWN_CLOCK: WebClock = { positionS: 0, atUnixS: null, rate: 1, paused: false }
 
 /** The same gate `bootMultiOutput` applies on the control side. */
 function isDesktop(): boolean {
@@ -506,6 +501,7 @@ async function boot(): Promise<void> {
   }
 
   if (web && webSettings) {
+    let current: WebOutputSettings = webSettings
     const loadedAtMs = Date.now()
     // Playing reuses the desktop playhead layer, against the clip's own
     // seconds as a dated span; paused seeks exactly. See `webClock.ts`.
@@ -551,18 +547,19 @@ async function boot(): Promise<void> {
       // only moved the clock reallocates nothing.
       scene.setFramebufferWidth(next.framebufferWidth ?? DEFAULT_FRAMEBUFFER_WIDTH)
       document.body.classList.toggle('output-fit-fill', next.fit === 'fill')
-      scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: (next.rotationDeg * Math.PI) / 180 })
+      scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(next.centreLonDeg) })
       overlay.setVisible(next.debug)
       if (!previous || next.datasetId !== previous.datasetId) showDataset(next.datasetId)
       dirty = true
     }
-    applyWeb(webSettings, null)
+    applyWeb(current, null)
 
     // The live half: a controller changes the part after `#`, which a
     // browser applies without reloading the page.
     window.addEventListener('hashchange', () => {
       const next = readWebSettings(window.location.search, window.location.hash)
-      applyWeb(next, webSettings)
+      applyWeb(next, current)
+      current = next
       webSettings = next
     })
 
@@ -570,7 +567,7 @@ async function boot(): Promise<void> {
       const video = mirror.current()?.video ?? null
       if (!video) return
       const before = video.currentTime
-      lastSync = clockSteer.steer(video, webSettings?.clock ?? OWN_CLOCK, Date.now())
+      lastSync = clockSteer.steer(video, current.clock, Date.now())
       // A seek changes the decoded frame without the scene knowing.
       if (before !== video.currentTime) dirty = true
     })

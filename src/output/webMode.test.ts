@@ -2,7 +2,15 @@
 // Copyright 2026 The Zyra Project
 
 import { describe, expect, it } from 'vitest'
-import { MAX_WEB_RATE, mergedParams, readWebSettings } from './webMode'
+import {
+  MAX_WEB_RATE,
+  defaultWebFramebufferWidth,
+  mergedParams,
+  readWebSettings,
+  rotationOffsetRadFor,
+  sameClock,
+} from './webMode'
+import { IDENTITY_PARAMS, equirectSourceUv } from './equirectRtt'
 
 describe('readWebSettings', () => {
   it('reads nothing from a bare address: the idle Earth, letterboxed, on its own clock', () => {
@@ -10,9 +18,9 @@ describe('readWebSettings', () => {
       datasetId: null,
       fit: 'contain',
       framebufferWidth: null,
-      rotationDeg: 0,
+      centreLonDeg: 0,
       debug: false,
-      clock: null,
+      clock: { positionS: 0, atUnixS: null, rate: 1, paused: false },
     })
   })
 
@@ -21,7 +29,7 @@ describe('readWebSettings', () => {
     expect(s.datasetId).toBe('01KQG611HF8YXJNRBEHT0757KT')
     expect(s.fit).toBe('fill')
     expect(s.framebufferWidth).toBe(2048)
-    expect(s.rotationDeg).toBe(270)
+    expect(s.centreLonDeg).toBe(270)
     expect(s.debug).toBe(true)
   })
 
@@ -31,7 +39,7 @@ describe('readWebSettings', () => {
     const s = readWebSettings('?dataset=AAA&width=2048', '#dataset=BBB&t=5')
     expect(s.datasetId).toBe('BBB')
     expect(s.framebufferWidth).toBe(2048)
-    expect(s.clock?.positionS).toBe(5)
+    expect(s.clock.positionS).toBe(5)
   })
 
   it('accepts the fragment with or without its #', () => {
@@ -45,7 +53,18 @@ describe('readWebSettings', () => {
     expect(s.datasetId).toBe('AAA')
     expect(s.framebufferWidth).toBeNull()
     expect(s.fit).toBe('contain')
-    expect(s.rotationDeg).toBe(0)
+    expect(s.centreLonDeg).toBe(0)
+  })
+
+  it('takes plain decimals only', () => {
+    // `Number()` reads every one of these as 4096.
+    for (const loose of ['0x1000', '4.096e3', ' 4096', '4096 ', '+4096']) {
+      expect(readWebSettings(`?width=${encodeURIComponent(loose)}`, '').framebufferWidth).toBeNull()
+    }
+    expect(readWebSettings('?width=4096', '').framebufferWidth).toBe(4096)
+    expect(readWebSettings('?width=4096.0', '').framebufferWidth).toBe(4096)
+    expect(readWebSettings('', '#t=.5').clock.positionS).toBe(0.5)
+    expect(readWebSettings('', '#t=1e2').clock.positionS).toBe(0)
   })
 
   it('refuses a dataset id that is not one, rather than putting it in an API path', () => {
@@ -59,10 +78,47 @@ describe('readWebSettings', () => {
     expect(readWebSettings('?debug=yes', '').debug).toBe(true)
     expect(readWebSettings('?debug=0', '').debug).toBe(false)
     expect(readWebSettings('?debug=FALSE', '').debug).toBe(false)
+    // Exactly `embedMode`'s reading, which does not trim: a padded zero
+    // is not one of the two opt-outs.
+    expect(readWebSettings('?debug=%200', '').debug).toBe(true)
   })
 
   it('wraps a rotation past a full turn rather than refusing it', () => {
-    expect(readWebSettings('?rotation=370', '').rotationDeg).toBe(10)
+    expect(readWebSettings('?rotation=370', '').centreLonDeg).toBe(10)
+  })
+})
+
+describe('rotation', () => {
+  // The grammar says `rotation` is the longitude at the centre of the
+  // picture. Checked through the shader's own mirror, because the
+  // offset it feeds turns the picture east and the obvious mapping is
+  // the wrong way round (found in review).
+  it('puts the named longitude at the centre of the picture', () => {
+    for (const lon of [0, 90, -90, 137.5, 180]) {
+      const centre = readWebSettings(`?rotation=${lon}`, '').centreLonDeg
+      const params = { ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(centre) }
+      const sampled = equirectSourceUv(0.5, 0.5, params)
+      // Source u is lon / 360 + 0.5; compared round the turn, since
+      // 180 and -180 are one meridian.
+      const sampledLon = (sampled.u - 0.5) * 360
+      const apart = ((((sampledLon - lon) % 360) + 540) % 360) - 180
+      expect(apart).toBeCloseTo(0, 9)
+    }
+  })
+})
+
+describe('defaultWebFramebufferWidth', () => {
+  it('takes the narrowest rung that fills the page as displayed', () => {
+    expect(defaultWebFramebufferWidth(1024)).toBe(1024)
+    expect(defaultWebFramebufferWidth(1025)).toBe(2048)
+    expect(defaultWebFramebufferWidth(1920)).toBe(2048)
+    expect(defaultWebFramebufferWidth(2048)).toBe(2048)
+  })
+
+  it('never goes past the desktop default, and takes it when the size is unknown', () => {
+    expect(defaultWebFramebufferWidth(5120)).toBe(4096)
+    expect(defaultWebFramebufferWidth(0)).toBe(4096)
+    expect(defaultWebFramebufferWidth(NaN)).toBe(4096)
   })
 })
 
@@ -76,35 +132,49 @@ describe('the clock', () => {
     })
   })
 
-  it('needs a position: without t there is no shared clock', () => {
-    expect(readWebSettings('', '#at=1761288000&rate=2&paused=1').clock).toBeNull()
+  it('reads each key on its own, so one missing costs only itself', () => {
+    // `paused` without a `t` used to be dropped with it, and the clip
+    // played (found in review).
+    expect(readWebSettings('', '#paused=1').clock).toEqual({ positionS: 0, atUnixS: null, rate: 1, paused: true })
+    expect(readWebSettings('', '#rate=2').clock.rate).toBe(2)
+    expect(readWebSettings('', '#at=1761288000').clock.atUnixS).toBe(1761288000)
+    expect(readWebSettings('', '#t=nonsense&rate=2&paused=1').clock).toEqual({
+      positionS: 0,
+      atUnixS: null,
+      rate: 2,
+      paused: true,
+    })
   })
 
   it('reads paused with the boolean convention', () => {
-    expect(readWebSettings('', '#t=12&paused=1').clock?.paused).toBe(true)
-    expect(readWebSettings('', '#t=12&paused=0').clock?.paused).toBe(false)
+    expect(readWebSettings('', '#t=12&paused=1').clock.paused).toBe(true)
+    expect(readWebSettings('', '#t=12&paused=0').clock.paused).toBe(false)
   })
 
-  it('treats an empty t as absent, not as zero', () => {
-    // Number('') is 0, which would read a half-typed value as a seek to
-    // the start.
-    expect(readWebSettings('', '#t=').clock).toBeNull()
+  it('treats an empty or negative t as the start', () => {
+    // Number('') is 0, which happens to be the default too; the point
+    // is that neither is read as a deliberate value.
+    expect(readWebSettings('', '#t=').clock.positionS).toBe(0)
+    expect(readWebSettings('', '#t=-1').clock.positionS).toBe(0)
   })
 
-  it('refuses a negative position', () => {
-    expect(readWebSettings('', '#t=-1').clock).toBeNull()
-  })
-
-  it('falls back to the page load for a missing or bad anchor', () => {
-    expect(readWebSettings('', '#t=1').clock?.atUnixS).toBeNull()
-    expect(readWebSettings('', '#t=1&at=0').clock?.atUnixS).toBeNull()
-    expect(readWebSettings('', '#t=1&at=soon').clock?.atUnixS).toBeNull()
+  it('falls back to when this copy read it, for a missing or bad anchor', () => {
+    expect(readWebSettings('', '#t=1').clock.atUnixS).toBeNull()
+    expect(readWebSettings('', '#t=1&at=0').clock.atUnixS).toBeNull()
+    expect(readWebSettings('', '#t=1&at=soon').clock.atUnixS).toBeNull()
   })
 
   it('falls back to rate 1 for a rate it will not play', () => {
     for (const bad of ['0', '-1', 'fast', String(MAX_WEB_RATE + 1)]) {
-      expect(readWebSettings('', `#t=1&rate=${bad}`).clock?.rate).toBe(1)
+      expect(readWebSettings('', `#t=1&rate=${bad}`).clock.rate).toBe(1)
     }
-    expect(readWebSettings('', `#t=1&rate=${MAX_WEB_RATE}`).clock?.rate).toBe(MAX_WEB_RATE)
+    expect(readWebSettings('', `#t=1&rate=${MAX_WEB_RATE}`).clock.rate).toBe(MAX_WEB_RATE)
+  })
+
+  it('tells a changed clock from one a # change left alone', () => {
+    const a = readWebSettings('', '#t=40&debug=1').clock
+    expect(sameClock(a, readWebSettings('', '#t=40&debug=0').clock)).toBe(true)
+    expect(sameClock(a, readWebSettings('', '#t=41').clock)).toBe(false)
+    expect(sameClock(a, readWebSettings('', '#t=40&paused=1').clock)).toBe(false)
   })
 })

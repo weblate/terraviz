@@ -22,10 +22,17 @@
  * **Every value fails closed, one at a time.** A malformed or unknown
  * value is ignored and that setting keeps its default — the grammar's
  * convention for the main app — so a typo costs one setting, never the
- * page.
+ * page. That includes the clock's four keys: each has its own default,
+ * so `paused` without a `t` pauses at the start rather than being
+ * dropped with it. Numbers are plain decimals, so `0x1000` and `4e3` are
+ * not 4096 by accident of `Number()`.
  */
 
-import { FRAMEBUFFER_WIDTHS, type FramebufferWidth } from '../services/multiOutput/protocol'
+import {
+  DEFAULT_FRAMEBUFFER_WIDTH,
+  FRAMEBUFFER_WIDTHS,
+  type FramebufferWidth,
+} from '../services/multiOutput/protocol'
 import { normalizeRotationOffset } from '../services/multiOutput/outputPersistence'
 
 /**
@@ -41,8 +48,9 @@ export interface WebClock {
   positionS: number
   /**
    * Unix time, in seconds, at which `positionS` was current. `null`
-   * means "when this page loaded", which leaves each copy on its own
-   * clock — fine for one viewer, not shared between several.
+   * means "when this copy read the address": at page load, or at the
+   * `#` change that set this clock. That leaves each copy on its own
+   * clock, fine for one viewer and not shared between several.
    */
   atUnixS: number | null
   /** Playback rate; 1 is the dataset's own speed. */
@@ -57,15 +65,18 @@ export interface WebOutputSettings {
   /** `contain` letterboxes a non-2:1 page, which is right for a
    *  monitor; `fill` stretches to it, which is right for a texture. */
   fit: 'contain' | 'fill'
-  /** A framebuffer rung, or `null` to keep the scene's default. */
+  /** A framebuffer rung, or `null` for the page to choose one from its
+   *  own displayed size (`defaultWebFramebufferWidth`). */
   framebufferWidth: FramebufferWidth | null
-  /** Which longitude faces front, in degrees, wrapped into [0, 360). */
-  rotationDeg: number
+  /** The longitude at the centre of the picture, in degrees east,
+   *  wrapped into [0, 360). The scene takes it through
+   *  `rotationOffsetRadFor`. */
+  centreLonDeg: number
   /** Show the debug HUD. */
   debug: boolean
-  /** `null` when the address carries no `t`: each copy then plays from
-   *  its own load, unshared. */
-  clock: WebClock | null
+  /** Always a clock: a bare address plays from the start at the clip's
+   *  own speed, from when this copy read it. */
+  clock: WebClock
 }
 
 /** Faster than this is almost certainly a typo, and a very large rate
@@ -85,49 +96,91 @@ export function mergedParams(search: string, hash: string): URLSearchParams {
   return merged
 }
 
-/** The grammar's boolean convention: present means on, and only
- *  `false` / `0` (any case) mean off. */
+/** The grammar's boolean convention, exactly as `embedMode` reads it:
+ *  present means on, and only `false` / `0` (any case, no trimming) mean
+ *  off. */
 function truthy(params: URLSearchParams, key: string): boolean {
-  if (!params.has(key)) return false
-  const value = (params.get(key) ?? '').trim().toLowerCase()
-  return value !== 'false' && value !== '0'
+  const raw = params.get(key)
+  if (raw === null) return false
+  const lowered = raw.toLowerCase()
+  return lowered !== 'false' && lowered !== '0'
 }
 
-/** A finite number, or `null`. `Number('')` is 0, so an empty value is
- *  refused before it can pass as a deliberate zero. */
-function finite(params: URLSearchParams, key: string): number | null {
+/** A plain decimal: digits, an optional point, an optional leading
+ *  minus. No exponent, no hex, no padding. `Number()` alone would take
+ *  `0x1000`, `4.096e3` and ` 4096` as 4096, and `''` as 0. */
+const DECIMAL = /^-?(\d+(\.\d*)?|\.\d+)$/
+
+/** A decimal number, or `null`. */
+function decimal(params: URLSearchParams, key: string): number | null {
   const raw = params.get(key)
-  if (raw === null || raw.trim() === '') return null
+  if (raw === null || !DECIMAL.test(raw)) return null
   const value = Number(raw)
   return Number.isFinite(value) ? value : null
 }
 
-function readClock(params: URLSearchParams): WebClock | null {
-  const positionS = finite(params, 't')
-  if (positionS === null || positionS < 0) return null
-  const at = finite(params, 'at')
-  const rate = finite(params, 'rate')
+/** Each key on its own default, so one that is missing or malformed
+ *  costs only itself. */
+function readClock(params: URLSearchParams): WebClock {
+  const t = decimal(params, 't')
+  const at = decimal(params, 'at')
+  const rate = decimal(params, 'rate')
   return {
-    positionS,
+    positionS: t !== null && t >= 0 ? t : 0,
     atUnixS: at !== null && at > 0 ? at : null,
     rate: rate !== null && rate > 0 && rate <= MAX_WEB_RATE ? rate : 1,
     paused: truthy(params, 'paused'),
   }
 }
 
+/** Whether two clocks are the same instruction, so that a `#` change
+ *  which moved only another setting does not restart a clock that has
+ *  no `at`. */
+export function sameClock(a: WebClock, b: WebClock): boolean {
+  return a.positionS === b.positionS && a.atUnixS === b.atUnixS && a.rate === b.rate && a.paused === b.paused
+}
+
+/**
+ * The scene's rotation offset for a picture centred on `centreLonDeg`.
+ *
+ * Negated, because the offset turns the picture east: the frame's
+ * centre shows longitude `−offset` (`equirectRtt.applyRotationOffset`).
+ * The address names the longitude a composer wants to see, which is
+ * the convention a composer can check by looking.
+ */
+export function rotationOffsetRadFor(centreLonDeg: number): number {
+  return (-normalizeRotationOffset(centreLonDeg) * Math.PI) / 180
+}
+
+/**
+ * The framebuffer for a page whose address names none: the narrowest
+ * rung at least as wide as the page is displayed, in device pixels, up
+ * to the desktop default.
+ *
+ * A Second Life media face is at most 2048 wide and often 1024, and
+ * drawing 4096 into it is four times the pixels anyone sees, on every
+ * visitor's machine. The video cap follows the framebuffer, so this
+ * also keeps a 1024 face off the 4096 stream. An unknown size takes the
+ * desktop default, never more.
+ */
+export function defaultWebFramebufferWidth(displayWidthPx: number): FramebufferWidth {
+  if (!(displayWidthPx > 0) || !Number.isFinite(displayWidthPx)) return DEFAULT_FRAMEBUFFER_WIDTH
+  return FRAMEBUFFER_WIDTHS.find(w => w >= displayWidthPx && w <= DEFAULT_FRAMEBUFFER_WIDTH) ?? DEFAULT_FRAMEBUFFER_WIDTH
+}
+
 /** Everything the page shows, read from its address. */
 export function readWebSettings(search: string, hash: string): WebOutputSettings {
   const params = mergedParams(search, hash)
   const dataset = params.get('dataset')
-  const width = finite(params, 'width')
-  const rotation = finite(params, 'rotation')
+  const width = decimal(params, 'width')
+  const rotation = decimal(params, 'rotation')
   return {
     datasetId: dataset !== null && DATASET_ID.test(dataset) ? dataset : null,
     fit: params.get('fit') === 'fill' ? 'fill' : 'contain',
     framebufferWidth: (FRAMEBUFFER_WIDTHS as readonly number[]).includes(width ?? NaN)
       ? (width as FramebufferWidth)
       : null,
-    rotationDeg: normalizeRotationOffset(rotation ?? 0),
+    centreLonDeg: normalizeRotationOffset(rotation ?? 0),
     debug: truthy(params, 'debug'),
     clock: readClock(params),
   }
