@@ -147,6 +147,8 @@ async function boot(): Promise<void> {
       reportStreamError: err => streamReports.error(err),
       onStreamFailed: ds => streamReports.failed(ds),
     }),
+    // A video that would not load, while still the one asked for.
+    onLoadFailed: ds => streamReports.failed(ds),
   })
   /** Per-frame work the link installs, if it attached. Empty on the web
    *  fixture page, where the loop is just the idle Earth. */

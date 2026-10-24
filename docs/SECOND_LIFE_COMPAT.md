@@ -1011,23 +1011,40 @@ Things this touches beyond the code:
     places TerraViz owns consent) was the first model; it fits poorly
     here, because a globe's visitor neither went to the page nor can see
     a notice on it.
-  - **Three things.** `session_start` marked `platform: 'web-output'`,
-    so globe visitors are not counted as app sessions; `layer_loaded`
-    with `trigger: 'output'` when a dataset reaches the picture; and
-    `error` under `category: 'output'` with a one-word `code`. **No
-    `session_end`**: on a globe the session's length is how long a
-    passer-by stood near it, which is dwell, and dwell is Research-only.
+  - **Two things, in the first minute only.** `layer_loaded` with
+    `trigger: 'output'` when a dataset reaches the picture, and `error`
+    under `category: 'output'` with a one-word `code`, both within
+    sixty seconds of the page starting to report. The privacy review
+    found two problems with the first version, and the maintainer chose
+    this design over keeping a slimmed session event:
+    - **No session event.** `session_start` put the visitor's locale, OS
+      and screen beside their arrival time, which is the match an
+      arrival log invites.
+    - **The first minute.** Every event carries its offset from page
+      load, so later ones bounded how long a visitor stayed, and copies
+      reporting the same change together linked visitors who were
+      together.
+
+    Visitors are still countable, as the distinct session ids on these
+    rows.
   - **Never the address's text,** the globe's location, or anything
     about who set it up or who is looking. `layer_id` is the id the
     node returned, and a record without one is refused. An error's
-    message is fixed text per code.
+    message is fixed text per code, and its stack is dropped, so no
+    Research-tier `error_detail` follows.
+  - **What is left is country and arrival time.** The server stamps
+    country on every event, and a row from the first minute is close
+    to the arrival. With a venue's arrival log that can still attach a
+    real-world country to a named avatar. Removing it would change the
+    ingest path, which is an escalation, and it is not done
+    (`PRIVACY_ANALYSIS.md` §9k).
   - **The visitor's controls are thin.** A Second Life viewer keeps its
     own browser, so an Off setting from the app never reaches it. The
     viewer's media settings can stop the page loading, picture and all.
-  - **Volume is bounded.** One session per copy of the page,
-    `layer_loaded` capped at 30 in any sixty seconds (a controller
-    script sets that rate, not a visitor), and the error reporter's
-    per-signature caps on a dataset that keeps failing.
+    Global Privacy Control, where a viewer sends it, turns it off.
+  - **Volume is bounded.** At most 30 `layer_loaded` per copy (a
+    controller script sets that rate, not a visitor), and the error
+    reporter's per-signature caps on a dataset that keeps failing.
 - **Video CORS travels with the node.** A page on
   `terraviz.zyra-project.org` can play that node's streams; a partner
   node's output page needs its own video host to allow it.
@@ -1108,11 +1125,12 @@ yet.
     that, but a page can read it only if the server exposes it.
     TerraViz's copy can expose it (`Access-Control-Expose-Headers`).
 - **Telemetry, added in the same PR.** With `telemetry=1` the page
-  reports the three Essential events listed under "Things this touches"
-  above. The control window now reports a desktop output's dead stream
-  as `output_failure` with `kind: 'hls-stalled'`. The privacy policy, the
-  analytics catalog, the query reference and a dashboard row (Globes)
-  cover them. Nothing has been sent from a real globe yet.
+  reports the two Essential events listed under "Things this touches"
+  above, in its first minute only. The control window now reports a
+  desktop output's dead stream as `output_failure` with `kind:
+  'hls-stalled'`. The privacy policy, its analysis (§9k), the analytics
+  catalog, the query reference and a dashboard row (Globes) cover them.
+  Nothing has been sent from a real globe yet.
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
   the visitor's connection can play the stream at all. One exception:

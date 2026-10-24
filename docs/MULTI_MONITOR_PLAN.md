@@ -5078,12 +5078,15 @@ renderer somewhere" — which we don't. Direct RTT.
      populated.
 
      > **`hls-stalled` has a detector (24 October 2026).** An
-     > output's stream that would not load, or that died after
-     > loading once hls.js had spent its retries, is reported by
-     > the output over IPC as `output_dataset_stalled` (declared
-     > in `protocol.ts` from the start and unused until now), and
-     > the manager emits one row per stream with `retries: 0` and
-     > `recovered: false`. Those are literal: nothing on the
+     > output's stream that would not load while it was still the
+     > dataset asked for, or that died after loading once hls.js
+     > had spent its retries, is reported by the output over IPC as
+     > `output_dataset_stalled` (declared in `protocol.ts` from the
+     > start and unused until now). The manager emits at most one
+     > row per output per dataset, and none from a window that is
+     > closing, with `retries: 0` and `recovered: false`. A load the
+     > operator had already moved on from is not reported: its
+     > failure says nothing about the output. Those are literal: nothing on the
      > control side retries, and the single HLS rebuild this rung
      > plans is still unbuilt. hls.js's own recoveries happen
      > inside the output and are not counted. The output still

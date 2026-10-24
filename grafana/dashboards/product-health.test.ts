@@ -461,20 +461,16 @@ describe('product-health dashboard — globe (web output) row', () => {
   })
 
   it("keeps a globe's traffic out of the app's panels", () => {
-    // session_start: platform → blob10. layer_loaded: trigger → blob8.
-    // error: category → blob5. A busy region would otherwise move the
-    // app's sessions, load times, error rate and country mix.
+    // layer_loaded: trigger → blob8. error: category → blob5. A busy
+    // region would otherwise move the app's load times, load-source mix
+    // and error rate. Globes send no session_start, so the session
+    // panels need no filter.
     const sqlOf = (title: string) =>
       dashboard.panels.find(p => p.title.startsWith(title))!.targets[0].url_options!.data!
-    for (const title of ['Sessions per day', 'Country breakdown']) {
-      expect(sqlOf(title)).toMatch(/blob1 = 'session_start' AND blob10 != 'web-output'/)
-    }
     for (const title of ['Layer load p95', 'Load source mix']) {
       expect(sqlOf(title)).toMatch(/blob1 = 'layer_loaded' AND blob8 != 'output'/)
     }
     expect(sqlOf('Errors by category')).toMatch(/blob1 = 'error' AND blob5 != 'output'/)
-    const perSession = sqlOf('Errors per session')
-    expect(perSession).toMatch(/blob1 = 'session_start' AND blob10 != 'web-output'/)
-    expect(perSession).toMatch(/blob1 = 'error' AND blob5 != 'output'/)
+    expect(sqlOf('Errors per session')).toMatch(/blob1 = 'error' AND blob5 != 'output'/)
   })
 })

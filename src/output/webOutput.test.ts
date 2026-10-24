@@ -426,6 +426,57 @@ describe('reporting what reached the glass (webTelemetry)', () => {
     expect(h.telemetry.streamError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['made while on'])
   })
 
+  it('sends nothing once disposed, even a report made before', async () => {
+    const h = harness()
+    let arrive!: () => void
+    h.loadTelemetry.mockImplementation(() => new Promise(r => (arrive = () => r(h.telemetry))))
+    h.show('#telemetry=1')
+    h.out.reportStreamError(new Error('made before dispose'))
+    h.out.dispose()
+    arrive()
+    await new Promise(r => setTimeout(r, 0))
+    expect(h.telemetry.streamError).not.toHaveBeenCalled()
+  })
+
+  it('counts a load time from when the address asked, across retries', async () => {
+    let fail = true
+    const h = harness({
+      fetchDataset: async id => {
+        if (fail) throw new WebDatasetError('network', 'no answer')
+        return { dataset: dataset(id), alternateUrls: [] }
+      },
+    })
+    h.show('#dataset=A&telemetry=1')
+    await until(() => h.timers.length === 1, 'the retry to be scheduled')
+    h.advance(5_000)
+    fail = false
+    h.timers[0].fn()
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.advance(250)
+    h.media.resolve(url('A'))
+    await until(() => h.report.shown.mock.calls.length === 1, 'the report')
+    expect(h.report.shown.mock.calls[0][1]).toBe(5_250)
+  })
+
+  it('survives a telemetry module that will not load', async () => {
+    const h = harness()
+    h.loadTelemetry.mockImplementation(() => Promise.reject(new Error('chunk failed')))
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      h.show('#dataset=A&telemetry=1')
+      h.out.reportStreamError(new Error('networkError: fragLoadError'))
+      await until(() => h.media.pending.length === 1, 'A to start loading')
+      h.media.resolve(url('A'))
+      await until(() => h.onScreen() === url('A'), 'A on screen')
+      await new Promise(r => setTimeout(r, 0))
+      expect(unhandled).not.toHaveBeenCalled()
+      expect(h.telemetry.datasetShown).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+
   it("reports a stream's fatal errors while it is on", async () => {
     const h = harness()
     h.show('#telemetry=1')

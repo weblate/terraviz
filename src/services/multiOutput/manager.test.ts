@@ -1331,6 +1331,47 @@ describe('a stream that died on an output', () => {
 
     expect(vi.mocked(emit)).not.toHaveBeenCalled()
   })
+
+  const stalledRows = () =>
+    vi
+      .mocked(emit)
+      .mock.calls.map(c => c[0])
+      .filter(e => e.event_type === 'output_failure')
+
+  it('reports at most once per output per dataset, and again for a new dataset', async () => {
+    // The bound for an output that does not keep to one per stream: a
+    // buggy rebuild loop, or a compromised window.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    fake.send(ready('output-1'))
+    vi.mocked(emit).mockClear()
+
+    for (let i = 0; i < 5; i++) fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    expect(stalledRows()).toHaveLength(1)
+
+    // The control window publishes a dataset: a new stream on every
+    // output, owed its own report.
+    await manager.applyState({ dataset: null })
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    expect(stalledRows()).toHaveLength(2)
+  })
+
+  it('does not report one from a window on its way out', async () => {
+    // Its stream ending is the close.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    fake.send(ready('output-1'))
+    fake.send({ type: 'output_closing', label: 'output-1' })
+    vi.mocked(emit).mockClear()
+
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+
+    expect(stalledRows()).toEqual([])
+  })
 })
 
 describe('lifecycle', () => {

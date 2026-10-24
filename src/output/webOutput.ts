@@ -176,6 +176,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
   const clockSteer = createWebClockSteer()
 
   let current: WebOutputSettings | null = null
+  let disposed = false
   /** The page's telemetry, once an address has turned it on. */
   let telemetry: Promise<WebTelemetry | null> | null = null
   /**
@@ -196,7 +197,6 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
    *  applies to loads, one step earlier. */
   let generation = 0
   let retryTimer: unknown = null
-  let disposed = false
   /** Whether the element was mid-seek at the last steer. */
   let wasSeeking = false
 
@@ -234,14 +234,15 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
     return 'failed'
   }
 
-  const showDataset = (id: string | null, attempt = 0): void => {
+  /** `startedMs` is when the address asked for the dataset, kept across
+   *  retries so a load time counts from there, not from the last retry. */
+  const showDataset = (id: string | null, attempt = 0, startedMs = monotonicMs()): void => {
     const mine = ++generation
     cancelRetry()
     if (id === null) {
       void apply(null)
       return
     }
-    const startedMs = monotonicMs()
     void (async () => {
       let failure: unknown
       try {
@@ -269,7 +270,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]
       retryTimer = setTimer(() => {
         retryTimer = null
-        if (mine === generation && !disposed) showDataset(id, attempt + 1)
+        if (mine === generation && !disposed) showDataset(id, attempt + 1, startedMs)
       }, delay)
     })()
   }
@@ -287,7 +288,11 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       deps.setDebug(next.debug)
       // Before the dataset, so a dataset this address shows is reported.
       // Loaded once; turning it off later gates it in `report`.
-      if (next.telemetry && !telemetry && deps.loadTelemetry) telemetry = deps.loadTelemetry()
+      // A dataset already on the glass when it turns on is not counted:
+      // only what an address shows while it is on.
+      if (next.telemetry && !telemetry && deps.loadTelemetry) {
+        telemetry = deps.loadTelemetry().catch(() => null)
+      }
       if (!previous || !sameClock(next.clock, previous.clock)) clockReadAtMs = nowMs()
       if (!previous || next.datasetId !== previous.datasetId) showDataset(next.datasetId)
       deps.markDirty()

@@ -194,13 +194,15 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
   Privacy panel, and anyone can point a globe at a public node, so only
   a globe whose owner chose to measure it reports. An owner who turns it
   on should say so where the globe is.
-  - **What it sends:** the app's session start, marked `web-output`;
-    which dataset reached the picture and how long that took; and a
-    one-word reason when a dataset or its stream would not play
-    ([`ANALYTICS.md`](ANALYTICS.md), [`PRIVACY.md`](PRIVACY.md)).
-  - **What it never sends:** how long the page stayed open, the
+  - **What it sends**, and only in the first minute after it starts
+    reporting: which dataset reached the picture and how long that
+    took, and a one-word reason when a dataset or its stream ran into
+    trouble ([`ANALYTICS.md`](ANALYTICS.md), [`PRIVACY.md`](PRIVACY.md)).
+  - **What it never sends:** a session event (so no operating system,
+    language or screen), anything after that first minute, the
     address's text, the globe's location, or anything about who is
-    looking.
+    looking. A browser that sends Global Privacy Control gets nothing
+    reported whatever the address says.
   - **`telemetry` fails toward off**, the one flag that does: only `1`
     or `true` (case-insensitive, untrimmed) turns it on, so
     `telemetry=off`, `=no`, a bare `telemetry` and an empty value all

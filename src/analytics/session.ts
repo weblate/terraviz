@@ -52,19 +52,8 @@ let visibleSince: number | null = null
  * enqueues either way, and session_end rides the beacon installed
  * by `setTransport()` as long as `initSession()` ran first
  * (listeners fire in registration order).
- *
- * `platform` is for a page that knows what it is better than the
- * detector can: the output page passes `'web-output'`, which no runtime
- * signal tells apart from a browser tab.
- *
- * `sessionEnd: false` sends no `session_end`. The output page passes it
- * on a globe: its page loads when someone comes into range and unloads
- * when they leave, so the session's length would be how long a passer-by
- * stood near that globe, which is dwell, and dwell is Research-only.
  */
-export async function initSession(
-  opts: { platform?: Platform; sessionEnd?: boolean } = {},
-): Promise<void> {
+export async function initSession(): Promise<void> {
   if (started) return
   started = true
 
@@ -74,7 +63,7 @@ export async function initSession(
   const event: SessionStartEvent = {
     event_type: 'session_start',
     app_version: appVersion(),
-    platform: opts.platform ?? detectPlatform(os),
+    platform: detectPlatform(os),
     os,
     locale: detectLocale(),
     viewport_class: classifyViewport(),
@@ -86,7 +75,6 @@ export async function initSession(
   }
   emit(event)
 
-  if (opts.sessionEnd === false) return
   if (typeof window !== 'undefined') {
     pagehideAbort = new AbortController()
     // Visibility accumulator FIRST — listeners fire in registration

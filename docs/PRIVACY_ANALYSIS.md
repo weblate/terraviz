@@ -124,7 +124,7 @@ Per-field budget:
 
 | Field | Bucket count | Max bits (`log₂ k`) | Effective bits (skewed) | Source line |
 |---|---|---|---|---|
-| `platform` | 4 (web/desktop/mobile/web-output) | 2.0 | ~0.8 (web dominates) | src/types/index.ts `Platform`. `web-output` (added October 2026) is the output page in web mode, a globe's texture; it adds 0.42 bits to the maximum and, on today's traffic, nothing measurable to the effective figure. It also marks a session as one seen on a globe, which says less about a person than `web` does, since the page's dataset and clock come from whoever set the globe up |
+| `platform` | 3 (web/desktop/mobile) | 1.58 | ~0.8 (web dominates) | src/types/index.ts:639 |
 | `os` | 6 | 2.58 | ~2.0 | src/types/index.ts:640, session.ts:148 |
 | `locale` | ~200 BCP-47 tags | ~7.6 | ~4.0 (en-US ~50%) | session.ts:181 |
 | `viewport_class` | 5 (xs–xl) | 2.32 | ~2.0 | src/types/index.ts:641, session.ts:187 |
@@ -859,6 +859,44 @@ trivially singling-out.
 call sites use a fixed enum in practice but the type does
 not enforce it. A future call site that passes user input
 into `key` would emit free text. Same shape of risk as 9g.
+
+### 9k. A globe's page, and the venue that logs arrivals
+
+The output page in web mode is a globe's texture, such as a Second
+Life prim (`src/output/webTelemetry.ts`). Every visitor's viewer
+loads its own copy when the avatar comes into range, with no notice
+and no Privacy panel. Adversary 1c's model runs the other way here.
+The adversary is a venue that logs avatar arrivals by name, which
+Second Life land owners commonly do, and they already know *who* and
+*when*. What they would learn from our data is the visitor's
+real-world attributes: country, locale, OS. Second Life hides those,
+and the viewer fetches the page from the visitor's own computer. A
+crowd of "web sessions that minute" is the wrong yardstick, too: once
+a row is known to be a globe's, it hides among the few avatars in
+range, not among everyone.
+
+The design minimises rather than relies on bucketing (the maintainer's
+decisions, 24 October 2026, after the privacy review):
+
+- **Off unless the globe's owner turns it on** (`telemetry=1`), and
+  never with Global Privacy Control set.
+- **No `session_start` or `session_end`.** No OS, locale, screen or
+  VR class leaves a globe, and no session length.
+- **Only the first minute** after telemetry starts on the page.
+  `client_offset_ms` is on every row, so later events would bound how
+  long a visitor stayed, and copies reporting the same change together
+  would link visitors who were together.
+
+**What remains, and is accepted.** `layer_loaded` and `error` rows
+from the first minute carry the server-stamped country and an arrival
+time to within the batch delay. Together with a venue's arrival log,
+that can still attach a real-world **country** to a named avatar in a
+quiet region. Removing country for this page would mean changing the
+ingest path (a new route, or not stamping a field), which is an
+escalation under `ANALYTICS_CONTRIBUTING.md` and is not done. The
+opt-in narrows the exposure to globes someone chose to measure. That
+someone may be the venue itself, so the request that owners disclose
+in-world is the visitor's only notice.
 
 ---
 

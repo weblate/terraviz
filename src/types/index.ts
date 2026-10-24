@@ -1161,12 +1161,7 @@ export type TierBEventType = (typeof TIER_B_EVENT_TYPES)[number]
 
 // --- Shared enums ---
 
-/** `'web-output'` is the output page in web mode (`/output/output`): a
- * globe's texture, such as a Second Life prim, with no app around it.
- * Kept apart from `'web'` so a globe's visitors do not count as app
- * sessions. A desktop output window emits nothing, so it has no value
- * here; its control window reports for it. */
-export type Platform = 'web' | 'desktop' | 'mobile' | 'web-output'
+export type Platform = 'web' | 'desktop' | 'mobile'
 export type OsFamily = 'mac' | 'windows' | 'linux' | 'ios' | 'android' | 'unknown'
 export type ViewportClass = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 /** Aspect-ratio bucket derived from `window.innerWidth / window.innerHeight`.
@@ -1900,7 +1895,11 @@ export interface OutputFailureEvent extends TelemetryEventBase {
   /** Recovery attempts made before this fired. Bounded auto-recovery
    *  collapses into one event carrying its count rather than one
    *  event per attempt, so a flapping installation reports a rising
-   *  number instead of a rising rate. */
+   *  number instead of a rising rate. For `hls-stalled` it is the
+   *  attempts the app made, which is none yet (rung 13's rebuild is
+   *  unbuilt). hls.js's own retries inside the output's player are
+   *  not counted: they are up to three per error type before the
+   *  stream is given up, and the output does not report them. */
   retries: number
   /** True if the output carried on afterwards; false if the failure
    *  was escalated to the operator. */

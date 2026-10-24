@@ -6,44 +6,44 @@
  * (`docs/SECOND_LIFE_COMPAT.md` §7). A desktop output window reports
  * nothing of its own; its control window does (`outputTelemetry.ts`).
  * On the web there is no control window, so the page reports for
- * itself, and only these three things:
+ * itself, and only two things:
  *
- * - **`session_start` with `platform: 'web-output'`**, so a globe's
- *   visitors are counted apart from app sessions. The rest of the event
- *   is the app's, bucketed the same way. **No `session_end`**: the page
- *   loads when someone comes into range and unloads when they leave, so
- *   its length would be how long a passer-by stood near that globe,
- *   which is dwell, and dwell is Research-only.
  * - **`layer_loaded` with `trigger: 'output'`** when a dataset reaches
  *   the glass. `layer_id` is the id the node returned for the record,
  *   never the text of the address (`webDataset` refuses a record with
- *   none). Capped at `WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE` over any
- *   sixty seconds, because a script cycling a globe's address sets the
- *   rate here, not a visitor.
+ *   none).
  * - **`error` with `category: 'output'`**: a dataset that would not show,
- *   and every fatal error its stream reports. `code` says which
- *   (`WebOutputErrorCode`), and the message is fixed text per code or
- *   hls.js's own error names. The address's text, which a dataset error
- *   would otherwise carry, never reaches the wire. `reportError`'s
- *   per-signature caps bound the repeats a retrying failure makes. A
- *   stream that will not load reports both: `stream` rows for hls.js's
- *   fatal errors, then one `media` row for the dataset.
+ *   and the fatal errors its stream reports, recovered or not. `code`
+ *   says which (`WebOutputErrorCode`). The message is fixed text per
+ *   code or hls.js's own error names, and the stack is dropped, so no
+ *   Research-tier `error_detail` follows and the address's text never
+ *   reaches the wire. A stream that will not load reports both: `stream`
+ *   rows for hls.js's fatal errors, then one `media` row for the dataset.
+ *
+ * **Only in the first minute** (`WEB_OUTPUT_REPORT_WINDOW_MS`) after
+ * telemetry starts on the page, and nothing after. Every event carries
+ * its offset from that start, and a page keeps running for as long as
+ * its visitor stays in range, so events later in a visit would show how
+ * long someone stood near the globe, and copies at one globe reporting
+ * the same change together would show who stood there together. **No
+ * session event at all**: `session_start` would put the visitor's
+ * locale, OS and screen beside the moment they arrived, which is the
+ * match a land owner's log of avatar arrivals invites. Visitors are
+ * still countable, as the distinct session ids on these rows.
  *
  * **Off unless the globe's owner turns it on** with `telemetry=1`
- * (`webMode.ts`), and followed live, so a later `#telemetry=0` stops it
- * (`webOutput`). The page loads for everyone in range of a globe, with
- * no banner and no Privacy panel, and anyone can point a globe at a
- * public node; every event carries a timestamp and a country, which a
- * land owner's log of avatar arrivals could be matched against. So only
- * a globe someone chose to measure reports, and that owner can say so
- * in-world (the maintainer's decision, 24 October 2026). Every event is
- * Essential (Tier A) and goes through the app's emitter, so a stored Off
- * setting in the same browser and the kill switch both apply; a Second
- * Life viewer's browser has its own storage, so there the app's setting
- * never reaches it.
+ * (`webMode.ts`), followed live by `webOutput`, and never with Global
+ * Privacy Control set. The page loads for everyone in range of a globe
+ * with no notice, and anyone can point a globe at a public node, so
+ * only a globe someone chose to measure reports. Both rules are the
+ * maintainer's decisions of 24 October 2026, after the privacy review.
+ * Every event is Essential (Tier A) and goes through the app's emitter,
+ * so the kill switch and a stored Off for the same site in the same
+ * browser apply. A Second Life viewer keeps its own browser, so there
+ * the app's setting never reaches it.
  *
- * Loaded through a dynamic import, and only in web mode with telemetry
- * on, so a desktop output window loads no telemetry code at all.
+ * Loaded through a dynamic import, and only once an address turns it on,
+ * so a desktop output window loads no telemetry code at all.
  */
 
 import {
@@ -51,14 +51,18 @@ import {
   TELEMETRY_CONSOLE_MODE,
   createFetchTransport,
   emit,
-  initSession,
   reportError,
   setTransport,
 } from '../analytics'
 import { WebDatasetError, type WebDatasetFailure } from './webDataset'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 
-/** The most `layer_loaded` events a copy sends in a minute. */
+/** How long after telemetry starts the page reports anything. */
+export const WEB_OUTPUT_REPORT_WINDOW_MS = 60_000
+
+/** The most `layer_loaded` events a copy sends in its one minute,
+ *  because a script cycling a globe's address sets that rate, not a
+ *  visitor. */
 export const WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE = 30
 
 /** Why the page reports an error: what fetching the dataset found
@@ -84,39 +88,47 @@ export interface WebTelemetry {
 }
 
 export interface WebTelemetryDeps {
-  /** Monotonic milliseconds, for the per-minute cap. */
+  /** Monotonic milliseconds, for the reporting window. */
   nowMs?: () => number
-  /** Install the transport and start the session. Replaced in tests. */
+  /** Install the transport. Replaced in tests. */
   start?: () => void
+  /** Whether the browser asks sites not to track it. */
+  globalPrivacyControl?: () => boolean
 }
 
 function startForReal(): void {
   // As in the app: no transport in a telemetry-free build, and none in
   // console mode, where batches are logged rather than sent.
   if (TELEMETRY_BUILD_ENABLED && !TELEMETRY_CONSOLE_MODE) setTransport(createFetchTransport())
-  void initSession({ platform: 'web-output', sessionEnd: false })
 }
 
-/** Reported in place of a dataset error's own message, which names the
- *  dataset the address asked for. */
-function fixedError(code: WebOutputErrorCode): Error {
-  return Object.assign(new Error(`output ${code}`), { code })
+function browserGpc(): boolean {
+  return typeof navigator !== 'undefined' && (navigator as { globalPrivacyControl?: boolean }).globalPrivacyControl === true
 }
 
-export function startWebTelemetry(deps: WebTelemetryDeps = {}): WebTelemetry {
+/** An error to report with `code` and `message` and no stack. Without
+ *  a stack `reportError` sends no Research-tier `error_detail`, whose
+ *  frames would be this page's own and say nothing. */
+function reportable(message: string, code: WebOutputErrorCode): Error {
+  const err = Object.assign(new Error(message), { code })
+  err.stack = ''
+  return err
+}
+
+/** Start the page's telemetry, or `null` when the browser has Global
+ *  Privacy Control set. */
+export function startWebTelemetry(deps: WebTelemetryDeps = {}): WebTelemetry | null {
+  if ((deps.globalPrivacyControl ?? browserGpc)()) return null
   const nowMs = deps.nowMs ?? (() => performance.now())
   ;(deps.start ?? startForReal)()
-  /** When the last few `layer_loaded` events were sent, oldest first:
-   *  a sliding minute, so no sixty seconds hold more than the cap. A
-   *  fixed window let twice the cap through across its boundary. */
-  const sentAtMs: number[] = []
+  const startedMs = nowMs()
+  const open = (): boolean => nowMs() - startedMs < WEB_OUTPUT_REPORT_WINDOW_MS
+  let shown = 0
 
   return {
     datasetShown(dataset, loadMs) {
-      const now = nowMs()
-      while (sentAtMs.length > 0 && now - sentAtMs[0] >= 60_000) sentAtMs.shift()
-      if (sentAtMs.length >= WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE) return
-      sentAtMs.push(now)
+      if (!open() || shown >= WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE) return
+      shown++
       emit({
         event_type: 'layer_loaded',
         layer_id: dataset.id,
@@ -129,12 +141,17 @@ export function startWebTelemetry(deps: WebTelemetryDeps = {}): WebTelemetry {
       })
     },
     datasetFailed(err) {
-      reportError('output', fixedError(webOutputErrorCode(err)))
+      if (!open()) return
+      // A fixed message: a dataset error's own names what the address
+      // asked for.
+      const code = webOutputErrorCode(err)
+      reportError('output', reportable(`output ${code}`, code))
     },
     streamError(err) {
+      if (!open()) return
       // hls.js's error names (`networkError: fragLoadError`) or the
       // progressive path's fixed one: no URL, no dataset id.
-      reportError('output', Object.assign(new Error(err.message), { code: 'stream' }))
+      reportError('output', reportable(err.message, 'stream'))
     },
   }
 }
