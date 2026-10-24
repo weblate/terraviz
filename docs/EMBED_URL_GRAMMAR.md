@@ -24,7 +24,8 @@ conservative: an unknown parameter value is a silent no-op, and the
 URL is not rewritten after boot, so a refresh preserves the linked
 state. The output page's parameters (below) are read by
 `src/output/webMode.ts`, at load and on every change to the part after
-`#`, under the same rules.
+`#`, under the same rules, and applied by `src/output/webOutput.ts`,
+`webDataset.ts` and `webClock.ts`.
 
 ---
 
@@ -130,24 +131,29 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 |---|---|---|---|
 | `dataset` | the node's own dataset id, the one `GET /api/v1/datasets/:id` takes | Show that dataset. A video plays and an image holds. | the live Earth |
 | `fit` | `fill` | Stretch the picture to the page instead of letterboxing it. For a page used as a texture, whose shape the host may not keep at 2:1. | letterbox (`contain`) |
-| `width` | `1024`, `2048`, `4096`, `8192` | The picture's width in pixels; its height is half. A video stream is capped at the narrowest rendition at least this wide, and an image takes its narrowest size at least this wide. | the narrowest of these at least as wide as the page is displayed, up to `4096` |
+| `width` | `1024`, `2048`, `4096`, `8192` | The picture's width in pixels; its height is half. A video stream is capped at the narrowest rendition at least this wide, and an image takes its narrowest size at least this wide. | the narrowest of these at least as wide as the picture is shown on the page, up to `4096` |
 | `rotation` | degrees | The longitude at the centre of the picture, in degrees east: `rotation=90` puts 90°E at the centre. Wrapped round the turn. | `0` |
 | `debug` | present | The output's debug readout, drawn on the picture. | off |
 | `t` | seconds into the clip, 0 or more | Where the clip is. A `t` past the clip's end wraps round it, paused or playing. | `0` |
 | `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when this copy read the address: at load, or at the `#` change that last changed the clock |
-| `rate` | above 0, up to 16 | Playback speed; `1` is the clip's own. | `1` |
+| `rate` | 0.0625 to 16 | Playback speed; `1` is the clip's own. These are the player's own limits. | `1` |
 | `paused` | present | Hold `t` exactly. Every copy shows the same frame. | playing |
 
 - **`dataset` is narrower than the main app's.** The app also resolves
   legacy catalog ids (`INTERNAL_SOS_123`) and slugs; this page asks the
   node for exactly the id it is given.
 - **A dataset that will not show leaves the live Earth up**, on every
-  copy, whatever it was showing before. That way copies at one globe
-  never disagree about what is on it. A failure that may pass (the
-  node unreachable, an HTTP error, a picture that will not load) is
-  retried after 5 s, 30 s and 2 minutes, then every 5 minutes, for as
-  long as the address names the dataset. A dataset the node does not have, or cannot put on a sphere
-  (a tour), is not retried.
+  copy, whatever it was showing before. So copies at one globe converge
+  on the same picture rather than staying on different ones. They can
+  still differ while a dataset loads, and for up to one retry interval
+  after the node recovers, since each copy retries on its own schedule.
+  A failure that may pass (the node unreachable, an HTTP error, a
+  response cut short or not JSON, a picture or stream that will not
+  load) is retried after 5 s, 30 s and 2 minutes, then every 5 minutes,
+  for as long as the address names the dataset. A dataset the node does
+  not have, or cannot put on a sphere (a tour), is not retried. A
+  stream that fails after it has started playing is not noticed, and
+  keeps its last frame.
 - **Every value fails closed, one at a time.** A malformed or
   out-of-range value is ignored and that setting keeps its default; the
   page is never refused for it. That includes the clock: each of `t`,
@@ -172,6 +178,12 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
   then different addresses.
 - **A `width` change during a session** resizes the picture at once.
   The video cap and the image size follow at the next dataset load.
+  With no `width`, the picture's size is read when the address is
+  applied, at load and on each `#` change, and not when the page is
+  resized.
+- **The video cap is for streams.** A dataset with no stream plays its
+  single file whatever the width, and a stream with no rendition that
+  wide is not capped.
 - **Composers must not send `mode`.** It belongs to the desktop
   outputs, is read only from the query, and is outside this contract. A
   `mode` this build does not know draws nothing at all, and one naming
@@ -251,5 +263,5 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 - `src/utils/posterDeepLinks.ts` — `tour` / view-toggle / `orbit` dispatch
 - `src/services/deepLinkService.ts` — `/dataset/:id` path form and native `zyra://` links
 - `src/styles/embed.css` — the chrome-hiding rules `embed=1` switches on
-- `src/output/webMode.ts` — the output page's reader; `src/output/webClock.ts` — its shared clock
+- `src/output/webMode.ts` — the output page's reader; `webOutput.ts` — how it is applied; `webDataset.ts` — the dataset fetch; `webClock.ts` — the shared clock
 - [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7 — why the output page takes these parameters

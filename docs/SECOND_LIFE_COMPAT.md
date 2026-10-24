@@ -1013,9 +1013,10 @@ before Phase 1 starts (§9).
 in-world yet, so this was built on the page half working whichever way
 it comes out. The parameters are in
 [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md) as an additive v1
-change. Four review agents read it, and their findings are fixed, not
-just noted. This was AI review, and no person outside the session that
-wrote it has reviewed it yet.
+change. Four review agents read it twice, and their findings are
+fixed, or listed below with the reason they are not. This was AI
+review, and no person outside the session that wrote it has reviewed it
+yet.
 - **Items 1–3, 5 and 6 are in.** The parameters are `dataset`,
   `fit=fill`, `width` and `rotation`. The video stream is capped at the
   narrowest rendition at least as wide as the picture.
@@ -1049,11 +1050,15 @@ wrote it has reviewed it yet.
     stepped down to a rendition the link could carry. A visitor on a
     slow connection would step down, but stall the same way below the
     lowest one.
-- **Every copy shows the same thing when something fails.** A dataset
-  that will not show leaves the live Earth up on every copy. Before,
-  a copy that had been showing A kept it while a fresh one showed
-  nothing. A failure that may pass is retried, every 5 minutes at the
-  slowest.
+- **Copies converge when something fails.** A dataset that will not
+  show leaves the live Earth up on every copy. Before, a copy that had
+  been showing A kept it while a fresh one showed nothing. A failure
+  that may pass is retried, every 5 minutes at the slowest, so copies
+  can differ for up to that long after the node recovers. An image tries
+  its other sizes, and a video its single file, before giving up, as the
+  main app does. A stream that fails *after* it started playing is not
+  noticed: it keeps its last frame, which is the multi-monitor plan's
+  rung 13 (a stream rebuild) for desktop and web alike.
 - **Item 8, the page's half, is partly in.** The output re-fetches its
   clouds on the producer's schedule, timed from the image's own
   `Last-Modified` so visitors' copies change together. It fetches the
@@ -1071,14 +1076,24 @@ wrote it has reviewed it yet.
     TerraViz's copy can expose it (`Access-Control-Expose-Headers`).
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
-  the visitor's connection can play the stream at all.
+  the visitor's connection can play the stream at all. One exception:
+  on a short loop, a seek costing a third of the clip or more (a slow
+  first seek, with its network fetch) ends seeking for that copy, since
+  round the loop no error is ever bigger than the floor that seek sets.
+  The copy then converges by speeding up alone, which takes up to about
+  twice the clip's length, around half a minute for a 16 s loop.
+  Capping the floor was tried and does not help: a cap just under half
+  the clip lets almost nothing through, and a lower one brings back the
+  seek loop on the slow links that make seeks slow.
 - **"What does a visitor see when their viewer can't keep up?"**
   (above) is still Eric's to answer, and the Video Streaming Engineer's
-  review gave a recommendation for it. Today a copy on a link too slow
-  for its rendition seeks every few seconds, landing behind each time.
-  The rate trim also asks for up to 25% more bandwidth exactly when
-  there is too little. The recommendation is to give up resolution
-  first, then smooth motion, and never correct time:
+  review gave a recommendation for it. Today a copy of a long clip on a
+  link too slow for its rendition seeks every few seconds, landing
+  behind each time; a short loop stops seeking and speeds up instead
+  (above). Either way the rate trim asks for up to 25% more bandwidth
+  exactly when there is too little. The recommendation is to give up
+  resolution first, then smooth motion, and never show the wrong
+  moment:
   - **Short loops: buffer, then join.** Hold the frame at the clock's
     target while the clip downloads in order, then join with one seek
     inside what is buffered. From then on the link no longer matters.
@@ -1092,17 +1107,33 @@ wrote it has reviewed it yet.
     1024-wide faces and slow links. Data-encoded datasets have one
     rendition by design, so they would always need buffering or stepping.
 - **Found in review and not yet done:**
-  - **Each copy loops on its own idea of the clip's length.** Before
-    and after a stream's last segment arrives, `duration` can differ by
-    a fraction of a frame. Copies wrap on different periods and drift
-    apart a little every loop. This is unmeasured: logging `duration`
-    before and after on the production stream would settle it. The fix
-    would be to wrap on the playlist's total duration.
+  - **Each copy loops on its own idea of the clip's length.** With
+    hls.js, `duration` is the playlist's total until the stream ends,
+    then the furthest buffered end across tracks, so it can differ
+    between copies, and on one copy before and after its last segment.
+    Copies then wrap on different periods, and the gap grows with
+    every loop since the `at` anchor, not since the page loaded: in
+    simulation, a 1 ms difference on a 16 s loop with a day-old anchor
+    put copies 5.4 s apart. A copy's own target also jumps when its
+    `duration` updates. The difference is unmeasured: logging
+    `duration` before and after the last segment on the production
+    stream would settle it. The fix is one period every copy agrees on
+    whichever rendition it plays, such as the playlist's total
+    duration, used both where the target wraps (`clockTargetS`) and
+    where the error is measured round the loop (`loopView`).
   - **Startup costs a segment it throws away.** hls.js downloads a
     probe segment to measure bandwidth, about 3.4 MB at 1440, before
-    loading from the start and then seeking to the clock. Starting at
-    the clock's target would save a segment, and so would skipping the
-    probe.
+    loading from the start and then seeking to the clock.
+    - Starting at the clock's target saves bytes only on a long clip.
+      On a short loop every segment is fetched anyway, so what it
+      saves is time to the first correct frame.
+    - Skipping the probe is not free in general, because `hlsService`
+      keeps it so a short loop buffers at one resolution. It is free
+      when the cap leaves one rendition, which the new default makes
+      common: a 1024 face caps to the bottom rendition (1440×720), and
+      the probe then downloads the very segment fetched again next.
+    - Data-encoded streams have no probe, since hls.js skips it for a
+      single rendition.
   - **Credit.** A CC-BY dataset on a prim reaches every visitor with no
     credit, because the page shows nothing but the picture. The Phase 2
     controller's hover text could carry it. That's a decision for the
