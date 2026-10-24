@@ -17,22 +17,27 @@ you don't need it. Every claim about TerraViz cites a file and line.
 Every claim about Second Life cites a public source, the viewer's
 source code, or a test result in §4, all collected in §11.
 
-**Last reviewed:** 2026-10-23 (in-world testing in the Firestorm
-viewer: the real TerraViz app ran in shared media, WebGL 2 stayed up
+**Last reviewed:** 2026-10-24 (§7 item 4 rewritten from an interview
+with Eric on what the shared clock has to do, and the kit gained
+`/7 hash`, the test that design turns on. 2026-10-23: in-world testing
+in the Firestorm viewer: the real TerraViz app ran in shared media, WebGL 2 stayed up
 for 7½ minutes, a default sphere's texture mapping was worked out from
 the viewer source and confirmed, and TerraViz's own LED-sphere output
 page rendered a correct live Earth on an in-world sphere — §1, §6 and
 §9 rewritten as a result. Earlier the same day: repository citations
 refreshed after merging `main`, and API reply sizes measured against
-production. Initial scoping 2026-08-09 from Eric's brief: he spent
-significant time building content and writing LSL in Second Life, and
-asked whether TerraViz could be compatible with the platform).
+production. Initial scoping 2026-08-09 from Eric's brief: years spent
+building content and writing LSL in Second Life, and the question
+whether TerraViz could be compatible with the platform).
 
 **Revisit when any of the following becomes true:**
 
 - **The output page gains a web mode** — loading a dataset from its
   own address (§7). Then §6 Option C stops being a plan, and this doc
   should point at that work instead of describing it.
+- **The `#` test runs** (§10, question 10). It decides whether §7
+  item 4 needs a server, and so whether §8's "nothing in-world writes
+  back" still holds.
 - **Someone tests on a second machine or viewer** (§10, question 8).
   Every in-world result here comes from one machine — Firestorm on
   Windows with an RTX 4090 laptop GPU. The official Linden Lab viewer
@@ -666,13 +671,80 @@ The work, smallest first:
    (`src/services/multiOutput/protocol.ts:573`, `:579`). 2048 matches
    the largest media texture Second Life allows.
 4. **A shared clock.** Without a control window, each visitor's copy
-   starts wherever it happened to load, so two people looking at the
-   same hurricane see different days — which is fatal the moment
-   someone points at it and says "here". Every copy can instead work
-   out its position from the current time (an anchor in the address,
-   or the start of the day), and the output's existing steering —
-   `syncByRatio` in `src/output/outputSync.ts` — already moves a video
-   to a target position. No server needed.
+   starts wherever it happened to load. Two people looking at the same
+   hurricane then see different days, which is fatal the moment
+   someone points at it and says "here".
+
+   **What the clock has to do** was agreed with Eric on 24 October
+   2026, in an interview about how a globe is used:
+   - **A globe is a permanent exhibit**, there all the time, like one
+     in a museum.
+   - **During a talk, a presenter controls it.** The presenter comes
+     from a named list of people, such as staff or volunteer
+     educators. Anyone else's clicks do nothing until the talk ends.
+   - **Outside a talk, anyone who walks up can control it.**
+   - **Everyone at a globe sees the same moment.** Anything one person
+     does — pause, jump to a date, switch dataset — shows for
+     everyone there.
+   - **Paused, everyone sees exactly the same frame.** Playing, close
+     is enough, as long as everyone lands on the same frame when it
+     pauses.
+   - **Left unused for a while, it goes back to the live Earth** with
+     today's clouds and the real day/night line.
+   - **In a field of globes, each globe is its own experience.**
+
+   Still open, and Eric's to answer:
+   - Is sharing between walk-up visitors a must, or a should?
+   - How long is "a while"? How close is "close" while playing?
+   - What makes someone "at" a globe?
+   - When two walk-up visitors both reach for one globe, who wins?
+   - Should the globe show the date it's on?
+   - What does a visitor see when their viewer can't keep up?
+   - Who keeps the presenter list?
+
+   **What that means for the design.** The first version of this item
+   had each copy work out its position from the time of day. That only
+   covers playback nobody touches: a pause, a jump or a switch has to
+   reach every visitor's copy. Second Life already has one channel
+   that does.
+   - **The globe's media address reaches every viewer near it.** The
+     in-world script sets the address, and it knows who touched the
+     globe, so it can check the presenter list. A click inside the web
+     page, by contrast, changes only that visitor's copy.
+   - **The address can carry the whole clock**: the dataset; when
+     paused, the exact time it is paused at; when playing, the moment
+     playback started and the rate.
+     - Each copy works out its position from that and its own
+       computer's clock. That keeps copies close as long as visitors'
+       clocks are set from internet time, which most are.
+     - The output's existing steering moves a video to the target
+       position (`syncByRatio` in `src/output/outputSync.ts`).
+     - A paused time is exact, so every copy lands on the same frame.
+     - This also settles the worry about datasets with a real time
+       axis. A hurricane season is anchored to the moment someone
+       pressed play, not to the time of day. Only the idle live Earth
+       follows the real clock, and it should.
+   - **The catch is reloading.** Changing the address makes every
+     viewer reload the page and re-buffer its video. Changing only the
+     part after `#` might avoid that (§10 question 10). The kit's
+     `/7 hash` tests it.
+     - **If the `#` test passes,** the design is the address alone,
+       with no server.
+     - **If it fails,** there is a choice to make. One option is to
+       accept a reload on every pause, jump and switch. The other is a
+       small service on the node that holds each globe's state. §8
+       rules that out today, since it says nothing in-world writes
+       back to TerraViz, so it would be a change to the plan, not a
+       detail.
+   - **The page's half is the same either way.** It reads the clock
+     from its address when it loads, and again whenever the part after
+     `#` changes. A reload just reads the same address from scratch.
+     The test decides what each change costs visitors, not what the
+     page does.
+   - **A field of globes needs its own check** (§10 question 13).
+     Second Life viewers are believed to run only a limited number of
+     web pages at once, favouring the nearest, so distant globes might
+     stop or fall behind.
 5. **Cap the video quality to what the texture can show.** TerraViz's
    stream offers 4096×2048 at 27.7 Mbps, 2160×1080 at 9.0 Mbps and
    1440×720 at 4.6 Mbps (§11). At 2048×1024 the middle one is
@@ -695,7 +767,9 @@ The work, smallest first:
    re-buffer its video. One possible way round it is to change only
    the part after `#`, which browsers don't reload for — if Second Life
    passes such a change through to every viewer (§10 question 10).
-   Worth one test before designing anything on it.
+   It is the same question item 4 turns on, so one test answers both,
+   and it comes before either is designed in detail. The kit's
+   `/7 hash` runs it.
 8. **Keep the clouds current.** The output page loads its cloud image
    once, at startup (`src/output/outputScene.ts:983`), and never again.
    The image it loads is replaced upstream every ten minutes:
@@ -886,11 +960,13 @@ Things this touches beyond the code:
   node's output page needs its own video host to allow it.
 
 Items 1–6 and the page's half of item 8 (refreshing, choosing a size,
-reading the copy) are one code PR. The cloud copy itself is a separate
-change: it is a new Worker, and the main app reads it too. It is best
-landed first, so the page can be tested against it. It doesn't have to
-be, though, because a page that finds no pointer reads upstream. Item 7
-waits for the `#` test.
+reading the copy) are one code PR. Item 4's page half is in it too,
+because it works whichever way the `#` test comes out. The cloud copy
+itself is a separate change: it is a new Worker, and the main app reads
+it too. It is best landed first, so the page can be tested against it.
+It doesn't have to be, though, because a page that finds no pointer
+reads upstream. Item 7 waits for the `#` test, and the test should run
+before Phase 1 starts (§9).
 
 ---
 
@@ -935,19 +1011,27 @@ pointer file. A new deployable, so it is its own PR. Nothing in it
 depends on Second Life, and everything after it that draws clouds reads
 from it.
 
+**First, the `#` test** (§10 question 10). One in-world session with
+the kit's `/7 hash`, ideally with a second avatar. It changes none of
+Phase 1's code. It does decide whether each pause, jump and switch
+costs every visitor a reload, and so whether Phase 2 needs a server.
+
 **Phase 1 — the output page's web mode** (§7, items 1–6 and the page's
 half of 8). One code PR. It turns the idle-Earth globe into a TerraViz
 dataset globe that every visitor sees in step, under current clouds.
 
 **Phase 2 — an in-world globe controller.** An LSL object that applies
-the §5 recipe, sets the media at 2048×1024, spins the globe, and offers
-a dataset menu that rewrites the media address. Small, and the
-in-world half of Phase 1.
+the §5 recipe, sets the media at 2048×1024 and spins the globe. It also
+carries the controls §7 item 4 asks for: the presenter list, pause,
+jump, a dataset menu, and the return to the live Earth when nobody has
+used the globe for a while. Each control rewrites the media address.
+It is the in-world half of Phase 1.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.
 
-**Phase 4 — live presenter control** (§7 item 7), after the `#` test.
+**Phase 4 — live zoom, and bringing a place to the front** (§7 item 7),
+designed on whatever the `#` test found.
 
 Options B and D only if a host needs what they uniquely offer: phones
 or no-browser exhibits for B, a self-hosted world for D.
@@ -995,13 +1079,26 @@ Numbering is kept from the first version, so a reference like
    mean a crash matching #5189; its absence would point at the viewer
    unloading the page.
 10. **Does changing only the `#` part of a media address reach every
-    viewer without a reload?** Decides how live presenter control
-    could work (§7 item 7).
+    viewer without a reload?** It decides how a globe is steered live,
+    for the clock (§7 item 4) and the camera (item 7) alike. The kit's
+    `/7 hash` tests it.
+    - The test page answers for your own viewer.
+    - A second avatar watching `/7 app` or `/7 sos` answers for
+      everyone else, which is the half that matters.
+    - In headless Chromium a `#` change mid-video arrives without a
+      reload and the video keeps playing (§11). That is what a browser
+      does; whether the viewer passes the change on is the open part.
 11. **Does a second avatar see the app and the output page?** It
     should — they come from TerraViz's site, not from a script — but
     nobody else was there to look.
 12. **How long does the full app run with a video playing?** It ran;
     it wasn't timed, and it wasn't tried on a flat panel (§4.5).
+13. **How many globes can stand in one field?** Each globe is a live
+    web page, with video, in every visitor's viewer. Second Life
+    viewers are believed to run only a limited number of media pages
+    at once, favouring the nearest, so distant globes might stop or
+    fall behind. Nobody has checked the number or what happens past
+    it (§7 item 4).
 
 ---
 
@@ -1077,3 +1174,4 @@ Numbering is kept from the first version, so a reference like
 - Clouds in §7 item 8: `https://s3.dualstack.us-east-1.amazonaws.com/metadata.sosexplorer.gov/clouds_8192.jpg` (4,886,981 B) and `clouds_4096.jpg` (1,029,784 B), `Last-Modified` 21:15:04 then 21:25:04 UTC, each with an `ETag` and no `Cache-Control`; `clouds_2048.jpg` returns 404
 - Manifests: a video dataset's `/api/v1/datasets/<id>/manifest` returns `{"kind":"video", …, "hls": "<master.m3u8>"}`; an image dataset's returns `{"kind":"image", "variants": [{ "width", "url" }, …]}` (Nighttime Lights: 4096, 2048 and 1024 variants)
 - The output page: `/output/output.html` redirects (308) to `/output/output`, titled "Output — Terraviz"; `/output.html` serves the main app. In headless Chromium at 1024×512 the page draws a 2:1 Earth with no errors, at a 4096×2048 drawing buffer
+- The `#` test in a browser (24 Oct 2026): the kit's harness plays the probe's video in headless Chromium and changes only the address's `#` part mid-video. The page reported `hash: #h=1, video t=14.5s, playing, readyState 4` and loaded once. Navigating with a changed query instead made it load twice, so the check can fail. This is Chromium's behaviour, not Second Life's (§10 question 10)
