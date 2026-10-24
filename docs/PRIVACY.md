@@ -108,7 +108,24 @@ Small, anonymous events about the health of the app:
   windows themselves send
   nothing at all: they are usually being filmed by a capture card
   in front of an audience, so nothing runs in them that does not
-  need to
+  need to. When one cannot play its video, it tells the app over the
+  private connection it gets its picture by, and the app records a
+  one-word category for that, never which dataset it was
+- **A globe that shows only the picture** — a page we serve for a
+  globe in a virtual world such as Second Life, or for a kiosk
+  screen, with no app around it. When your browser or viewer loads
+  one, it records: that it started, with the same buckets as above
+  and marked as a globe rather than the app; which dataset the globe
+  showed and how long it took to appear; and, if the dataset or its
+  video would not play, a one-word reason and the same sanitized
+  error summary as below. It never records the globe's address, where
+  the globe is, who set it up, or who is looking at it. Such a page
+  has no Privacy panel and shows no notice: as with a site that
+  embeds the app, whoever sets up the globe decides, and adding
+  `telemetry=0` to its address turns all of this off. An Off setting
+  you chose in the app on the same browser applies there too, and in
+  a virtual world your viewer's media settings can stop a globe's page
+  from loading at all
 - When something goes wrong — a classification of the error (tile
   fetch, video stream, AI model, uncaught exception, browser-console
   message, or native crash on desktop), a short sanitized summary of

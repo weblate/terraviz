@@ -68,6 +68,8 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
   const params: unknown[] = []
   const timers: { fn: () => void; ms: number; cleared: boolean }[] = []
   let now = T0
+  let mono = 0
+  const report = { shown: vi.fn(), failed: vi.fn() }
   const markDirty = vi.fn()
   const fetchDataset = vi.fn(
     opts.fetchDataset ?? (async (id: string): Promise<WebDataset> => ({ dataset: dataset(id), alternateUrls: [] })),
@@ -85,7 +87,9 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
     displaySizePx: () => ({ width: 2048, height: 1024 }),
     markDirty,
     fetchDataset,
+    report,
     nowMs: () => now,
+    monotonicMs: () => mono,
     setTimer: (fn, ms) => {
       timers.push({ fn, ms, cleared: false })
       return timers.length
@@ -109,10 +113,12 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
     timers,
     markDirty,
     fetchDataset,
+    report,
     show,
     onScreen,
     advance(ms: number) {
       now += ms
+      mono += ms
     },
   }
 }
@@ -327,6 +333,68 @@ describe('applying the address', () => {
     const h = harness()
     h.show('#rotation=90')
     expect(h.params.at(-1)).toMatchObject({ rotationOffsetRad: rotationOffsetRadFor(90) })
+  })
+})
+
+describe('reporting what reached the glass (webTelemetry)', () => {
+  it('reports a dataset once it is on screen, with how long it took', async () => {
+    const h = harness()
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.advance(750)
+    h.media.resolve(url('A'))
+    await until(() => h.report.shown.mock.calls.length === 1, 'the report')
+
+    // The record the node returned, not the address's text.
+    expect(h.report.shown.mock.calls[0][0]).toMatchObject({ id: 'A' })
+    expect(h.report.shown.mock.calls[0][1]).toBe(750)
+    expect(h.report.failed).not.toHaveBeenCalled()
+  })
+
+  it('does not report a dataset the address had moved on from when it landed', async () => {
+    // B's record is still being fetched when A's media lands: A is on
+    // the glass for a moment, but it is no longer what was asked for.
+    let releaseB!: () => void
+    const h = harness({
+      fetchDataset: async id => {
+        if (id === 'B') await new Promise<void>(r => (releaseB = r))
+        return { dataset: dataset(id), alternateUrls: [] }
+      },
+    })
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.show('#dataset=B')
+    await until(() => h.fetchDataset.mock.calls.length === 2, 'B to be fetched')
+    h.media.resolve(url('A'))
+    await until(() => h.onScreen() === url('A'), 'A on screen')
+    releaseB()
+    await until(() => h.media.pending.length === 2, 'B to start loading')
+    h.media.resolve(url('B'))
+    await until(() => h.report.shown.mock.calls.length === 1, 'the report')
+
+    expect(h.report.shown.mock.calls.map(([d]) => d.id)).toEqual(['B'])
+  })
+
+  it('reports the first failure of each attempt, not its retries', async () => {
+    const h = harness({
+      fetchDataset: async () => {
+        throw new TypeError('Failed to fetch')
+      },
+    })
+    h.show('#dataset=A')
+    await until(() => h.timers.length === 1, 'the first retry to be scheduled')
+    expect(h.report.failed).toHaveBeenCalledTimes(1)
+    expect(h.report.failed.mock.calls[0][0]).toBeInstanceOf(TypeError)
+
+    h.timers[0].fn()
+    await until(() => h.timers.length === 2, 'the second retry to be scheduled')
+    expect(h.report.failed).toHaveBeenCalledTimes(1)
+
+    // A new address is a new attempt.
+    h.show('#dataset=B')
+    await until(() => h.timers.length === 3, "B's retry to be scheduled")
+    expect(h.report.failed).toHaveBeenCalledTimes(2)
+    expect(h.report.shown).not.toHaveBeenCalled()
   })
 })
 

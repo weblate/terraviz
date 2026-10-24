@@ -124,7 +124,7 @@ Per-field budget:
 
 | Field | Bucket count | Max bits (`log₂ k`) | Effective bits (skewed) | Source line |
 |---|---|---|---|---|
-| `platform` | 3 (web/desktop/mobile) | 1.58 | ~0.8 (web dominates) | src/types/index.ts:639 |
+| `platform` | 4 (web/desktop/mobile/web-output) | 2.0 | ~0.8 (web dominates) | src/types/index.ts `Platform`. `web-output` (added October 2026) is the output page in web mode, a globe's texture; it adds 0.42 bits to the maximum and, on today's traffic, nothing measurable to the effective figure. It also marks a session as one seen on a globe, which says less about a person than `web` does, since the page's dataset and clock come from whoever set the globe up |
 | `os` | 6 | 2.58 | ~2.0 | src/types/index.ts:640, session.ts:148 |
 | `locale` | ~200 BCP-47 tags | ~7.6 | ~4.0 (en-US ~50%) | session.ts:181 |
 | `viewport_class` | 5 (xs–xl) | 2.32 | ~2.0 | src/types/index.ts:641, session.ts:187 |

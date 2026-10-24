@@ -1639,6 +1639,18 @@ export class MultiOutputManager {
       }
       record.gpuLost = false
     }
+    if (event.type === 'output_dataset_stalled') {
+      // The output's stream died: it would not load, or hls.js spent its
+      // retry budget after it had (`datasetMirror`). The output keeps its
+      // last frame and nothing rebuilds the stream yet, which is rung
+      // 13's single HLS rebuild, so `0` and `false` are literal. One row
+      // per stream, because the output sends one per stream. hls.js's own
+      // recoveries are not counted in `retries`: they happen inside the
+      // output and the row reports what this side attempted, which is
+      // nothing.
+      logger.error(`[multiOutput] ${event.label} could not play ${event.datasetId ?? 'its dataset'}`)
+      reportOutputFailure({ kind: 'hls-stalled', retries: 0, recovered: false })
+    }
     // A ping and an announcement are served by **one** path, not two.
     // Both prove the same thing — the window is up and listening — and
     // the config-before-state ordering below is load-bearing, so a

@@ -65,6 +65,16 @@ describe('session — initSession', () => {
     expect(s.platform).toBe('web')
   })
 
+  it('reports the platform a page names, for the output page in web mode', async () => {
+    // No runtime signal tells the output page from a browser tab, so it
+    // says what it is; everything else in the event is detected as usual.
+    await initSession({ platform: 'web-output' })
+    const s = __peek().find((e) => e.event_type === 'session_start')
+    if (!s || s.event_type !== 'session_start') throw new Error('unreachable')
+    expect(s.platform).toBe('web-output')
+    expect(s.os).toMatch(/^(mac|windows|linux|ios|android|unknown)$/)
+  })
+
   it('reports platform=mobile when __TAURI__ is set and the OS looks mobile', async () => {
     const w = window as unknown as { __TAURI__?: unknown }
     w.__TAURI__ = { ping: 1 }

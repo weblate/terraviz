@@ -141,8 +141,18 @@ export interface WebOutputDeps {
   /** Ask for a frame: something changed the scene can't see. */
   markDirty(): void
   fetchDataset?: (id: string, opts: { frameWidth: number }) => Promise<WebDataset>
+  /** Told what reached the glass and what would not (`webTelemetry.ts`).
+   *  Absent when the address turned telemetry off. */
+  report?: {
+    shown(dataset: MirroredDataset, loadMs: number): void
+    /** The first failure of each attempt to show a dataset, not its
+     *  retries. */
+    failed(err: unknown): void
+  }
   /** Wall-clock milliseconds, for the clock's anchor. */
   nowMs?: () => number
+  /** Monotonic milliseconds, for how long a dataset took to show. */
+  monotonicMs?: () => number
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
 }
@@ -161,6 +171,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
   const { mirror, scene } = deps
   const fetchDataset = deps.fetchDataset ?? fetchWebDataset
   const nowMs = deps.nowMs ?? (() => Date.now())
+  const monotonicMs = deps.monotonicMs ?? (() => performance.now())
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
   const clockSteer = createWebClockSteer()
@@ -196,15 +207,18 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
     retryTimer = null
   }
 
-  /** Try each address in turn; true once one is on screen. */
-  const tryCandidates = async (found: WebDataset, mine: number): Promise<boolean> => {
+  /** Try each address in turn, until one is on screen or the address
+   *  moved on. */
+  const tryCandidates = async (found: WebDataset, mine: number): Promise<'shown' | 'superseded' | 'failed'> => {
     for (const url of [found.dataset.url, ...found.alternateUrls]) {
-      if (mine !== generation || disposed) return true
+      if (mine !== generation || disposed) return 'superseded'
       const candidate = url === found.dataset.url ? found.dataset : { ...found.dataset, url }
       await apply(candidate)
-      if (mirror.currentDataset() === candidate) return true
+      // On screen, but counted as shown only while it is still what the
+      // address asks for: the next address may still be fetching.
+      if (mirror.currentDataset() === candidate) return mine === generation && !disposed ? 'shown' : 'superseded'
     }
-    return false
+    return 'failed'
   }
 
   const showDataset = (id: string | null, attempt = 0): void => {
@@ -214,18 +228,25 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       void apply(null)
       return
     }
+    const startedMs = monotonicMs()
     void (async () => {
       let failure: unknown
       try {
         const found = await fetchDataset(id, { frameWidth: scene.size.width })
         if (mine !== generation || disposed) return
-        if (await tryCandidates(found, mine)) return
+        const outcome = await tryCandidates(found, mine)
+        if (outcome === 'superseded') return
+        if (outcome === 'shown') {
+          deps.report?.shown(found.dataset, monotonicMs() - startedMs)
+          return
+        }
         failure = new Error(`no address for ${id} would load`)
       } catch (err) {
         failure = err
       }
       if (mine !== generation || disposed) return
       logger.error(`[Output] could not show dataset ${id}:`, failure)
+      if (attempt === 0) deps.report?.failed(failure)
       // The live Earth, so every copy at one globe agrees on what it
       // could not show.
       await apply(null)

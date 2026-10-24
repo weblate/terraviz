@@ -211,21 +211,39 @@ export function isHlsManifest(url: string): boolean {
  * renditions at the narrowest one that still fills that width. The web
  * output passes its framebuffer width, because every visitor streams
  * their own copy; a desktop output passes nothing and is unchanged.
+ *
+ * Stream errors go where the window says, never to the default
+ * reporter. `HLSService` left at its default posts a Tier A `error` from
+ * whatever page it runs in, and a desktop output emits nothing of its own
+ * (`outputTelemetry.ts`). So `reportStreamError` is handed every fatal
+ * error the stream reports, recovered or not, and is silent unless given;
+ * the web output gives it the page's own telemetry. `onStreamFailed` is
+ * called once per stream when it dies: it would not load, or it spent
+ * its retry budget after loading (`HLSService.onFatalError`). A desktop
+ * output gives it the link, and the control window reports it.
  */
-export function createDefaultMediaLoader(
-  opts: { maxVideoWidth?: () => number | undefined } = {},
-): MediaLoader {
+export interface DefaultMediaLoaderOptions {
+  maxVideoWidth?: () => number | undefined
+  reportStreamError?: (err: Error) => void
+  onStreamFailed?: (ds: MirroredDataset) => void
+}
+
+export function createDefaultMediaLoader(opts: DefaultMediaLoaderOptions = {}): MediaLoader {
   return {
     async load(ds) {
       if (ds.kind === 'image') return loadImageSource(ds.url)
 
       const { HLSService } = await import('../services/hlsService')
-      // Silent on a fatal error: an output emits no telemetry, desktop or
-      // web (`outputTelemetry.ts`). Left at the default, every desktop
-      // output and every Second Life visitor's copy would post its own
-      // error to the node.
-      const hls = new HLSService({ reportError: () => {} })
+      const hls = new HLSService({ reportError: err => opts.reportStreamError?.(err) })
       const video = hls.createVideo()
+      // Once per stream, and never after it was let go: a disposed stream
+      // was replaced, which is not a failure.
+      let done = false
+      const failed = (): void => {
+        if (done) return
+        done = true
+        opts.onStreamFailed?.(ds)
+      }
       try {
         await (isHlsManifest(ds.url)
           ? hls.loadStream(ds.url, video, false, opts.maxVideoWidth?.())
@@ -244,13 +262,18 @@ export function createDefaultMediaLoader(
         await waitForDecodableFrame(video, { pauseWhenReady: true })
       } catch (err) {
         hls.destroy()
+        failed()
         throw err
       }
+      hls.onFatalError(() => failed())
       return {
         kind: 'video',
         element: video,
         video,
-        dispose: () => hls.destroy(),
+        dispose: () => {
+          done = true
+          hls.destroy()
+        },
       }
     },
   }

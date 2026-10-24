@@ -52,8 +52,12 @@ let visibleSince: number | null = null
  * enqueues either way, and session_end rides the beacon installed
  * by `setTransport()` as long as `initSession()` ran first
  * (listeners fire in registration order).
+ *
+ * `platform` is for a page that knows what it is better than the
+ * detector can: the output page passes `'web-output'`, which no runtime
+ * signal tells apart from a browser tab.
  */
-export async function initSession(): Promise<void> {
+export async function initSession(opts: { platform?: Platform } = {}): Promise<void> {
   if (started) return
   started = true
 
@@ -63,7 +67,7 @@ export async function initSession(): Promise<void> {
   const event: SessionStartEvent = {
     event_type: 'session_start',
     app_version: appVersion(),
-    platform: detectPlatform(os),
+    platform: opts.platform ?? detectPlatform(os),
     os,
     locale: detectLocale(),
     viewport_class: classifyViewport(),

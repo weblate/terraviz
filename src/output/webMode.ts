@@ -75,6 +75,9 @@ export interface WebOutputSettings {
   centreLonDeg: number
   /** Show the debug HUD. */
   debug: boolean
+  /** Report the page's own telemetry (`webTelemetry.ts`). Read when the
+   *  page loads; a later `#` change does not start or stop it. */
+  telemetry: boolean
   /** Always a clock: a bare address plays from the start at the clip's
    *  own speed, from when this copy read it. */
   clock: WebClock
@@ -111,6 +114,17 @@ function truthy(params: URLSearchParams, key: string): boolean {
   if (raw === null) return false
   const lowered = raw.toLowerCase()
   return lowered !== 'false' && lowered !== '0'
+}
+
+/** Whether the address leaves telemetry on: absent, or exactly `1` or
+ *  `true` (any case). The usual boolean reading would take `off`, `no`
+ *  and an empty value as on, and a privacy switch read that way does
+ *  the opposite of what was written. So this one fails toward off. */
+function telemetryOn(params: URLSearchParams): boolean {
+  const raw = params.get('telemetry')
+  if (raw === null) return true
+  const lowered = raw.toLowerCase()
+  return lowered === '1' || lowered === 'true'
 }
 
 /** A plain decimal: digits, an optional point, an optional leading
@@ -189,6 +203,7 @@ export function readWebSettings(search: string, hash: string): WebOutputSettings
       : null,
     centreLonDeg: normalizeRotationOffset(rotation ?? 0),
     debug: truthy(params, 'debug'),
+    telemetry: telemetryOn(params),
     clock: readClock(params),
   }
 }

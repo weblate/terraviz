@@ -5077,6 +5077,20 @@ renderer somewhere" — which we don't. Direct RTT.
      attempts collapse into a single event with `retries`
      populated.
 
+     > **`hls-stalled` has a detector (24 October 2026).** An
+     > output's stream that would not load, or that died after
+     > loading once hls.js had spent its retries, is reported by
+     > the output over IPC as `output_dataset_stalled` (declared
+     > in `protocol.ts` from the start and unused until now), and
+     > the manager emits one row per stream with `retries: 0` and
+     > `recovered: false`. Those are literal: nothing on the
+     > control side retries, and the single HLS rebuild this rung
+     > plans is still unbuilt. hls.js's own recoveries happen
+     > inside the output and are not counted. The output still
+     > emits nothing itself. The web output page is the exception
+     > to that rule, because it has no control window: see
+     > `SECOND_LIFE_COMPAT.md` §7.
+
    Plus a per-minute extension to the existing `perf_sample`
    on the control window: when outputs are active, the
    sample includes `output_count` and `sync_delta_p95_ms`

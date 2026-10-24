@@ -67,6 +67,7 @@ import { createFullscreenController, resolveChromeHost } from '../services/windo
 import {
   DEFAULT_FRAMEBUFFER_WIDTH,
   outputModeFromQuery,
+  type MirroredDataset,
   type OutputGlobeState,
   type OutputRenderConfig,
 } from '../services/multiOutput/protocol'
@@ -114,6 +115,19 @@ async function boot(): Promise<void> {
     return { width: canvas.clientWidth * ratio, height: canvas.clientHeight * ratio }
   }
   const firstWidth = webSettings ? framebufferFor(webSettings, displaySizePx()) : undefined
+  // The page reports for itself only in web mode, where no control
+  // window can, and only when the address leaves it on (`telemetry=0`
+  // turns it off). A desktop output window never loads this, so it
+  // loads no telemetry code at all. Started now and awaited where it is
+  // first needed, so the import costs the boot nothing.
+  const telemetryReady = webSettings?.telemetry
+    ? import('./webTelemetry')
+        .then(m => m.startWebTelemetry())
+        .catch(err => {
+          logger.warn('[Output] telemetry did not start:', err)
+          return null
+        })
+    : Promise.resolve(null)
 
   // The clouds follow the frame's width and the producer's schedule
   // (`cloudRefresh.ts`), on desktop and web alike — an installation
@@ -130,11 +144,23 @@ async function boot(): Promise<void> {
   )
   sceneRef = scene
   clouds.start()
+  /** Where this window's stream errors go: nowhere until something takes
+   *  them. On desktop the link takes a stream that died, so the control
+   *  window can report it; on the web the page's own telemetry takes
+   *  every fatal error. Nothing here sends anything itself. */
+  const streamReports: {
+    error: (err: Error) => void
+    failed: (ds: MirroredDataset) => void
+  } = { error: () => {}, failed: () => {} }
   // A web output caps its video at its own frame, because every visitor
   // streams their own copy. A desktop output is unchanged.
-  const mirror = createDatasetMirror(
-    web ? { loader: createDefaultMediaLoader({ maxVideoWidth: () => scene.size.width }) } : {},
-  )
+  const mirror = createDatasetMirror({
+    loader: createDefaultMediaLoader({
+      maxVideoWidth: web ? () => scene.size.width : undefined,
+      reportStreamError: err => streamReports.error(err),
+      onStreamFailed: ds => streamReports.failed(ds),
+    }),
+  })
   /** Per-frame work the link installs, if it attached. Empty on the web
    *  fixture page, where the loop is just the idle Earth. */
   const steerers: (() => void)[] = []
@@ -335,6 +361,11 @@ async function boot(): Promise<void> {
 
       scene.onGpuStateChange(state => link.reportGpuState(state))
 
+      // A stream that died, for the control window to report as an
+      // `output_failure`. Bound here rather than with the loader because a
+      // stream loads only once the link has delivered a dataset.
+      streamReports.failed = ds => link.reportStreamFailure(ds.id)
+
       /**
        * Rebuild the composite from whatever the mirror currently holds.
        *
@@ -505,6 +536,8 @@ async function boot(): Promise<void> {
   }
 
   if (webSettings) {
+    const telemetry = await telemetryReady
+    if (telemetry) streamReports.error = err => telemetry.streamError(err)
     // See `webOutput.ts`: the address is this window's control window.
     const webOutput = createWebOutput({
       mirror,
@@ -515,6 +548,12 @@ async function boot(): Promise<void> {
       markDirty: () => {
         dirty = true
       },
+      report: telemetry
+        ? {
+            shown: (dataset, loadMs) => telemetry.datasetShown(dataset, loadMs),
+            failed: err => telemetry.datasetFailed(err),
+          }
+        : undefined,
     })
     // Read again, not `webSettings`: that reading sized the first frame,
     // and a `#` change may have landed while the scene was loading.

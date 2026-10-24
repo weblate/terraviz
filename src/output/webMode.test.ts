@@ -21,6 +21,7 @@ describe('readWebSettings', () => {
       framebufferWidth: null,
       centreLonDeg: 0,
       debug: false,
+      telemetry: true,
       clock: { positionS: 0, atUnixS: null, rate: 1, paused: false },
     })
   })
@@ -82,6 +83,20 @@ describe('readWebSettings', () => {
     // Exactly `embedMode`'s reading, which does not trim: a padded zero
     // is not one of the two opt-outs.
     expect(readWebSettings('?debug=%200', '').debug).toBe(true)
+  })
+
+  it('reads the telemetry switch failing toward off', () => {
+    // Absent is on, the app's default; `1` and `true` keep it on.
+    expect(readWebSettings('', '').telemetry).toBe(true)
+    expect(readWebSettings('?telemetry=1', '').telemetry).toBe(true)
+    expect(readWebSettings('?telemetry=TRUE', '').telemetry).toBe(true)
+    // Unlike the other flags, anything else is off. Read the usual way,
+    // `off`, `no` and an empty value would leave a privacy switch on.
+    for (const off of ['0', 'false', 'off', 'no', '', '%201']) {
+      expect(readWebSettings(`?telemetry=${off}`, '').telemetry).toBe(false)
+    }
+    // The fragment replaces the query here as everywhere.
+    expect(readWebSettings('?telemetry=1', '#telemetry=0').telemetry).toBe(false)
   })
 
   it('wraps a rotation past a full turn rather than refusing it', () => {

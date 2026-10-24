@@ -1161,7 +1161,12 @@ export type TierBEventType = (typeof TIER_B_EVENT_TYPES)[number]
 
 // --- Shared enums ---
 
-export type Platform = 'web' | 'desktop' | 'mobile'
+/** `'web-output'` is the output page in web mode (`/output/output`): a
+ * globe's texture, such as a Second Life prim, with no app around it.
+ * Kept apart from `'web'` so a globe's visitors do not count as app
+ * sessions. A desktop output window emits nothing, so it has no value
+ * here; its control window reports for it. */
+export type Platform = 'web' | 'desktop' | 'mobile' | 'web-output'
 export type OsFamily = 'mac' | 'windows' | 'linux' | 'ios' | 'android' | 'unknown'
 export type ViewportClass = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 /** Aspect-ratio bucket derived from `window.innerWidth / window.innerHeight`.
@@ -1180,7 +1185,9 @@ export type ScreenClass = 'mobile' | 'tablet' | '1080p' | '2k' | '4k+'
 export type BuildChannel = 'public' | 'internal' | 'canary'
 export type VrCapability = 'none' | 'vr' | 'ar' | 'both'
 export type LayerSource = 'network' | 'cache' | 'hls' | 'image'
-export type LoadTrigger = 'browse' | 'orbit' | 'tour' | 'url' | 'default'
+/** `'output'`: shown by the output page because its address named the
+ * dataset. Whoever set up the globe chose it, not a visitor. */
+export type LoadTrigger = 'browse' | 'orbit' | 'tour' | 'url' | 'default' | 'output'
 export type UnloadReason = 'replaced' | 'home' | 'tour' | 'manual'
 export type FeedbackContext = 'general' | 'ai_response'
 export type FeedbackKind = 'bug' | 'feature' | 'other' | 'thumbs_up' | 'thumbs_down'
@@ -1194,9 +1201,12 @@ export type VrExitReason = 'user' | 'error' | 'session_lost'
 export type VrGesture = 'drag' | 'pinch' | 'thumbstick_zoom' | 'flick_spin' | 'hud_tap'
 /** Specular-strength presets surfaced in Tools → Display (§7.2). */
 export type SpecularPreset = 'none' | 'default' | 'comfortable'
+/** `'output'` is every error the output page reports in web mode, its
+ * streams' included: kept apart from `'hls'` so a globe's visitors do not
+ * count against the app's stream health. `code` says which kind. */
 export type ErrorCategory =
   | 'tile' | 'hls' | 'llm' | 'download' | 'vr' | 'tour' | 'caption'
-  | 'uncaught' | 'console' | 'native_panic'
+  | 'uncaught' | 'console' | 'native_panic' | 'output'
 export type ErrorSource =
   | 'caught' | 'window_error' | 'unhandledrejection'
   | 'console_error' | 'console_warn' | 'tauri_panic'

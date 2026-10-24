@@ -362,10 +362,18 @@ describe('isHlsManifest', () => {
  * blank sphere with no error anywhere.
  */
 describe('createDefaultMediaLoader', () => {
-  function mockHls(): { played: () => number; paused: () => number; constructedWith: unknown[] } {
+  function mockHls(opts: { loadRejects?: boolean } = {}): {
+    played: () => number
+    paused: () => number
+    constructedWith: unknown[]
+    /** Fire the stream's terminal error, as hls.js does once its retry
+     *  budget is spent after loading. */
+    die: () => void
+  } {
     let played = 0
     let paused = 0
     const constructedWith: unknown[] = []
+    let fatal: ((e: { type: string; details: string }) => void) | null = null
     vi.resetModules()
     vi.doMock('../services/hlsService', () => ({
       HLSService: class {
@@ -389,15 +397,23 @@ describe('createDefaultMediaLoader', () => {
           return el
         }
         loadStream(): Promise<void> {
-          return Promise.resolve()
+          return opts.loadRejects ? Promise.reject(new Error('networkError: manifestLoadError')) : Promise.resolve()
         }
         loadDirect(): Promise<void> {
           return Promise.resolve()
         }
+        onFatalError(handler: typeof fatal): void {
+          fatal = handler
+        }
         destroy(): void {}
       },
     }))
-    return { played: () => played, paused: () => paused, constructedWith }
+    return {
+      played: () => played,
+      paused: () => paused,
+      constructedWith,
+      die: () => fatal?.({ type: 'networkError', details: 'fragLoadError' }),
+    }
   }
 
   afterEach(() => {
@@ -485,5 +501,53 @@ describe('createDefaultMediaLoader', () => {
     } finally {
       vi.doUnmock('../analytics')
     }
+  })
+
+  // Where they go instead is the window's choice: the web output's own
+  // telemetry takes every fatal error, a desktop output's link takes a
+  // stream that died.
+  it("hands every fatal error to the window's reporter", async () => {
+    const counts = mockHls()
+    const { createDefaultMediaLoader } = await import('./datasetMirror')
+    const errors: Error[] = []
+    await createDefaultMediaLoader({ reportStreamError: err => errors.push(err) }).load({
+      kind: 'video',
+      url: 'https://cdn.example/a.m3u8',
+      overlay: {},
+    } as never)
+
+    const opts = counts.constructedWith[0] as { reportError?: (err: Error) => void }
+    opts.reportError?.(new Error('mediaError: bufferStalledError'))
+    expect(errors.map(e => e.message)).toEqual(['mediaError: bufferStalledError'])
+  })
+
+  it('says once that a stream would not load', async () => {
+    mockHls({ loadRejects: true })
+    const { createDefaultMediaLoader } = await import('./datasetMirror')
+    const failed: string[] = []
+    const ds = { id: 'd-1', kind: 'video', url: 'https://cdn.example/a.m3u8', overlay: {} } as never
+
+    await expect(createDefaultMediaLoader({ onStreamFailed: d => failed.push(d.id) }).load(ds)).rejects.toThrow()
+    expect(failed).toEqual(['d-1'])
+  })
+
+  it('says once that a loaded stream died, and nothing once it was let go', async () => {
+    const counts = mockHls()
+    const { createDefaultMediaLoader } = await import('./datasetMirror')
+    const failed: string[] = []
+    const loader = createDefaultMediaLoader({ onStreamFailed: d => failed.push(d.id) })
+    const ds = { id: 'd-1', kind: 'video', url: 'https://cdn.example/a.m3u8', overlay: {} } as never
+
+    await loader.load(ds)
+    counts.die()
+    counts.die()
+    expect(failed).toEqual(['d-1'])
+
+    // A stream disposed because the dataset changed was replaced, which
+    // is not a failure.
+    const second = await loader.load({ ...(ds as object), id: 'd-2' } as never)
+    second.dispose()
+    counts.die()
+    expect(failed).toEqual(['d-1'])
   })
 })
