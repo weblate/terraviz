@@ -235,6 +235,17 @@ export interface FrameDecisionState {
  * decimal now changes which side of a boundary one frame lands on, and
  * nothing else — which is what removes the whole class of bug rather
  * than moving it to a different refresh rate.
+ *
+ * Carried only for the frames it paces, though, which took a third go.
+ * A draw made because something changed is **out of band**, and moving
+ * the deadline on from where it was due then put it more than one
+ * interval out, which the stale-deadline clause below reads as an
+ * interval that just shrank and draws at once. That draw moved it out
+ * again, so one dataset load, `#` change or camera move left the loop
+ * drawing on every callback for good: 60 fps over a paused frame, the
+ * static floor and a playing video alike, found from a Second Life
+ * globe's readout and reproduced in simulation. `advanceFrameDeadline`
+ * now tells the three kinds of draw apart (see there).
  */
 export function shouldRenderFrame(state: FrameDecisionState): boolean {
   if (state.dirty) return true
@@ -255,21 +266,41 @@ export function shouldRenderFrame(state: FrameDecisionState): boolean {
 }
 
 /**
- * When the frame after this one is due.
+ * When the frame after this one is due, given a frame just drawn at
+ * `nowMs`. `sinceLastCallbackMs` is the one `shouldRenderFrame` was
+ * given, so the two agree on which draws were paced.
  *
- * One whole interval on from the deadline just met, **not** from the
- * moment it was met — that is the entire mechanism above, and the
- * reason the rate survives a display whose refresh is not a multiple
- * of the cap.
+ * Three kinds of draw, told apart by where the deadline stood:
  *
- * The clamp to `nowMs` is for the other direction: a display slower
- * than the cap can never meet the deadline, and an unclamped one would
- * accumulate debt for as long as the installation runs. It changes no
- * decision — every callback draws either way — only the size of the
- * number.
+ * - **Paced**: the deadline had arrived, which is `shouldRenderFrame`'s
+ *   own test. The next is one whole interval on from the deadline just
+ *   met, **not** from the moment it was met — that is the entire
+ *   mechanism above, and the reason the rate survives a display whose
+ *   refresh is not a multiple of the cap. The clamp to `nowMs` is for
+ *   a display slower than the cap, which can never meet the deadline;
+ *   unclamped it would accumulate debt for as long as the installation
+ *   runs. It changes no decision, since every callback draws either
+ *   way.
+ * - **Out of band**: drawn early because something changed. The paced
+ *   frame it came ahead of is still owed, so its deadline stands.
+ *   Moving it on an interval from where it was due put it more than an
+ *   interval out, and the runaway that started is the third paragraph
+ *   above.
+ * - **Stale**: the deadline sat more than one interval out, which only
+ *   an interval that just shrank leaves (static → video, the clause in
+ *   `shouldRenderFrame` that drew this frame). It starts again from
+ *   now; carrying it on would leave it out of reach for good.
  */
-export function advanceFrameDeadline(dueMs: number, nowMs: number, kind: OutputContentKind): number {
-  return Math.max(dueMs + frameIntervalMs(kind), nowMs)
+export function advanceFrameDeadline(
+  dueMs: number,
+  nowMs: number,
+  kind: OutputContentKind,
+  sinceLastCallbackMs: number,
+): number {
+  const interval = frameIntervalMs(kind)
+  if (dueMs - nowMs > interval) return nowMs + interval
+  if (dueMs - nowMs > sinceLastCallbackMs / 2) return dueMs
+  return Math.max(dueMs + interval, nowMs)
 }
 
 // --- Scene construction ---

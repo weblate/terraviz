@@ -603,7 +603,7 @@ async function boot(): Promise<void> {
       // content the honest answer is the 1 Hz floor rather than the
       // display's refresh rate.
       fpsMeter.tick(now)
-      dueMs = advanceFrameDeadline(dueMs, now, kind)
+      dueMs = advanceFrameDeadline(dueMs, now, kind, sinceLastCallbackMs)
       dirty = false
     }
     // Sampled from the rAF loop rather than from the HUD's reader, so

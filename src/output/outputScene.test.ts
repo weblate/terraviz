@@ -198,7 +198,7 @@ describe('frame pacing', () => {
       // The whole mechanism. Drawing 4 ms early must not push the next
       // frame 4 ms late as well, or the error compounds every frame and
       // the rate drifts off the cap.
-      expect(advanceFrameDeadline(33, 29, 'video')).toBeCloseTo(33 + VIDEO_FRAME_MS)
+      expect(advanceFrameDeadline(33, 29, 'video', AT_60_HZ)).toBeCloseTo(33 + VIDEO_FRAME_MS)
     })
 
     it('does not let a display slower than the cap accumulate debt', () => {
@@ -206,7 +206,22 @@ describe('frame pacing', () => {
       // interval, so the deadline can never be met. Unclamped it would
       // fall further behind for as long as the installation runs. It
       // changes no decision — every callback draws either way.
-      expect(advanceFrameDeadline(33, 200, 'video')).toBe(200)
+      expect(advanceFrameDeadline(33, 200, 'video', 50)).toBe(200)
+    })
+
+    it('leaves the deadline where it was after an out-of-band draw', () => {
+      // Drawn half a second early because something changed. The paced
+      // frame is still owed at 1000, and moving the deadline on to 2000
+      // put it more than an interval out, which `shouldRenderFrame`
+      // reads as stale and draws at once, for good.
+      expect(advanceFrameDeadline(1000, 500, 'image', AT_60_HZ)).toBe(1000)
+      expect(advanceFrameDeadline(33, 10, 'video', AT_60_HZ)).toBe(33)
+    })
+
+    it('starts a stale deadline again from now', () => {
+      // A deadline a second out with the content now moving: the
+      // interval just shrank (static → video).
+      expect(advanceFrameDeadline(1000, 10, 'video', AT_60_HZ)).toBeCloseTo(10 + VIDEO_FRAME_MS)
     })
   })
 
@@ -220,17 +235,85 @@ describe('frame pacing', () => {
     // The real loop's very first tick always draws, on `dirty`, and
     // that is what sets the first deadline. Priming it here keeps the
     // count measuring the steady state rather than that one frame.
-    let dueMs = advanceFrameDeadline(0, 0, kind)
+    let dueMs = advanceFrameDeadline(0, 0, kind, 0)
     let drawn = 0
     for (let i = 1; i <= Math.round(offeredHz * seconds); i++) {
       const now = i * offered
       if (shouldRenderFrame({ kind, nowMs: now, dueMs, sinceLastCallbackMs: offered, dirty: false })) {
         drawn++
-        dueMs = advanceFrameDeadline(dueMs, now, kind)
+        dueMs = advanceFrameDeadline(dueMs, now, kind, offered)
       }
     }
     return drawn / seconds
   }
+
+  /**
+   * The real loop, as main.ts drives it: a first tick on `dirty`, then
+   * callbacks at `offeredHz`, with the content's kind and any changes
+   * given over time. Returns the draws in each whole second.
+   */
+  function drawsEachSecond(
+    offeredHz: number,
+    kindAt: (nowMs: number) => 'idle' | 'image' | 'video',
+    dirtyAt: number[],
+    seconds: number,
+  ): number[] {
+    const offered = 1000 / offeredHz
+    const counts = new Array<number>(seconds).fill(0)
+    let dueMs = 0
+    let last: number | null = null
+    const pending = [...dirtyAt]
+    let dirty = true
+    for (let i = 0; i < Math.round(offeredHz * seconds); i++) {
+      const now = i * offered
+      const since = last === null ? 0 : now - last
+      last = now
+      while (pending.length > 0 && pending[0] <= now) {
+        pending.shift()
+        dirty = true
+      }
+      const kind = kindAt(now)
+      if (shouldRenderFrame({ kind, nowMs: now, dueMs, sinceLastCallbackMs: since, dirty })) {
+        counts[Math.floor(now / 1000)]++
+        dueMs = advanceFrameDeadline(dueMs, now, kind, since)
+        dirty = false
+      }
+    }
+    return counts
+  }
+
+  // What the sweep above never did: something changing. A single
+  // change used to leave the loop drawing on every callback for good,
+  // which a Second Life globe's readout showed as 60 fps over a paused
+  // frame. One extra frame for the change, then the pace again.
+  it.each([30, 45, 60, 75, 144])('goes back to the static floor after a change at %i Hz', hz => {
+    const counts = drawsEachSecond(hz, () => 'image', [2500], 8)
+    // The floor's own frame and the change's, and no more.
+    expect(counts[2]).toBe(2)
+    expect(counts.slice(3)).toEqual([1, 1, 1, 1, 1])
+  })
+
+  it.each([30, 45, 60, 75, 144])('holds ~30 fps through changes to a playing video at %i Hz', hz => {
+    const counts = drawsEachSecond(hz, () => 'video', [1510, 2020, 2500, 4333], 8)
+    for (const n of counts.slice(5)) expect(n).toBeGreaterThanOrEqual(29)
+    for (const n of counts.slice(5)) expect(n).toBeLessThanOrEqual(31)
+  })
+
+  it.each([30, 45, 60, 75, 144])('settles to ~30 fps when a still frame starts playing at %i Hz', hz => {
+    // The stale-deadline case: a second out when the content starts
+    // moving. Carried on, it stayed out of reach and every callback drew.
+    const counts = drawsEachSecond(hz, now => (now < 2500 ? 'image' : 'video'), [], 8)
+    // Half a second of video at the cap and the floor's frame before it:
+    // not every callback until the old deadline comes round.
+    expect(counts[2]).toBeLessThanOrEqual(Math.min(hz, 30) / 2 + 2)
+    for (const n of counts.slice(4)) expect(n).toBeGreaterThanOrEqual(29)
+    for (const n of counts.slice(4)) expect(n).toBeLessThanOrEqual(31)
+  })
+
+  it('drops to the static floor when a playing video pauses', () => {
+    const counts = drawsEachSecond(60, now => (now < 2500 ? 'video' : 'image'), [2500], 8)
+    expect(counts.slice(4)).toEqual([1, 1, 1, 1])
+  })
 
   it('draws on every callback when the display refreshes at the cap', () => {
     // The bug hardware found. A 30 Hz monitor offers callbacks 33.33 ms
