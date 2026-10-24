@@ -59,6 +59,7 @@ import {
   createOutputScene,
   shouldRenderFrame,
   advanceFrameDeadline,
+  frameIntervalMs,
   type OutputLayerInput,
 } from './outputScene'
 import type { LinkHealth } from './linkWatchdog'
@@ -159,6 +160,8 @@ async function boot(): Promise<void> {
    *  on a display whose refresh is not a multiple of the cap — see
    *  `shouldRenderFrame`. Zero until the first draw sets it. */
   let dueMs = 0
+  /** The interval `dueMs` was set for — see `isStaleDeadline`. */
+  let dueIntervalMs = 0
   // First tick always draws: nothing has been shown yet, and a black
   // canvas is indistinguishable from a failed boot on a projector.
   let dirty = true
@@ -588,7 +591,7 @@ async function boot(): Promise<void> {
     // restore above paints immediately.
     if (
       scene.gpuState() !== 'lost' &&
-      shouldRenderFrame({ kind, nowMs: now, dueMs, sinceLastCallbackMs, dirty })
+      shouldRenderFrame({ kind, nowMs: now, dueMs, dueIntervalMs, sinceLastCallbackMs, dirty })
     ) {
       // Timed here rather than inside the scene: the scene has no HUD
       // and no reason to learn about one, and this is the only place
@@ -603,7 +606,8 @@ async function boot(): Promise<void> {
       // content the honest answer is the 1 Hz floor rather than the
       // display's refresh rate.
       fpsMeter.tick(now)
-      dueMs = advanceFrameDeadline(dueMs, now, kind, sinceLastCallbackMs)
+      dueMs = advanceFrameDeadline({ kind, nowMs: now, dueMs, dueIntervalMs, sinceLastCallbackMs })
+      dueIntervalMs = frameIntervalMs(kind)
       dirty = false
     }
     // Sampled from the rAF loop rather than from the HUD's reader, so
