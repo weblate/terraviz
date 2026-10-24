@@ -107,10 +107,13 @@ async function boot(): Promise<void> {
   const webSettings: WebOutputSettings | null = web
     ? readWebSettings(window.location.search, window.location.hash)
     : null
-  /** The page's width as displayed, in device pixels: what a web
-   *  output's frame is sized to when its address names no `width`. */
-  const displayWidthPx = (): number => canvas.clientWidth * (window.devicePixelRatio || 1)
-  const firstWidth = webSettings ? framebufferFor(webSettings, displayWidthPx()) : undefined
+  /** The page as displayed, in device pixels: what a web output's frame
+   *  is sized to when its address names no `width`. */
+  const displaySizePx = (): { width: number; height: number } => {
+    const ratio = window.devicePixelRatio || 1
+    return { width: canvas.clientWidth * ratio, height: canvas.clientHeight * ratio }
+  }
+  const firstWidth = webSettings ? framebufferFor(webSettings, displaySizePx()) : undefined
 
   // The clouds follow the frame's width and the producer's schedule
   // (`cloudRefresh.ts`), on desktop and web alike — an installation
@@ -508,7 +511,7 @@ async function boot(): Promise<void> {
       scene,
       setDebug: on => overlay.setVisible(on),
       setFill: on => document.body.classList.toggle('output-fit-fill', on),
-      displayWidthPx,
+      displaySizePx,
       markDirty: () => {
         dirty = true
       },

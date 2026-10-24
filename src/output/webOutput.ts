@@ -15,22 +15,30 @@
  * The first version was inline, and review found two races in it.
  *
  * **The mirror is the truth, and it is redrawn after every apply.** The
- * inline version redrew only when the request was still the newest.
- * After a switch X → A → X, A's late load released X's video and was
- * not redrawn, so the scene sampled a destroyed element.
- * `datasetMirror` now lets every apply supersede a load in flight, and
- * this redraws whatever the mirror holds when any apply resolves. That
- * is idempotent, and it is never wrong.
+ * inline version redrew only when the request was still the newest. So
+ * when the address moved on while a load was landing, the mirror took
+ * the load and released what was on screen, and the scene went on
+ * sampling the released element. This redraws whatever the mirror holds
+ * when any apply resolves. That is idempotent, and it is never wrong.
  *
  * **Every copy converges on the same picture.** A dataset that will not
- * show leaves the live Earth up, whether or not something was showing
+ * load leaves the live Earth up, whether or not something was showing
  * before. Otherwise a copy that had A keeps A while a copy loading fresh
  * shows nothing, and visitors at one globe see different things. A
- * failure that may be temporary (an HTTP error, a network error, a
- * picture that would not load) is retried with backoff for as long as
- * the address still asks for that dataset. A permanent exhibit should
- * recover from a blip without anyone touching it. A dataset the node
- * says does not exist, or cannot be shown, is not retried.
+ * failure to load is retried with backoff for as long as the address
+ * still asks for that dataset, because a permanent exhibit should
+ * recover from a blip without anyone touching it. That covers an HTTP
+ * error, a network error, a body cut short or not JSON (a proxy's error
+ * page served as 200), and a picture that would not decode. Only a
+ * dataset the node says does not exist, or cannot put on a sphere, is
+ * not retried. Copies converge rather than agree at every instant:
+ * during a load, and for up to one retry interval after the node
+ * recovers, they can differ.
+ *
+ * **A stream that dies after it loaded is not retried here.** The mirror
+ * keeps its last frame and reports nothing; noticing that and rebuilding
+ * the stream is the multi-monitor plan's rung 13, for desktop and web
+ * alike. A short loop is safe once it is fully buffered.
  */
 
 import type { DatasetMirror } from './datasetMirror'
@@ -52,15 +60,31 @@ import { logger } from '../utils/logger'
  *  repeats for as long as the address asks for the dataset. */
 export const RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_000, 300_000]
 
-/** The framebuffer a reading of the address asks for: its `width`, or
- *  the page's displayed size (`defaultWebFramebufferWidth`). */
-export function framebufferFor(settings: WebOutputSettings, displayWidthPx: number): FramebufferWidth {
-  return settings.framebufferWidth ?? defaultWebFramebufferWidth(displayWidthPx)
+/** The page as displayed, in device pixels. */
+export interface DisplaySize {
+  width: number
+  height: number
 }
 
-/** Whether a failure to show a dataset is worth trying again. */
+/**
+ * The framebuffer a reading of the address asks for: its `width`, or the
+ * width the picture is shown at (`defaultWebFramebufferWidth`).
+ *
+ * Shown, not the canvas box: letterboxed, a page wider than 2:1 shows a
+ * picture twice its height wide, and sizing to the box drew a 4096 frame
+ * to show 2048 pixels (found in review). Read when the address is
+ * applied, at load and on every `#` change; a resize alone is not
+ * followed.
+ */
+export function framebufferFor(settings: WebOutputSettings, display: DisplaySize): FramebufferWidth {
+  const shownPx = settings.fit === 'fill' ? display.width : Math.min(display.width, 2 * display.height)
+  return settings.framebufferWidth ?? defaultWebFramebufferWidth(shownPx)
+}
+
+/** Whether a failure to show a dataset is worth trying again: anything
+ *  but the node saying it has no such dataset, or none it can show. */
 export function isRetryable(err: unknown): boolean {
-  if (err instanceof WebDatasetError) return err.failure === 'http'
+  if (err instanceof WebDatasetError) return err.failure !== 'not_found' && err.failure !== 'not_playable'
   // A network error, or the picture itself not loading.
   return true
 }
@@ -72,8 +96,8 @@ export interface WebOutputDeps {
   setDebug(on: boolean): void
   /** Stretch the canvas to the page, or letterbox it. */
   setFill(on: boolean): void
-  /** The page's width as displayed, in device pixels. */
-  displayWidthPx(): number
+  /** The page as displayed, in device pixels. */
+  displaySizePx(): DisplaySize
   /** Ask for a frame: something changed the scene can't see. */
   markDirty(): void
   fetchDataset?: (id: string, opts: { frameWidth: number }) => Promise<WebDataset>
@@ -181,7 +205,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       current = next
       // No-ops on an unchanged snapped size, so a fragment change that
       // only moved the clock reallocates nothing.
-      scene.setFramebufferWidth(framebufferFor(next, deps.displayWidthPx()))
+      scene.setFramebufferWidth(framebufferFor(next, deps.displaySizePx()))
       deps.setFill(next.fit === 'fill')
       scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(next.centreLonDeg) })
       deps.setDebug(next.debug)

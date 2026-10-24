@@ -82,7 +82,7 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
     },
     setDebug: vi.fn(),
     setFill: vi.fn(),
-    displayWidthPx: () => 2048,
+    displaySizePx: () => ({ width: 2048, height: 1024 }),
     markDirty,
     fetchDataset,
     nowMs: () => now,
@@ -129,8 +129,9 @@ describe('the races review found', () => {
 
     h.show('#dataset=A')
     await until(() => h.media.pending.length === 2, 'A to start loading')
+    const applies = vi.spyOn(h.mirror, 'apply')
     h.show('#dataset=X')
-    await until(() => h.fetchDataset.mock.calls.length === 3, 'X asked for again')
+    await until(() => applies.mock.calls.some(([d]) => d?.id === 'X'), 'the mirror to be given X again')
     h.media.resolve(url('A'))
     await until(() => h.media.disposed.includes(url('A')), 'A released')
 
@@ -147,6 +148,73 @@ describe('the races review found', () => {
     await until(() => h.media.disposed.includes(url('A')), 'A released')
     expect(h.onScreen()).toBeNull()
     expect(h.mirror.current()).toBeNull()
+  })
+})
+
+describe('guards that review found no test held', () => {
+  it('redraws a load that lands after the address moved on', async () => {
+    // A's load is the newest the mirror was given, so it installs and
+    // releases X, though the address has moved on to B, whose fetch has
+    // not answered. Redrawn only for the newest request, the scene kept
+    // sampling X's released video.
+    let releaseB: (() => void) | undefined
+    const h = harness({
+      fetchDataset: async id => {
+        if (id === 'B') await new Promise<void>(resolve => (releaseB = resolve))
+        return { dataset: dataset(id), alternateUrls: [] }
+      },
+    })
+    h.show('#dataset=X')
+    await until(() => h.media.pending.length === 1, 'X to start loading')
+    h.media.resolve(url('X'))
+    await until(() => h.onScreen() === url('X'), 'X on screen')
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 2, 'A to start loading')
+    h.show('#dataset=B')
+    await until(() => releaseB !== undefined, "B's fetch to be held")
+    h.media.resolve(url('A'))
+    await until(() => h.media.disposed.includes(url('X')), 'X released')
+    expect(h.onScreen()).toBe(url('A'))
+  })
+
+  it("stops trying an image's sizes once the address has moved on", async () => {
+    const image = (u: string): MirroredDataset => ({ ...dataset('I', u), kind: 'image' })
+    const h = harness({
+      fetchDataset: async id =>
+        id === 'I'
+          ? { dataset: image('https://i.example/2048.jpg'), alternateUrls: ['https://i.example/orig.jpg'] }
+          : { dataset: dataset(id), alternateUrls: [] },
+    })
+    h.show('#dataset=I')
+    await until(() => h.media.pending.length === 1, 'the picked size to start loading')
+    h.show('#dataset=B')
+    await until(() => h.media.pending.length === 2, 'B to start loading')
+    h.media.reject('https://i.example/2048.jpg')
+    h.media.resolve(url('B'))
+    await until(() => h.onScreen() === url('B'), 'B on screen')
+    expect(h.media.pending.map(p => p.url)).not.toContain('https://i.example/orig.jpg')
+  })
+
+  it('goes to the live Earth when the dataset is found but will not load, and retries', async () => {
+    // The fetch answers; the media itself fails. That is the case the
+    // convergence rule is for, and the earlier tests failed only the fetch.
+    const h = harness()
+    h.show('#dataset=X')
+    await until(() => h.media.pending.length === 1, 'X to start loading')
+    h.media.resolve(url('X'))
+    await until(() => h.onScreen() === url('X'), 'X on screen')
+
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 2, 'A to start loading')
+    h.media.reject(url('A'))
+    await until(() => h.timers.length === 1, 'a retry to be scheduled')
+    expect(h.onScreen()).toBeNull()
+    expect(h.mirror.current()).toBeNull()
+
+    h.timers[0].fn()
+    await until(() => h.media.pending.length === 3, 'A to load again')
+    h.media.pending[2].resolve()
+    await until(() => h.onScreen() === url('A'), 'A on screen')
   })
 })
 
@@ -225,19 +293,24 @@ describe('converging on what every copy can show', () => {
     expect(h.timers).toEqual([])
   })
 
-  it('treats a picture that would not load as worth retrying, and a missing dataset as not', () => {
+  it('retries anything but a dataset the node does not have or cannot show', () => {
     expect(isRetryable(new Error('Failed to load image'))).toBe(true)
     expect(isRetryable(new WebDatasetError('http', 'HTTP 502'))).toBe(true)
     expect(isRetryable(new WebDatasetError('not_found', 'no'))).toBe(false)
     expect(isRetryable(new WebDatasetError('not_playable', 'a tour'))).toBe(false)
-    expect(isRetryable(new WebDatasetError('bad_response', 'not JSON'))).toBe(false)
+    // A body cut short, or a proxy's error page served as 200.
+    expect(isRetryable(new WebDatasetError('bad_response', 'not JSON'))).toBe(true)
   })
 })
 
 describe('applying the address', () => {
-  it('sizes the frame by the address, else by the page as displayed', () => {
-    expect(framebufferFor(readWebSettings('?width=4096', ''), 1024)).toBe(4096)
-    expect(framebufferFor(readWebSettings('', ''), 1024)).toBe(1024)
+  it('sizes the frame by the address, else by the picture as shown', () => {
+    expect(framebufferFor(readWebSettings('?width=4096', ''), { width: 1024, height: 512 })).toBe(4096)
+    expect(framebufferFor(readWebSettings('', ''), { width: 1024, height: 512 })).toBe(1024)
+    // Letterboxed, a page wider than 2:1 shows a picture twice its height
+    // wide; stretched, it shows one the page's width.
+    expect(framebufferFor(readWebSettings('', ''), { width: 4096, height: 1024 })).toBe(2048)
+    expect(framebufferFor(readWebSettings('?fit=fill', ''), { width: 4096, height: 1024 })).toBe(4096)
   })
 
   it('puts the address rotation on the scene', () => {
