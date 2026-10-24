@@ -29,7 +29,9 @@
  * still asks for that dataset, because a permanent exhibit should
  * recover from a blip without anyone touching it. That covers an HTTP
  * error, a network error, a body cut short or not JSON (a proxy's error
- * page served as 200), and a picture that would not decode. Only a
+ * page served as 200), and a picture that would not decode. A manifest
+ * that disagrees with its record is retried too, which is harmless at
+ * the slow end of the backoff and right if the node is mid-deploy. Only a
  * dataset the node says does not exist, or cannot put on a sphere, is
  * not retried. Copies converge rather than agree at every instant:
  * during a load, and for up to one retry interval after the node
@@ -72,12 +74,17 @@ export interface DisplaySize {
  *
  * Shown, not the canvas box: letterboxed, a page wider than 2:1 shows a
  * picture twice its height wide, and sizing to the box drew a 4096 frame
- * to show 2048 pixels (found in review). Read when the address is
+ * to show 2048 pixels (found in review). Stretched, the frame has to
+ * cover both directions, so a page taller than 2:1, a square face say,
+ * takes a frame twice its height wide. Read when the address is
  * applied, at load and on every `#` change; a resize alone is not
  * followed.
  */
 export function framebufferFor(settings: WebOutputSettings, display: DisplaySize): FramebufferWidth {
-  const shownPx = settings.fit === 'fill' ? display.width : Math.min(display.width, 2 * display.height)
+  const shownPx =
+    settings.fit === 'fill'
+      ? Math.max(display.width, 2 * display.height)
+      : Math.min(display.width, 2 * display.height)
   return settings.framebufferWidth ?? defaultWebFramebufferWidth(shownPx)
 }
 

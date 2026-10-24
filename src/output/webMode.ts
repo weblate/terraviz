@@ -34,7 +34,7 @@ import {
   type FramebufferWidth,
 } from '../services/multiOutput/protocol'
 import { normalizeRotationOffset } from '../services/multiOutput/outputPersistence'
-import { MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE } from '../utils/time'
+import { MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE, SYNC_MAX_RATE_TRIM } from '../utils/time'
 
 /**
  * Where the clip should be, shared by every copy of the page.
@@ -80,13 +80,15 @@ export interface WebOutputSettings {
   clock: WebClock
 }
 
-/** The rates a web clock will play: the player's own limits. Faster is
- *  almost certainly a typo, and sends the playhead round a short clip
- *  several times a frame. Slower is clamped by the control law to the
- *  minimum, so the element outran its clock and was seeked back every
- *  few seconds (found in review). Either reads as rate 1. */
-export const MIN_WEB_RATE = MIN_PLAYBACK_RATE
-export const MAX_WEB_RATE = MAX_PLAYBACK_RATE
+/** The rates a web clock will play: the player's own limits, less the
+ *  room the control law's rate trim needs to catch up or fall back.
+ *  Below the player's minimum the law clamps, the element outran its
+ *  clock and was seeked back every few seconds; at the maximum the trim
+ *  cannot speed up, so a copy a seek left behind stayed behind for good,
+ *  by its own seek's cost (both found in review). 1/12 to 12.8. Anything
+ *  outside reads as rate 1. */
+export const MIN_WEB_RATE = MIN_PLAYBACK_RATE / (1 - SYNC_MAX_RATE_TRIM)
+export const MAX_WEB_RATE = MAX_PLAYBACK_RATE / (1 + SYNC_MAX_RATE_TRIM)
 
 /** The shape of a node dataset id. Anything else would reach the API as
  *  a path segment, so it is refused here rather than escaped there. */

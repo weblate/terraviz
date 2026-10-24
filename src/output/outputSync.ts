@@ -404,19 +404,37 @@ function syncByRatio(
  */
 export interface PlayheadSync {
   sync(video: SyncTarget | null, state: SyncInputs): SyncOutcome
+  /**
+   * Drop a seek still being timed, keeping the floor already measured.
+   * For a caller that stops calling `sync` on purpose, as the web clock
+   * does while paused: the pause would otherwise be timed as the seek.
+   */
+  dropPendingSeek(): void
 }
 
 /**
- * A gap between two calls longer than this means steering stopped (a
- * hidden tab, an occluded media face, a paused web clock), and a seek
- * left outstanding across it cannot be timed: the measurement is
+ * When a gap between two calls is a stop rather than a slow frame, and
+ * a seek left outstanding across it cannot be timed: the measurement is
  * dropped rather than closed. Closed, the gap was recorded as the
- * seek's cost, and a 60 s gap set a 90 s floor that stopped the element
- * seeking for good (found in review). Steering calls once per frame, and
- * the slowest measured frame is ~300 ms (WebKitGTK at 4096x2048), so a
- * second is well clear of a running loop.
+ * seek's cost, and a 60 s gap (a hidden tab, an occluded media face)
+ * set a 90 s floor that stopped the element seeking for good (found in
+ * review of the web output).
+ *
+ * A gap counts as a stop only when it is both `STEER_GAP_DISCARD_MS`
+ * long and `STEER_GAP_FACTOR` times the loop's own recent interval. A
+ * fixed second, the first version, dropped every seek on a loop whose
+ * frames take longer than that, a software-rendered VM say, and so
+ * disabled the floor and re-opened the seek loop (found in review, in
+ * simulation: 1.1 s frames went from one seek to a hundred). Relative
+ * to the loop's own pace, a 1.1 s loop keeps its measurements and a
+ * hidden 16 ms one still drops them. The base is three seconds so that
+ * one long frame, such as the first draw after a load, is timed into the
+ * seek it followed rather than dropping it: an over-estimate only slows
+ * convergence, which the trim still completes. The slowest measured
+ * running loop is WebKitGTK at 4096x2048, about 350 ms a callback.
  */
-export const STEER_GAP_DISCARD_MS = 1000
+export const STEER_GAP_DISCARD_MS = 3000
+export const STEER_GAP_FACTOR = 4
 
 export function createPlayheadSync(nowMs: () => number = () => performance.now()): PlayheadSync {
   let lastSeekAtMs = Number.NEGATIVE_INFINITY
@@ -424,12 +442,24 @@ export function createPlayheadSync(nowMs: () => number = () => performance.now()
   let lastSeekCostS = 0
   let steering: SyncTarget | null = null
   let lastCallAtMs = Number.NEGATIVE_INFINITY
+  /** The loop's recent interval between calls, smoothed; `null` until
+   *  there have been two. */
+  let typicalCallMs: number | null = null
 
   return {
+    dropPendingSeek() {
+      awaitingSeek = false
+    },
+
     sync(video, state) {
       const now = nowMs()
       const sinceLastCallMs = now - lastCallAtMs
       lastCallAtMs = now
+      const stopped =
+        sinceLastCallMs > Math.max(STEER_GAP_DISCARD_MS, STEER_GAP_FACTOR * (typicalCallMs ?? 0))
+      if (!stopped && Number.isFinite(sinceLastCallMs)) {
+        typicalCallMs = typicalCallMs === null ? sinceLastCallMs : 0.8 * typicalCallMs + 0.2 * sinceLastCallMs
+      }
 
       // A different element is a different measurement. `datasetMirror`
       // builds one per load and disposes the last, so a seek left
@@ -447,7 +477,7 @@ export function createPlayheadSync(nowMs: () => number = () => performance.now()
       // Closed *before* steering, not after: this call is the first one
       // that can act on what the seek actually cost, and acting on it a
       // frame later is one more seek the loop gets to issue.
-      if (awaitingSeek && sinceLastCallMs > STEER_GAP_DISCARD_MS) {
+      if (awaitingSeek && stopped) {
         awaitingSeek = false
       } else if (awaitingSeek && video && !video.seeking) {
         lastSeekCostS = (now - lastSeekAtMs) / 1000

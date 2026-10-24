@@ -166,11 +166,15 @@ describe('the clock', () => {
   })
 
   it('falls back to rate 1 for a rate it will not play', () => {
-    for (const bad of ['0', '-1', 'fast', String(MAX_WEB_RATE + 1), '0.05']) {
+    // The player's own limits less the trim's room: 16 itself left a
+    // copy behind for good, 0.0625 seeked it every few seconds.
+    expect(MIN_WEB_RATE).toBeCloseTo(1 / 12, 12)
+    expect(MAX_WEB_RATE).toBeCloseTo(12.8, 12)
+    for (const bad of ['0', '-1', 'fast', '16', '13', '0.0625', '0.08']) {
       expect(readWebSettings('', `#t=1&rate=${bad}`).clock.rate).toBe(1)
     }
-    expect(readWebSettings('', `#t=1&rate=${MAX_WEB_RATE}`).clock.rate).toBe(MAX_WEB_RATE)
-    expect(readWebSettings('', `#t=1&rate=${MIN_WEB_RATE}`).clock.rate).toBe(MIN_WEB_RATE)
+    expect(readWebSettings('', '#t=1&rate=12.8').clock.rate).toBe(12.8)
+    expect(readWebSettings('', '#t=1&rate=0.0834').clock.rate).toBe(0.0834)
   })
 
   it('tells a changed clock from one a # change left alone', () => {

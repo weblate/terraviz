@@ -779,6 +779,52 @@ describe('the measurement belongs to one element', () => {
     expect(playhead.sync(video, inputs()).seeked).toBe(true)
   })
 
+  it('still times a seek on a loop whose every frame is slow', () => {
+    // A software-rendered loop at 1.5 s a frame. A fixed one-second gap
+    // rule dropped every seek here, and seeked on every frame.
+    let clock = 0
+    const playhead = createPlayheadSync(() => clock)
+    const video = target({ currentTime: 50 })
+    for (let i = 0; i < 5; i++) {
+      clock += 1_500
+      playhead.sync(video, inputs())
+    }
+    video.currentTime = 10
+    expect(playhead.sync(video, inputs()).seeked).toBe(true)
+    ;(video as { seeking: boolean }).seeking = true
+    clock += 1_500
+    playhead.sync(video, inputs())
+    ;(video as { seeking: boolean }).seeking = false
+    clock += 1_500
+    // 3 s of seek measured, a 4.5 s floor, so 2 s out is trimmed.
+    video.currentTime = 48
+    expect(playhead.sync(video, inputs()).seeked).toBe(false)
+  })
+
+  it('keeps the floor it measured when a pending seek is dropped on purpose', () => {
+    let clock = 0
+    const playhead = createPlayheadSync(() => clock)
+    const video = target({ currentTime: 10 })
+    playhead.sync(video, inputs())
+    ;(video as { seeking: boolean }).seeking = true
+    for (let ms = 0; ms < 2_000; ms += 100) {
+      clock += 100
+      playhead.sync(video, inputs())
+    }
+    ;(video as { seeking: boolean }).seeking = false
+    clock += 100
+    playhead.sync(video, inputs())
+    // A second seek, dropped before it lands.
+    video.currentTime = 10
+    clock += 100
+    expect(playhead.sync(video, inputs()).seeked).toBe(true)
+    playhead.dropPendingSeek()
+    clock += 100
+    // The 2.1 s floor measured before still holds: 1 s out is trimmed.
+    video.currentTime = 49
+    expect(playhead.sync(video, inputs()).seeked).toBe(false)
+  })
+
   it('still times a seek served while steering ran', () => {
     let clock = 0
     const playhead = createPlayheadSync(() => clock)

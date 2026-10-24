@@ -240,14 +240,16 @@ export function createWebClockSteer(
   // handed the real element, and the law here has to see `loopView`.
   const playhead = createPlayheadSync(deps.monotonicMs)
   let view: LoopView | null = null
-  /** The paused target this steer last seeked to, and how many times
-   *  it has seeked there again. Held so a readback a hair off does not
-   *  earn a seek every frame, but only within `HELD_TOLERANCE_S`: an
-   *  element a frame or more away has not been seeked there, whatever
-   *  was held, and gets up to `PAUSED_RESEEKS` more. It once held at any
-   *  distance, so a dataset switch at the same paused time left the new
-   *  element at 0 while fresh copies sat on the frame (found in review). */
-  let held: { targetS: number; reseeks: number } | null = null
+  /** The paused target this steer last seeked to, on which element, and
+   *  how many times it has seeked there again. Held so a readback a hair
+   *  off does not earn a seek every frame, but only within
+   *  `HELD_TOLERANCE_S`: an element a frame or more away has not been
+   *  seeked there, and gets up to `PAUSED_RESEEKS` more. Tied to the
+   *  element because a dataset switch at the same paused time is a new
+   *  element owed its own seek: held by target alone, an element that
+   *  had spent its re-seeks left the next one on frame 0 while fresh
+   *  copies sat on the frame (found in review, twice). */
+  let held: { element: SyncTarget; targetS: number; reseeks: number } | null = null
 
   return {
     steer(video, clock, nowMs, readAtMs) {
@@ -269,18 +271,20 @@ export function createWebClockSteer(
         })
       }
 
-      // A new view on the next play: the playhead layer keys its memory on
-      // the view, so this drops a seek left outstanding when the clock
-      // paused, which would otherwise be timed against the whole pause.
-      view = null
+      // A seek left outstanding when the clock paused would otherwise be
+      // timed against the whole pause. Only that seek is dropped: the floor
+      // already measured is this element's, and losing it on every pause
+      // cost each resume an unprotected seek and a second stall to learn
+      // it again (found in review).
+      playhead.dropPendingSeek()
       if (!video.paused) video.pause()
       // Mid-seek, `currentTime` already reads the target while the old
       // frame is still on the glass; measuring it would be fiction.
       if (video.seeking) return { kind: 'seeking', driftS: null, seeked: false }
       const driftS = video.currentTime - targetS
       if (Math.abs(driftS) <= EXACT_PAUSE_EPS_S) return { kind: 'paused', driftS, seeked: false }
-      if (held?.targetS !== targetS) {
-        held = { targetS, reseeks: 0 }
+      if (held?.element !== video || held.targetS !== targetS) {
+        held = { element: video, targetS, reseeks: 0 }
       } else if (Math.abs(driftS) < HELD_TOLERANCE_S || held.reseeks >= PAUSED_RESEEKS) {
         return { kind: 'paused', driftS, seeked: false }
       } else {

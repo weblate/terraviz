@@ -191,8 +191,15 @@ describe('guards that review found no test held', () => {
     await until(() => h.media.pending.length === 2, 'B to start loading')
     h.media.reject('https://i.example/2048.jpg')
     h.media.resolve(url('B'))
-    await until(() => h.onScreen() === url('B'), 'B on screen')
+    // B either installs, or is released because a later load superseded
+    // it: the end of the chain either way, so a wrong walk fails on the
+    // assertions below rather than by timing out.
+    await until(
+      () => h.onScreen() === url('B') || h.media.disposed.includes(url('B')),
+      "B's load to settle",
+    )
     expect(h.media.pending.map(p => p.url)).not.toContain('https://i.example/orig.jpg')
+    expect(h.onScreen()).toBe(url('B'))
   })
 
   it('goes to the live Earth when the dataset is found but will not load, and retries', async () => {
@@ -311,6 +318,9 @@ describe('applying the address', () => {
     // wide; stretched, it shows one the page's width.
     expect(framebufferFor(readWebSettings('', ''), { width: 4096, height: 1024 })).toBe(2048)
     expect(framebufferFor(readWebSettings('?fit=fill', ''), { width: 4096, height: 1024 })).toBe(4096)
+    // Stretched onto a square face, the frame has to cover its height.
+    expect(framebufferFor(readWebSettings('?fit=fill', ''), { width: 1024, height: 1024 })).toBe(2048)
+    expect(framebufferFor(readWebSettings('', ''), { width: 1024, height: 1024 })).toBe(1024)
   })
 
   it('puts the address rotation on the scene', () => {

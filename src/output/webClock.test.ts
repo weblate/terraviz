@@ -342,6 +342,35 @@ describe('createWebClockSteer', () => {
     expect(v.currentTime).toBe(30)
   })
 
+  it('seeks the new element after a switch, even when the old one spent its re-seek', () => {
+    // Found in review, the second time: held by target alone, the budget
+    // one element had spent was charged to the next.
+    const { steer } = harness()
+    const paused = clock({ positionS: 30, paused: true })
+    const a = video({ currentTime: 0, paused: true })
+    steer.steer(a, paused, LOADED_AT, LOADED_AT)
+    a.currentTime = 30 + HELD_TOLERANCE_S * 3
+    steer.steer(a, paused, LOADED_AT, LOADED_AT)
+    a.currentTime = 30 + HELD_TOLERANCE_S * 3
+    expect(steer.steer(a, paused, LOADED_AT, LOADED_AT).seeked).toBe(false)
+    const b = video({ currentTime: 0, paused: true })
+    expect(steer.steer(b, paused, LOADED_AT, LOADED_AT).seeked).toBe(true)
+    expect(b.currentTime).toBe(30)
+  })
+
+  it('keeps the floor it measured across a pause', () => {
+    const { steer, serve } = harness()
+    const v = video({ duration: 200, currentTime: 3 })
+    const playing = clock({ positionS: 50, atUnixS: AT })
+    steer.steer(v, playing, LOADED_AT, LOADED_AT)
+    const wall = serve(v, playing, 2_000)
+    steer.steer(v, playing, LOADED_AT + wall, LOADED_AT)
+    steer.steer(v, clock({ positionS: 60, paused: true }), LOADED_AT, LOADED_AT)
+    // Resumed 1 s out: under the 3 s floor that seek measured, trimmed.
+    v.currentTime = 59
+    expect(steer.steer(v, clock({ positionS: 60, atUnixS: AT }), LOADED_AT, LOADED_AT).seeked).toBe(false)
+  })
+
   it('seeks the new element after a dataset switch at the same paused time', () => {
     // Found in review: the hold remembered the target and not the
     // element, so the new dataset stayed at 0 while copies that loaded
