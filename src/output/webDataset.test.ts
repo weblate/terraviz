@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
+import { describe, expect, it, vi } from 'vitest'
+import { WebDatasetError, fetchWebDataset, overlayFromRecord, pickVariant } from './webDataset'
+import { parseColorScale } from '../types/color-scale'
+import { toDisplayUnits } from '../types/unit-scale'
+
+const ID = '01KQG611HF8YXJNRBEHT0757KT'
+
+/** Production's record and manifest for this dataset, trimmed. */
+const VIDEO_RECORD = {
+  id: ID,
+  slug: 'hurricane-season-2024',
+  title: 'Hurricane Season - 2024',
+  format: 'video/mp4',
+  dataLink: `/api/v1/datasets/${ID}/manifest`,
+  startTime: '2024-06-01T12:00:00Z',
+  endTime: '2024-11-30T12:00:00Z',
+}
+const VIDEO_MANIFEST = {
+  kind: 'video',
+  id: ID,
+  title: '',
+  duration: 0,
+  hls: `https://video.zyra-project.org/videos/${ID}/master.m3u8`,
+  files: [],
+}
+
+const COLOR_SCALE = {
+  stops: [
+    { t: 0, rgba: [0, 0, 0, 0] },
+    { t: 1, rgba: [255, 0, 0, 255] },
+  ],
+  vmin: 0,
+  vmax: 50,
+  units: 'mg m-2',
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+}
+
+/** A node that answers the two paths this module asks for. */
+function node(record: unknown, manifest: unknown, status = { record: 200, manifest: 200 }) {
+  return vi.fn(async (url: string) =>
+    url.endsWith('/manifest') ? json(manifest, status.manifest) : json(record, status.record),
+  )
+}
+
+describe('fetchWebDataset', () => {
+  it('builds the MirroredDataset a desktop output would be handed', async () => {
+    const fetchFn = node(VIDEO_RECORD, VIDEO_MANIFEST)
+    const ds = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn })
+    expect(fetchFn).toHaveBeenCalledWith(`/api/v1/datasets/${ID}`, expect.anything())
+    expect(fetchFn).toHaveBeenCalledWith(`/api/v1/datasets/${ID}/manifest`, expect.anything())
+    expect(ds).toEqual({
+      id: ID,
+      url: VIDEO_MANIFEST.hls,
+      kind: 'video',
+      overlay: {
+        boundingBox: { n: 90, s: -90, w: -180, e: 180 },
+        lonOrigin: undefined,
+        isFlippedInY: undefined,
+        celestialBody: undefined,
+        colorScale: undefined,
+        datasetId: ID,
+        datasetTitle: 'Hurricane Season - 2024',
+      },
+      startTime: '2024-06-01T12:00:00Z',
+      endTime: '2024-11-30T12:00:00Z',
+    })
+  })
+
+  it('takes a node on another origin when given one', async () => {
+    const fetchFn = node(VIDEO_RECORD, VIDEO_MANIFEST)
+    await fetchWebDataset(ID, { frameWidth: 2048, fetchFn, apiBase: 'https://node.example' })
+    expect(fetchFn).toHaveBeenCalledWith(`https://node.example/api/v1/datasets/${ID}`, expect.anything())
+  })
+
+  it('plays a single file when the manifest has no HLS stream', async () => {
+    const manifest = {
+      ...VIDEO_MANIFEST,
+      hls: '',
+      files: [
+        { quality: '720p', width: 1280, link: 'https://v.example/720.mp4' },
+        { quality: '1080p', width: 1920, link: 'https://v.example/1080.mp4' },
+      ],
+    }
+    const ds = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(VIDEO_RECORD, manifest) })
+    expect(ds.url).toBe('https://v.example/1080.mp4')
+  })
+
+  it('picks the image variant the frame can use', async () => {
+    const record = { ...VIDEO_RECORD, format: 'image/jpg', startTime: undefined, endTime: undefined }
+    const manifest = {
+      kind: 'image',
+      variants: [
+        { width: 4096, url: 'https://i.example/4096.jpg' },
+        { width: 1024, url: 'https://i.example/1024.jpg' },
+        { width: 2048, url: 'https://i.example/2048.jpg' },
+      ],
+      fallback: 'https://i.example/original.jpg',
+    }
+    const at = (w: number) => fetchWebDataset(ID, { frameWidth: w, fetchFn: node(record, manifest) })
+    expect((await at(2048)).url).toBe('https://i.example/2048.jpg')
+    expect((await at(1500)).url).toBe('https://i.example/2048.jpg')
+    expect((await at(8192)).url).toBe('https://i.example/4096.jpg')
+    const ds = await at(2048)
+    expect(ds.kind).toBe('image')
+    expect(ds.startTime).toBeNull()
+  })
+
+  it('falls back to the original image when there are no variants', async () => {
+    const record = { ...VIDEO_RECORD, format: 'image/png' }
+    const manifest = { kind: 'image', variants: [], fallback: 'https://i.example/original.png' }
+    expect((await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(record, manifest) })).url).toBe(
+      'https://i.example/original.png',
+    )
+  })
+
+  it('refuses a tour, which has nothing to put on a sphere', async () => {
+    const fetchFn = node({ ...VIDEO_RECORD, format: 'tour/json' }, {})
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'not_playable' })
+    // Refused before the manifest is asked for.
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('says not_found for a dataset the node does not have', async () => {
+    const fetchFn = node({ error: 'not_found' }, {}, { record: 404, manifest: 200 })
+    const err = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn }).catch(e => e)
+    expect(err).toBeInstanceOf(WebDatasetError)
+    expect(err.failure).toBe('not_found')
+  })
+
+  it('says http for any other failure', async () => {
+    const fetchFn = node(VIDEO_RECORD, {}, { record: 200, manifest: 503 })
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'http' })
+  })
+
+  it('refuses a manifest that disagrees with the record about what it is', async () => {
+    const fetchFn = node(VIDEO_RECORD, { kind: 'image', variants: [] })
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'bad_response' })
+  })
+
+  it('refuses a manifest that names nothing to play', async () => {
+    const fetchFn = node(VIDEO_RECORD, { ...VIDEO_MANIFEST, hls: '', files: [] })
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'not_playable' })
+  })
+
+  it('refuses a body that is not JSON', async () => {
+    const fetchFn = vi.fn(async () => new Response('<!DOCTYPE html>', { status: 200 }))
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'bad_response' })
+  })
+
+  it('escapes the id into the path', async () => {
+    const fetchFn = node(VIDEO_RECORD, VIDEO_MANIFEST)
+    await fetchWebDataset('a b', { frameWidth: 2048, fetchFn })
+    expect(fetchFn).toHaveBeenCalledWith('/api/v1/datasets/a%20b', expect.anything())
+  })
+})
+
+describe('overlayFromRecord', () => {
+  it('carries the geometry the record states', () => {
+    const overlay = overlayFromRecord({
+      id: 'X',
+      title: 'T',
+      boundingBox: { n: 50, s: 20, w: -130, e: -60 },
+      lonOrigin: 180,
+      isFlippedInY: true,
+      celestialBody: 'Mars',
+    })
+    expect(overlay).toMatchObject({
+      boundingBox: { n: 50, s: 20, w: -130, e: -60 },
+      lonOrigin: 180,
+      isFlippedInY: true,
+      celestialBody: 'Mars',
+    })
+  })
+
+  it('carries a palette only for a record that declares itself data-encoded', () => {
+    // The same rule as the control side: a colorScale without
+    // renderEncoding is inert, and must not reach a shader.
+    expect(overlayFromRecord({ colorScale: COLOR_SCALE }).colorScale).toBeUndefined()
+    const scale = parseColorScale(COLOR_SCALE)!
+    expect(overlayFromRecord({ renderEncoding: 'data-luma', colorScale: COLOR_SCALE }).colorScale).toEqual(
+      toDisplayUnits(scale),
+    )
+  })
+
+  it('drops a palette that does not parse rather than drawing it', () => {
+    expect(overlayFromRecord({ renderEncoding: 'data-luma', colorScale: { stops: 'red' } }).colorScale).toBeUndefined()
+  })
+
+  it('falls back to worldwide for a box that is not one', () => {
+    expect(overlayFromRecord({ boundingBox: { n: 'north' } }).boundingBox).toEqual({ n: 90, s: -90, w: -180, e: 180 })
+  })
+
+  it('ignores a longitude origin that is not a number', () => {
+    expect(overlayFromRecord({ lonOrigin: '180' }).lonOrigin).toBeUndefined()
+  })
+})
+
+describe('pickVariant', () => {
+  it('is undefined with nothing to pick', () => {
+    expect(pickVariant([], 2048)).toBeUndefined()
+  })
+})
