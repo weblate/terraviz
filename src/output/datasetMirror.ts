@@ -95,6 +95,22 @@ export function needsReload(
   return current.url !== next.url || current.kind !== next.kind
 }
 
+/**
+ * The dataset a stream that died after loading is showing now, for its
+ * report. A stream is kept across a dataset that changes only metadata
+ * (`needsReload`), and the mirror takes the new dataset's id at once,
+ * while the loader's report names the one the stream loaded under. The
+ * control window counts only a stall for the dataset it published, so
+ * that report was dropped (found in review). The mirror's dataset when
+ * the two share a file, else the one the stream loaded under.
+ */
+export function datasetShowing(
+  loadedAs: MirroredDataset,
+  current: MirroredDataset | null,
+): MirroredDataset {
+  return current && !needsReload(loadedAs, current) ? current : loadedAs
+}
+
 export function createDatasetMirror(
   deps: {
     loader?: MediaLoader

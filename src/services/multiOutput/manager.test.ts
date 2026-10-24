@@ -1381,6 +1381,42 @@ describe('a stream that died on an output', () => {
     expect(stalledRows()).toHaveLength(1)
   })
 
+  it('does not reopen the bound for anything the output says', async () => {
+    // An announcement, a health check and a reattach reply are the
+    // output's word too: clearing on one would let it announce, stall,
+    // announce, stall.
+    const { fake } = await outputShowing('ds-1')
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    fake.send(ready('output-1'))
+    fake.send({ type: 'output_health_check', label: 'output-1', silentMs: 5000 })
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    expect(stalledRows()).toHaveLength(1)
+  })
+
+  it('does not reopen it for a dataset republished unchanged', async () => {
+    // `main.ts` republishes the primary's dataset unchanged on a load
+    // into another panel, its unload and a promotion. No output builds a
+    // stream for those.
+    const { fake, manager } = await outputShowing('ds-1')
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    await manager.applyState({ dataset: dataset('ds-1') })
+    // Beside a key that did change, so the publish is not a no-op: what
+    // counts is whether the dataset changed, not whether it was sent.
+    await manager.applyState({ dataset: dataset('ds-1'), simulationDate: '2026-01-01T00:00:00Z' })
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    expect(stalledRows()).toHaveLength(1)
+  })
+
+  it('counts nothing that names no dataset, or one with nothing published', async () => {
+    const { fake, manager } = await outputShowing('ds-1')
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: null })
+    expect(stalledRows()).toEqual([])
+
+    await manager.applyState({ dataset: null })
+    fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId: 'ds-1' })
+    expect(stalledRows()).toEqual([])
+  })
+
   it('does not report one from a window on its way out', async () => {
     // Its stream ending is the close.
     const { fake } = await outputShowing('ds-1')

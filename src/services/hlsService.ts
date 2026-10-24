@@ -223,11 +223,17 @@ export class HLSService {
   /**
    * Which load the element's listeners belong to, moved on by every
    * load and by `destroy()`. The native and progressive paths leave
-   * their `error` listener armed on purpose, and `destroy()`'s
-   * `video.load()` can fire it; nulling the handler kept that from the
-   * handler, but not from the reporter, which a measured globe's
+   * their `error` listener armed on purpose, and two things can still
+   * fire it for a stream nobody is watching: a later load on the same
+   * element, whose failure every earlier listener hears, and an element
+   * the caller owns (the asset uploader's), which `destroy()` does not
+   * unload and which can fail after it. Nulling the handler kept those
+   * from the handler, not from the reporter, which a measured globe's
    * telemetry receives. A listener from a load since replaced or
-   * disposed goes quiet (found in review).
+   * disposed goes quiet. `destroy()`'s own unload is not one of them:
+   * `removeAttribute('src')` then `load()` fires `abort` and `emptied`,
+   * never `error`, by the spec and as measured in Chromium (found in
+   * review).
    */
   private loadGeneration = 0
   /** Where a fatal error is reported as telemetry. */
@@ -623,8 +629,9 @@ export class HLSService {
       // three concurrent decoders (terraviz#230).
       //
       // Before the assignment, deliberately: `destroy()` detaches media,
-      // which clears `src` on the element and can raise `error` on it.
-      // Doing it first means neither can touch what we set up below.
+      // which clears `src` on the element, so it has to happen before
+      // the assignment rather than after it. (The detach fires `abort`
+      // and `emptied`, not `error`.)
       if (this.hls) {
         this.hls.destroy()
         this.hls = null
@@ -737,10 +744,11 @@ export class HLSService {
 
   /** Tear down the HLS instance, stop playback, and remove the video element from the DOM. */
   destroy(): void {
-    // Before anything else: `video.load()` below can fire `error`, and
-    // the native paths keep their listener armed on purpose. A panel
-    // being disposed must not be told its stream failed, and its
-    // telemetry must not hear it either (`loadGeneration`).
+    // Before anything else: the native paths keep their `error`
+    // listener armed on purpose, and an element the caller owns keeps
+    // its source after this, so it can still fail. A panel being
+    // disposed must not be told its stream failed, and its telemetry
+    // must not hear it either (`loadGeneration`).
     this.loadGeneration++
     this.fatalErrorHandler = null
     this.pendingFatalError = null

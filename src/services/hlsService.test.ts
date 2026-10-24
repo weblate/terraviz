@@ -356,7 +356,8 @@ describe('HLSService fatal errors after load', () => {
   })
 
   it('does not report a stream failure to a disposed panel', async () => {
-    // `destroy()` calls `video.load()`, which can itself fire `error`.
+    // An `error` arriving after `destroy()`, whatever raised it, belongs
+    // to a stream nobody is watching.
     const svc = new HLSService()
     const seen: unknown[] = []
     svc.onFatalError((e) => seen.push(e))
@@ -545,7 +546,7 @@ describe('HLSService native HLS path', () => {
   // A measured globe's telemetry is its reporter (`datasetMirror`), and
   // this path once reached only the handler, so a native stream that
   // died after loading sent no error row (found in review).
-  it('reports an error after load to the reporter, as hls.js errors are', async () => {
+  it('reports an error after load to the reporter, as hls.js reports its fatal errors', async () => {
     const reported: Error[] = []
     const svc = new HLSService({ reportError: err => reported.push(err) })
     const video = await nativeVideo()
@@ -572,7 +573,9 @@ describe('HLSService native HLS path', () => {
     // `datasetLoader`'s fallback on this path: the stream rejects before
     // load and the same service and element take the MP4. Two `error`
     // listeners then share one element, the abandoned stream's and the
-    // file's, and only the file's may speak.
+    // file's, and only the file's may speak. This pins the outcome: the
+    // abandoned stream never loaded, so it could not report even without
+    // the generation guard.
     const reported: Error[] = []
     const svc = new HLSService({ reportError: err => reported.push(err) })
     const seen: unknown[] = []
@@ -592,10 +595,11 @@ describe('HLSService native HLS path', () => {
   })
 
   it('reports nothing for a stream disposed or replaced', async () => {
-    // `destroy()`'s own `video.load()` can fire `error` on the listener
-    // left armed; a disposed panel's telemetry must not hear its stream
-    // fail. Nor must a stream's, once the element has been handed to the
-    // next load.
+    // The element here is the caller's, not the service's own, so
+    // `destroy()` leaves its source in place and it can still fail: the
+    // asset uploader's case. A disposed panel's telemetry must not hear
+    // that. Nor must a stream's, once the element has been handed to the
+    // next load, whose failure every earlier listener hears.
     const reported: Error[] = []
     const svc = new HLSService({ reportError: err => reported.push(err) })
     const video = await nativeVideo()

@@ -38,7 +38,7 @@
 import './output.css'
 import { CALIBRATION_OVERLAY, MAX_PATTERN_WIDTH, createCalibrationCache } from './calibrationPattern'
 import { createCloudRefresh } from './cloudRefresh'
-import { createDatasetMirror, createDefaultMediaLoader } from './datasetMirror'
+import { createDatasetMirror, createDefaultMediaLoader, datasetShowing } from './datasetMirror'
 import { readWebSettings, type WebOutputSettings } from './webMode'
 import { createWebOutput, followAddress, framebufferFor } from './webOutput'
 import {
@@ -145,7 +145,9 @@ async function boot(): Promise<void> {
     loader: createDefaultMediaLoader({
       maxVideoWidth: web ? () => scene.size.width : undefined,
       reportStreamError: err => streamReports.error(err),
-      onStreamFailed: ds => streamReports.failed(ds),
+      // Named for the dataset it is showing now (`datasetShowing`): a
+      // stream outlives a dataset that changes only metadata.
+      onStreamFailed: ds => streamReports.failed(datasetShowing(ds, mirror.currentDataset())),
     }),
     // A video that would not load, while still the one asked for.
     onLoadFailed: ds => streamReports.failed(ds),

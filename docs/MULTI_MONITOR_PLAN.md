@@ -5083,13 +5083,13 @@ renderer somewhere" — which we don't. Direct RTT.
      > had spent its retries, is reported by the output over IPC as
      > `output_dataset_stalled` (declared in `protocol.ts` from the
      > start and unused until now). The manager emits at most one
-     > row per output per published dataset, and only for the dataset
-     > it published, and none from a window that is
-     > closing, with `retries: 0` and `recovered: false`. A load the
+     > row per output per published dataset, only for a stall naming
+     > that dataset, and none from a window that is closing. Each row
+     > carries `retries: 0` and `recovered: false`, and those are
+     > literal: nothing on the control side retries, and the single
+     > HLS rebuild this rung plans is still unbuilt. A load the
      > operator had already moved on from is not reported: its
-     > failure says nothing about the output. Those are literal: nothing on the
-     > control side retries, and the single HLS rebuild this rung
-     > plans is still unbuilt. hls.js's own recoveries happen
+     > failure says nothing about the output. hls.js's own recoveries happen
      > inside the output and are not counted. The output still
      > emits nothing itself. The web output page is the exception
      > to that rule, because it has no control window: see

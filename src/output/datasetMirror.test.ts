@@ -13,6 +13,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 
 import {
   createDatasetMirror,
+  datasetShowing,
   isHlsManifest,
   needsReload,
   type MediaLoader,
@@ -88,6 +89,23 @@ describe('needsReload', () => {
     expect(needsReload(null, dataset())).toBe(true)
     expect(needsReload(dataset(), null)).toBe(true)
     expect(needsReload(null, null)).toBe(false)
+  })
+})
+
+describe('datasetShowing', () => {
+  // A stream outlives a dataset that changes only metadata, so the one
+  // it loaded under may no longer be what the control window published,
+  // and a stall named for it was dropped (found in review).
+  it('names the dataset now showing when it kept the stream', () => {
+    const loadedAs = dataset({ id: 'X' })
+    const renamed = dataset({ id: 'Y' })
+    expect(datasetShowing(loadedAs, renamed)).toBe(renamed)
+  })
+
+  it('names the one the stream loaded under when the mirror moved off it', () => {
+    const loadedAs = dataset({ id: 'X' })
+    expect(datasetShowing(loadedAs, dataset({ id: 'Y', url: 'https://cdn.example/other.m3u8' }))).toBe(loadedAs)
+    expect(datasetShowing(loadedAs, null)).toBe(loadedAs)
   })
 })
 

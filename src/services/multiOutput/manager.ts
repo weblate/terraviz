@@ -346,8 +346,13 @@ export interface OutputRecord {
    * rebuild loop or a compromised window. A latch rather than the id
    * the output names, because that id is the output's to choose: keyed
    * on it, alternating two ids reopened the bound on every message
-   * (found in review). Only a publication, which this side makes,
-   * clears it. Not persisted.
+   * (found in review). Only a publication that changes the dataset,
+   * which this side makes, clears it. Nothing the output sends does: an
+   * announcement, a health check or a reattach reply is the output's
+   * word too, and clearing on one would let it announce, stall,
+   * announce, stall. A stream rebuilt under one publication (a reloaded
+   * output page, rung 13's rebuild) therefore reports once, not per
+   * stream. Not persisted.
    */
   stallReported: boolean
   /**
@@ -1248,11 +1253,15 @@ export class MultiOutputManager {
    * other keys still arrive from nowhere.
    */
   async applyState(patch: Partial<MirroredGlobeState>): Promise<void> {
-    // A new dataset is a new stream on every output, owed its own report
-    // if it dies.
-    if ('dataset' in patch) for (const record of this.records.values()) record.stallReported = false
     const message = this.aggregator.apply(patch)
     if (!message) return
+    // A new dataset is a new stream on every output, owed its own report
+    // if it dies. Only a change counts: `main.ts` republishes the
+    // primary's dataset unchanged (a load into another panel, its
+    // unload, a promotion), the aggregator drops that, and no output
+    // builds a stream for it. Before the await, so no output event can
+    // see the new dataset with the old latch.
+    if ('dataset' in message.state) for (const record of this.records.values()) record.stallReported = false
     await this.broadcast(message)
   }
 
