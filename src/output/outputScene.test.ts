@@ -247,16 +247,32 @@ describe('frame pacing', () => {
       expect(next.dueIntervalMs).toBe(VIDEO_FRAME_MS)
     })
 
-    it('starts a deadline that fell more than an interval behind one interval from now', () => {
+    it('does not let a display slower than the cap accumulate debt', () => {
       // 20 Hz offers a callback every 50 ms against a 33.33 ms
-      // interval, so the deadline can never be met; a gap in the
-      // callbacks leaves it far behind too. Carried on, it would fall
-      // further behind for as long as the installation runs. Set to
-      // now, the next callback drew as well (see the gap test below).
+      // interval, so the deadline can never be met. Unclamped it would
+      // fall further behind for as long as the installation runs.
       expect(
         advanceFrameDeadline({ kind: 'video', nowMs: 200, dueMs: 33, dueIntervalMs: VIDEO_FRAME_MS, sinceLastCallbackMs: 50 })
           .dueMs,
-      ).toBeCloseTo(200 + VIDEO_FRAME_MS)
+      ).toBe(200)
+    })
+
+    it('starts one interval from now when the deadline fell more than a second behind', () => {
+      // Callbacks kept coming while nothing drew (a lost context), or
+      // stopped (a hidden tab). Clamped to now, the next callback would
+      // draw a second frame back to back.
+      expect(
+        advanceFrameDeadline({ kind: 'image', nowMs: 10000, dueMs: 3000, dueIntervalMs: STATIC_FRAME_MS, sinceLastCallbackMs: AT_60_HZ })
+          .dueMs,
+      ).toBe(10000 + STATIC_FRAME_MS)
+    })
+
+    it('sets the first deadline one interval after the first draw', () => {
+      // Boot: there is no deadline yet, and `performance.now()` is
+      // already well past zero.
+      expect(
+        advanceFrameDeadline({ kind: 'image', nowMs: 800, dueMs: 0, dueIntervalMs: 0, sinceLastCallbackMs: 0 }),
+      ).toEqual({ dueMs: 800 + STATIC_FRAME_MS, dueIntervalMs: STATIC_FRAME_MS })
     })
 
     it('leaves the deadline where it was after an out-of-band draw', () => {
@@ -429,6 +445,17 @@ describe('frame pacing', () => {
   it('draws once on return from a gap in the callbacks, then holds the floor', () => {
     const counts = drawsEachSecond(60, () => 'image', [], 13, gapAt60)
     expect(counts.slice(10)).toEqual([1, 1, 1])
+  })
+
+  // A loaded host: callbacks that hitch, one in five arriving three
+  // vsyncs late. The frame a hitch delays is caught up on the next
+  // callback; restarting the deadline after any lateness dropped it,
+  // and this read 25.7 (found in review).
+  const hitchEveryFifth = (i: number) => (Math.floor(i / 5) * 7 + (i % 5)) * (1000 / 60)
+  it('holds the cap through callbacks that hitch', () => {
+    const counts = drawsEachSecond(60, () => 'video', [], 8, hitchEveryFifth)
+    expect(total(counts.slice(1))).toBeGreaterThanOrEqual(208)
+    expect(total(counts.slice(1))).toBeLessThanOrEqual(212)
   })
 
   it('holds the cap on return from a gap in the callbacks', () => {

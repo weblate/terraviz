@@ -306,14 +306,16 @@ export type FrameDeadline = Pick<FrameDecisionState, 'dueMs' | 'dueIntervalMs'>
  *   own test. The next is one whole interval on from the deadline just
  *   met, **not** from the moment it was met — that is the entire
  *   mechanism above, and the reason the rate survives a display whose
- *   refresh is not a multiple of the cap. A deadline that fell more
- *   than an interval behind starts again one interval from now: a
- *   display slower than the cap can never meet it, and a gap in the
- *   callbacks (boot, a hidden tab, a lost context) leaves it far
- *   behind. Carried on, it would accumulate debt for as long as the
- *   installation runs. Clamped to `nowMs`, as it first was, the next
- *   callback drew too, two frames back to back after every gap (found
- *   in review).
+ *   refresh is not a multiple of the cap. A deadline already behind is
+ *   clamped to `nowMs`, so a display slower than the cap draws on
+ *   every callback without accumulating debt for as long as the
+ *   installation runs, and a hitch costs one catch-up frame on the next
+ *   callback rather than the frame it delayed. One more than
+ *   `STATIC_FRAME_MS` behind is a gap in drawing, not a hitch (a hidden
+ *   tab, a lost context), and starts again one interval from now: there
+ *   the catch-up was a second frame back to back. Restarting after any
+ *   lateness, the first fix for that, dropped the owed frame on every
+ *   hitch, and a loaded host read 24–27 fps (found in review).
  * - **Out of band**: drawn early because something changed. The paced
  *   frame it came ahead of is still owed, so its deadline stands, and
  *   so does the interval it was set for.
@@ -323,16 +325,19 @@ export type FrameDeadline = Pick<FrameDecisionState, 'dueMs' | 'dueIntervalMs'>
  * - **Stale**: the deadline was set for a slower kind and sits more
  *   than one of this kind's intervals out (`isStaleDeadline`), which is
  *   static → video. It starts again from now; carrying it on would
- *   leave it out of reach for good.
+ *   leave it out of reach for good. So does the first draw, which has
+ *   no deadline to carry.
  */
 export function advanceFrameDeadline(state: Omit<FrameDecisionState, 'dirty'>): FrameDeadline {
   const interval = frameIntervalMs(state.kind)
-  if (isStaleDeadline(state)) return { dueMs: state.nowMs + interval, dueIntervalMs: interval }
+  const fromNow = { dueMs: state.nowMs + interval, dueIntervalMs: interval }
+  if (state.dueIntervalMs === 0 || isStaleDeadline(state)) return fromNow
   if (state.dueMs - state.nowMs > state.sinceLastCallbackMs / 2) {
     return { dueMs: state.dueMs, dueIntervalMs: state.dueIntervalMs }
   }
   const next = state.dueMs + interval
-  return { dueMs: next < state.nowMs ? state.nowMs + interval : next, dueIntervalMs: interval }
+  if (state.nowMs - next > STATIC_FRAME_MS) return fromNow
+  return { dueMs: Math.max(next, state.nowMs), dueIntervalMs: interval }
 }
 
 // --- Scene construction ---
