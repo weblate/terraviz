@@ -17,9 +17,13 @@ you don't need it. Every claim about TerraViz cites a file and line.
 Every claim about Second Life cites a public source, the viewer's
 source code, or a test result in §4, all collected in §11.
 
-**Last reviewed:** 2026-10-24 (§7 item 4 rewritten from an interview
-with Eric on what the shared clock has to do, and the kit gained
-`/7 hash`, the test that design turns on. 2026-10-23: in-world testing
+**Last reviewed:** 2026-10-24 (in-world, in Firestorm 7.2.4: the
+output page's web mode played a TerraViz video on a globe driven by the
+kit's globe script, and pausing and resuming it changed only the part
+of the address after `#`, with no reload — §10 question 10 answered for
+that viewer, §7's status note and §11 updated. Earlier the same day,
+§7 item 4 was rewritten from an interview with Eric on what the shared
+clock has to do, and the kit gained `/7 hash`. 2026-10-23: in-world testing
 in the Firestorm viewer: the real TerraViz app ran in shared media, WebGL 2 stayed up
 for 7½ minutes, a default sphere's texture mapping was worked out from
 the viewer source and confirmed, and TerraViz's own LED-sphere output
@@ -34,10 +38,14 @@ whether TerraViz could be compatible with the platform).
 
 - **The output page gains a web mode** — loading a dataset from its
   own address (§7). Then §6 Option C stops being a plan, and this doc
-  should point at that work instead of describing it.
-- **The `#` test runs** (§10, question 10). It decides whether §7
-  item 4 needs a server, and so whether §8's "nothing in-world writes
-  back" still holds.
+  should point at that work instead of describing it. *Built on the
+  Phase 1 branch and run in-world on 24 October; not yet merged.*
+- **The `#` test runs on another viewer** (§10, question 10). It
+  decides whether §7 item 4 needs a server, and so whether §8's
+  "nothing in-world writes back" still holds. Firestorm 7.2.4 passed
+  on 24 October. The official viewer and the phone app have not been
+  tried, and a viewer that reloads would change the answer for its
+  users.
 - **Someone tests on a second machine or viewer** (§10, question 8).
   Every in-world result here comes from one machine — Firestorm on
   Windows with an RTX 4090 laptop GPU. The official Linden Lab viewer
@@ -1154,6 +1162,31 @@ yet.
   `webMode.ts` reads. With telemetry on it refuses to steer before the
   `#`, which the privacy policy asks of a measured globe. It hasn't run
   in-world yet.
+- **First in-world run, 24 October**, in The Science Circle region,
+  with the globe script pointed at the branch's preview deploy. Viewer:
+  Firestorm 7.2.4 (80712), CEF 139 / Chromium 139.0.7258.139, on
+  Windows 11 with an RTX 4090 laptop GPU.
+  - **Hurricane Season 2024 played on the globe.** The picture was
+    upright, with North America and the Pacific where they belong.
+  - **Pause and play worked, with no reload.** The video froze and
+    resumed, with no plain-Earth interval: §10 question 10, answered
+    for this viewer.
+  - **The debug readout** showed `buf 2048×1024`, `link live`, and
+    `gpu` as the RTX 4090 through Direct3D 11. Second Life's built-in
+    browser draws on the discrete card here.
+  - **`/8 show hurricane`**, a misspelling, was refused by the node
+    before any visitor's globe changed.
+  - **It found a bug in the output's frame gate**, shared with desktop.
+    After any change the loop drew on every callback for good: the
+    readout showed `fps 60.0 (raf 60.0)` over a paused frame. The fix
+    is in `outputScene.ts` (`advanceFrameDeadline`), and in-world
+    afterwards the globe read 30 fps playing and 1.5 paused.
+  - **The rest of the smoke test worked**, as reported from the
+    session: jump, rate, a still image (Nighttime Lights), the
+    data-encoded smoke forecast clipped to the United States, rotation,
+    and the refusal of a tour.
+  - **Not yet confirmed in-world:** what a second avatar sees (the
+    same frame when paused), touch, spin and telemetry.
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
   the visitor's connection can play the stream at all. One exception:
@@ -1280,6 +1313,9 @@ from it.
 the kit's `/7 hash`, on each viewer that matters. It changes none of
 Phase 1's code. It does decide whether each pause, jump and switch
 costs every visitor a reload, and so whether Phase 2 needs a server.
+*Firestorm 7.2.4 passed on 24 October, with the globe script rather
+than the probe: no reload, so no server for its users. The official
+viewer is next.*
 
 **Phase 1 — the output page's web mode** (§7, items 1–6 and the page's
 half of 8). One code PR. It turns the idle-Earth globe into a TerraViz
@@ -1381,9 +1417,18 @@ Numbering is kept from the first version, so a reference like
       treats an address that differs only after `#` as the same page.
     - **In headless Chromium,** a `#` change mid-video arrives without
       a reload, and the video keeps playing (§11).
-    - **Still open:** Firestorm is a fork of this viewer, and the last
-      step happens inside its embedded browser. Only an in-world run
-      settles it.
+    - **Answered for Firestorm 7.2.4, in-world on 24 October.** Its
+      embedded browser is CEF 139 (Chromium 139.0.7258.139). The kit's
+      globe script paused and resumed a playing TerraViz video by
+      changing only the part of the address after `#`, and the video
+      froze and resumed with no reload. A reload is easy to see there:
+      the page shows the plain live Earth for a few seconds while the
+      dataset loads again, and the readout's `data` line reads `—`.
+      Neither happened.
+      - Seen by eye on the globe rather than measured with `/7 hash`,
+        and from one viewer on one machine.
+      - **Still open** for the official Linden Lab viewer and the phone
+        app, each of which needs its own run.
 11. **Does a second avatar see the app and the output page?** It
     should — they come from TerraViz's site, not from a script — but
     nobody else was there to look.
@@ -1493,3 +1538,11 @@ Numbering is kept from the first version, so a reference like
 - Manifests: a video dataset's `/api/v1/datasets/<id>/manifest` returns `{"kind":"video", …, "hls": "<master.m3u8>"}`; an image dataset's returns `{"kind":"image", "variants": [{ "width", "url" }, …]}` (Nighttime Lights: 4096, 2048 and 1024 variants)
 - The output page: `/output/output.html` redirects (308) to `/output/output`, titled "Output — Terraviz"; `/output.html` serves the main app. In headless Chromium at 1024×512 the page draws a 2:1 Earth with no errors, at a 4096×2048 drawing buffer
 - The `#` test in a browser (24 Oct 2026): the kit's harness plays the probe's video in headless Chromium and changes only the address's `#` part mid-video. The page reported `hash: #h=1, video t=14.3s, playing, readyState 4`, and it had still loaded only once 3 s later. The check fails on each way this could go wrong: a changed query, which reloads the page; a reload half a second after the report; a change that pauses the video; and a page with no `#` listener. This is Chromium's behaviour, not Second Life's (§10 question 10)
+
+**In-world results, 24 Oct 2026** (Firestorm 7.2.4 (80712), CEF 139.0.40 / Chromium 139.0.7258.139, Windows 11, RTX 4090 laptop GPU, The Science Circle; the globe script against `https://claude-terraviz-second-life.terraviz.pages.dev`)
+- `[globe] Address: https://claude-terraviz-second-life.terraviz.pages.dev/output/output?fit=fill#dataset=01KQG611HF8YXJNRBEHT0757KT&t=0&at=…&width=2048&rotation=0&debug=1` · `[globe] Showing Hurricane Season - 2024 from its start, at its own speed.`
+- `[globe] The node has no dataset hurricane. The globe is unchanged.`
+- The readout before the frame-gate fix: `fps 60.0 (raf 60.0)` playing and paused, `draw 0.1 ms`, `buf 2048×1024`, `gpu ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Laptop GPU (0x00002717) Direct3D11 vs_5_0 ps_5_0, D3D11)`. After it: `fps 30` playing, `fps 1.5` paused
+- Pause and play by `#` alone: the video froze and resumed with no plain-Earth interval, which is how a reload shows on this page (§10 question 10). Seen by eye, not measured with `/7 hash`
+- Reported working afterwards: `/8 jump`, `/8 rate`, `/8 show lights`, `/8 show smoke`, `/8 rotation`, and the tour refusal
+- An earlier attempt left `NODE` at `https://terraviz.zyra-project.org`, whose output page has no web mode yet, and showed the live Earth whatever was asked. That is the README's first trip-up
