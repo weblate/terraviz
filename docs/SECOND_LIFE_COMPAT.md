@@ -1145,6 +1145,12 @@ yet.
   'hls-stalled'`. The privacy policy, its analysis (§9k), the analytics
   catalog, the query reference and a dashboard row (Globes) cover them.
   Nothing has been sent from a real globe yet.
+- **An in-world script to smoke-test it**,
+  [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
+  writes these addresses from chat commands: setup before the `#`, the
+  dataset, clock, rotation and debug readout after it. It is checked
+  with `lslint`, and `globe.test.ts` holds what it writes to what
+  `webMode.ts` reads. It hasn't run in-world yet.
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
   the visitor's connection can play the stream at all. One exception:
@@ -1286,6 +1292,13 @@ after the last visitor leaves. Each control rewrites the media address,
 and the media itself stays non-interactive so that the controls are the
 only way in.
 It is the in-world half of Phase 1.
+*A smoke-test script exists, not the controller.*
+[`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe)
+does the recipe, the media, the spin, pause, jump, rate, rotation and
+dataset switching. It is driven by its owner in chat, with
+non-interactive media. It has no presenter list, no controls visitors
+can touch, and no return to the live Earth, which all wait on the open
+questions in §7 item 4.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.
