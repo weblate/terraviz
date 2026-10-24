@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { RETRY_DELAYS_MS, createWebOutput, framebufferFor, isRetryable } from './webOutput'
+import { RETRY_DELAYS_MS, createWebOutput, followAddress, framebufferFor, isRetryable } from './webOutput'
 import { createDatasetMirror, type MediaLoader, type MediaSource } from './datasetMirror'
 import { WebDatasetError, type WebDataset } from './webDataset'
 import { readWebSettings, rotationOffsetRadFor } from './webMode'
@@ -327,6 +327,50 @@ describe('applying the address', () => {
     const h = harness()
     h.show('#rotation=90')
     expect(h.params.at(-1)).toMatchObject({ rotationOffsetRad: rotationOffsetRadFor(90) })
+  })
+})
+
+describe('following the address', () => {
+  /** A page whose address can change, and whose `hashchange` is fired
+   *  by hand. */
+  function page(search: string, hash: string) {
+    const listeners = new Set<() => void>()
+    return {
+      location: { search, hash },
+      addEventListener: (_type: 'hashchange', fn: () => void) => void listeners.add(fn),
+      removeEventListener: (_type: 'hashchange', fn: () => void) => void listeners.delete(fn),
+      navigate(next: string) {
+        this.location.hash = next
+        for (const fn of listeners) fn()
+      },
+      listeners,
+    }
+  }
+
+  it('applies the address as it is when it starts, not as the page first read it', () => {
+    // The page reads its address to size the first frame, then awaits
+    // the scene. A `#` change in that wait has already fired, unheard.
+    const p = page('?dataset=A', '#t=10&paused=1')
+    const earlier = readWebSettings(p.location.search, p.location.hash)
+    p.location.hash = '#t=40&paused=1'
+    const applied: ReturnType<typeof readWebSettings>[] = []
+    followAddress(p, s => applied.push(s))
+    expect(earlier.clock.positionS).toBe(10)
+    expect(applied).toHaveLength(1)
+    expect(applied[0].clock.positionS).toBe(40)
+    expect(applied[0].datasetId).toBe('A')
+  })
+
+  it('applies every # change after that, and stops when told', () => {
+    const p = page('?dataset=A', '')
+    const applied: ReturnType<typeof readWebSettings>[] = []
+    const stop = followAddress(p, s => applied.push(s))
+    p.navigate('#dataset=B')
+    expect(applied.map(s => s.datasetId)).toEqual(['A', 'B'])
+    stop()
+    expect(p.listeners.size).toBe(0)
+    p.navigate('#dataset=C')
+    expect(applied).toHaveLength(2)
   })
 })
 

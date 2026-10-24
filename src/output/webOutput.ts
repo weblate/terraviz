@@ -51,6 +51,7 @@ import { createWebClockSteer } from './webClock'
 import { WebDatasetError, fetchWebDataset, type WebDataset } from './webDataset'
 import {
   defaultWebFramebufferWidth,
+  readWebSettings,
   rotationOffsetRadFor,
   sameClock,
   type WebOutputSettings,
@@ -98,6 +99,34 @@ export function isRetryable(err: unknown): boolean {
   if (err instanceof WebDatasetError) return err.failure !== 'not_found' && err.failure !== 'not_playable'
   // A network error, or the picture itself not loading.
   return true
+}
+
+/** The page's address and its `hashchange`, as `followAddress` reads
+ *  them. `window` is one. */
+export interface AddressSource {
+  readonly location: { readonly search: string; readonly hash: string }
+  addEventListener(type: 'hashchange', listener: () => void): void
+  removeEventListener(type: 'hashchange', listener: () => void): void
+}
+
+/**
+ * Apply the address now and on every `#` change, which a browser makes
+ * without a reload. Returns a function that stops listening.
+ *
+ * It reads the address itself, at the moment it starts listening, and
+ * takes no earlier reading. `main.ts` reads the address once before the
+ * scene exists, to size the first frame, and the scene's lazy imports
+ * are awaited between that and this. A `#` change during the wait fires
+ * a `hashchange` nobody hears, so applying the earlier reading left the
+ * copy on the old dataset or clock until the next change (found in
+ * review). Reading and listening here are one synchronous step, so
+ * nothing falls between them.
+ */
+export function followAddress(target: AddressSource, apply: (settings: WebOutputSettings) => void): () => void {
+  const read = (): void => apply(readWebSettings(target.location.search, target.location.hash))
+  read()
+  target.addEventListener('hashchange', read)
+  return () => target.removeEventListener('hashchange', read)
 }
 
 export interface WebOutputDeps {

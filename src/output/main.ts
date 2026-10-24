@@ -40,7 +40,7 @@ import { CALIBRATION_OVERLAY, MAX_PATTERN_WIDTH, createCalibrationCache } from '
 import { createCloudRefresh } from './cloudRefresh'
 import { createDatasetMirror, createDefaultMediaLoader } from './datasetMirror'
 import { readWebSettings, type WebOutputSettings } from './webMode'
-import { createWebOutput, framebufferFor } from './webOutput'
+import { createWebOutput, followAddress, framebufferFor } from './webOutput'
 import {
   OVERLAY_REFRESH_MS,
   createDebugOverlay,
@@ -516,12 +516,10 @@ async function boot(): Promise<void> {
         dirty = true
       },
     })
-    webOutput.apply(webSettings)
-    // The live half: a controller changes the part after `#`, which a
-    // browser applies without reloading the page.
-    window.addEventListener('hashchange', () =>
-      webOutput.apply(readWebSettings(window.location.search, window.location.hash)),
-    )
+    // Read again, not `webSettings`: that reading sized the first frame,
+    // and a `#` change may have landed while the scene was loading.
+    // After this, every `#` change a controller makes is applied live.
+    followAddress(window, settings => webOutput.apply(settings))
     steerers.push(() => {
       lastSync = webOutput.steer()
     })
