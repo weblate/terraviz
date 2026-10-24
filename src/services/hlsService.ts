@@ -7,8 +7,21 @@
 
 import Hls from 'hls.js'
 import { logger } from '../utils/logger'
-import { reportError } from '../analytics'
 import { VIDEO_PROXY_BASE } from '../config/endpoints'
+
+/**
+ * The Tier A `error` report a fatal stream error makes by default.
+ *
+ * Imported when a stream fails rather than with this module. A static
+ * import put the whole analytics package into every output window's
+ * bundle: emitter, transport and all, with `/api/ingest` in it. An output
+ * passes its own silent reporter, so none of it ever ran there, but
+ * "outputs send nothing" then rested on nobody wiring it up. The main
+ * app has the package loaded already, so the import costs it nothing.
+ */
+function reportToAnalytics(err: Error): void {
+  void import('../analytics').then(m => m.reportError('hls', err)).catch(() => {})
+}
 
 export interface VideoProxyFile {
   quality: string
@@ -173,6 +186,12 @@ export function selectRendition(
  * the same as its 4096×2048 one at a third of the bandwidth. hls.js caps
  * by *index*, allowing every level at or below it, which is why this
  * returns the narrowest qualifying level's index rather than a width.
+ *
+ * That relies on hls.js's own order: it sorts levels by height first
+ * (`level-controller`), so on a 2:1 ladder index order is width order
+ * and every level below the cap is narrower. On a tie, the first index
+ * wins, which is the cheaper variant of that size: the point is
+ * bandwidth.
  */
 export function capLevelForWidth(widths: readonly number[], maxWidth: number): number {
   let cap = -1
@@ -213,7 +232,7 @@ export class HLSService {
    * the default.
    */
   constructor(opts: { reportError?: (err: Error) => void } = {}) {
-    this.reportTelemetry = opts.reportError ?? (err => reportError('hls', err))
+    this.reportTelemetry = opts.reportError ?? reportToAnalytics
   }
 
   /**

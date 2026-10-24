@@ -463,11 +463,22 @@ describe('createDefaultMediaLoader', () => {
   // desktop output and every Second Life visitor's copy.
   it('builds a stream that reports its errors to nobody', async () => {
     const counts = mockHls()
-    const { createDefaultMediaLoader } = await import('./datasetMirror')
-    await createDefaultMediaLoader().load({ kind: 'video', url: 'https://cdn.example/a.m3u8', overlay: {} } as never)
+    // Any route to telemetry the reporter might take. A reporter that
+    // only *returns* nothing would pass without these (found in review).
+    const analytics = { reportError: vi.fn(), emit: vi.fn() }
+    vi.doMock('../analytics', () => analytics)
+    try {
+      const { createDefaultMediaLoader } = await import('./datasetMirror')
+      await createDefaultMediaLoader().load({ kind: 'video', url: 'https://cdn.example/a.m3u8', overlay: {} } as never)
 
-    const opts = counts.constructedWith[0] as { reportError?: (err: Error) => void } | undefined
-    expect(opts?.reportError).toBeTypeOf('function')
-    expect(opts?.reportError?.(new Error('networkError: fragLoadError'))).toBeUndefined()
+      const opts = counts.constructedWith[0] as { reportError?: (err: Error) => void } | undefined
+      expect(opts?.reportError).toBeTypeOf('function')
+      opts?.reportError?.(new Error('networkError: fragLoadError'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(analytics.reportError).not.toHaveBeenCalled()
+      expect(analytics.emit).not.toHaveBeenCalled()
+    } finally {
+      vi.doUnmock('../analytics')
+    }
   })
 })

@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { HLSService, capLevelForWidth, measuredBandwidthBps, selectRendition } from './hlsService'
+import { until } from '../test-utils'
 
 // ---------------------------------------------------------------------------
 // Mock hls.js — we test HLSService logic, not the HLS library itself
@@ -295,6 +296,9 @@ describe('HLSService fatal errors after load', () => {
     const svc = new HLSService()
     await loadAndSettle(svc)
     hlsMock.fire('hlsError', NETWORK)
+    // Asynchronous: the analytics package is imported when a stream
+    // fails, not with this module.
+    await until(() => analyticsMock.reportError.mock.calls.length > 0, 'the error report')
     expect(analyticsMock.reportError).toHaveBeenCalledWith('hls', new Error('networkError: fragLoadError'))
   })
 
@@ -306,7 +310,14 @@ describe('HLSService fatal errors after load', () => {
     await loadAndSettle(svc)
     hlsMock.fire('hlsError', NETWORK)
     expect(reported.map(e => e.message)).toEqual(['networkError: fragLoadError'])
-    expect(analyticsMock.reportError).not.toHaveBeenCalled()
+    // The default report is asynchronous, so "not called" needs an
+    // anchor: a service on the default reporter fails too, and once its
+    // report has arrived the injected one would have as well.
+    const anchor = new HLSService()
+    await loadAndSettle(anchor)
+    hlsMock.fire('hlsError', MEDIA)
+    await until(() => analyticsMock.reportError.mock.calls.length > 0, 'the default report')
+    expect(analyticsMock.reportError.mock.calls).toEqual([['hls', new Error('mediaError: bufferStalledError')]])
   })
 
   it('reports a terminal media error too', async () => {
@@ -995,9 +1006,10 @@ describe('capLevelForWidth', () => {
     expect(capLevelForWidth(WIDTHS, 8192)).toBe(-1)
   })
 
-  it('does not depend on the levels being in order', () => {
-    expect(capLevelForWidth([4096, 1440, 2160], 2048)).toBe(2)
-  })
+  // No test for unordered levels: hls.js sorts them by height before
+  // this runs, and an index cap on an unordered ladder would still let
+  // wider levels below it through. The one that stood here passed on a
+  // property the cap does not have (found in review).
 
   it('ignores levels that state no width', () => {
     expect(capLevelForWidth([0, NaN], 2048)).toBe(-1)
