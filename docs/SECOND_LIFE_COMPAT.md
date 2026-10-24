@@ -1008,6 +1008,42 @@ It doesn't have to be, though, because a page that finds no pointer
 reads upstream. Item 7 waits for the `#` test, and the test should run
 before Phase 1 starts (§9).
 
+**Status, 24 October 2026: Phase 1's page half is built** (branch
+`claude/terraviz-second-life-compat-us9ba4`). The `#` test hasn't run
+in-world yet, so this was built on the page half working whichever way
+it comes out. The parameters are in
+[`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md) as an additive v1
+change.
+- **Items 1–3, 5 and 6 are as planned:** `dataset`, `fit=fill`,
+  `width`, `rotation`, and a video stream capped at the narrowest
+  rendition at least as wide as the picture. `src/output/webMode.ts`
+  reads the address, `webDataset.ts` asks the node for the dataset,
+  and `main.ts` wires them in.
+- **Item 4 changed in one place.** The clock is in the address as
+  planned (`t`, `at`, `rate`, `paused`), read again on every change to
+  the part after `#`, and paused copies seek to the exact time.
+  Playing copies were to reuse `syncByRatio`, but the first browser run
+  showed that path holds whatever offset its seek leaves: 2.7 s, and a
+  different amount on every visitor's copy. The clip's own seconds now
+  go to the dated law, `computeSiblingSyncCorrection`, which trims the
+  offset away. Against a local file a copy settles within a few
+  milliseconds in about ten seconds (`src/output/webClock.ts`). Against
+  TerraViz's stream from the build sandbox it couldn't: the sandbox's
+  network gave about 4.5 Mbps, below the 9 Mbps rendition, so the video
+  kept stalling. A visitor on a slow connection would see the same.
+- **Item 8, the page's half, is partly in.** The output re-fetches its
+  clouds on the producer's schedule, timed from the image's own
+  `Last-Modified` so visitors' copies change together, and fetches the
+  4096 image for pictures up to 2048 wide
+  (`src/output/cloudRefresh.ts`). It does this on desktop too.
+  **Reading TerraViz's copy and the cloud-address setting are left to
+  the cloud-copy change,** because there is no copy to read yet. Until
+  then every page reads upstream, which is the fallback the plan
+  already gives it.
+- **"How close is close"** (above) now has numbers to answer it with:
+  milliseconds once settled, and seconds after a seek, for as long as
+  the visitor's connection can play the stream at all.
+
 ---
 
 ## 8. What we're deliberately not doing
@@ -1059,6 +1095,8 @@ costs every visitor a reload, and so whether Phase 2 needs a server.
 **Phase 1 — the output page's web mode** (§7, items 1–6 and the page's
 half of 8). One code PR. It turns the idle-Earth globe into a TerraViz
 dataset globe that every visitor sees in step, under current clouds.
+*Built, apart from reading the cloud copy; see the status note at the
+end of §7.*
 
 **Phase 2 — an in-world globe controller.** An LSL object that applies
 the §5 recipe, sets the media at 2048×1024 and spins the globe. It also

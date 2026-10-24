@@ -22,7 +22,9 @@ The parameters are read at boot by `src/main.ts` and the helpers in
 `src/services/deepLinkService.ts`. Behaviour is deliberately
 conservative: an unknown parameter value is a silent no-op, and the
 URL is not rewritten after boot, so a refresh preserves the linked
-state.
+state. The output page's parameters (below) are read by
+`src/output/webMode.ts`, at load and on every change to the part after
+`#`, under the same rules.
 
 ---
 
@@ -96,6 +98,81 @@ hidden by `embed=1`.
 
 ---
 
+## The output page — a globe's texture
+
+The renderer built for physical spheres
+([`MULTI_MONITOR_PLAN.md`](MULTI_MONITOR_PLAN.md)) also runs in an
+ordinary browser, at a base URL of its own:
+
+```
+https://<terraviz-node>/output/output?<params>#<params>
+```
+
+The path is exactly `/output/output`. Any path the site doesn't
+recognise, `/output.html` included, serves the main app instead.
+
+It draws the globe unwrapped into a 2:1 equirectangular picture with
+no chrome at all. That is the texture a sphere, a dome or a Second Life
+prim is wrapped in
+([`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7). So none of the
+main app's parameters apply here, and these apply nowhere else. A bare
+address is the live Earth: today's clouds and the real day/night line.
+
+**The query and the fragment are one parameter set.** A key after `#`
+replaces the same key before it. A browser applies a change to the
+part after `#` without reloading the page, and the page re-reads its
+address on every such change. So a fixed setup can sit in the query,
+and anything a controller changes during a session belongs after `#`.
+Whether Second Life passes a fragment-only change on to every visitor
+is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
+
+| Parameter | Accepted values | Effect | Default |
+|---|---|---|---|
+| `dataset` | the node's own dataset id, the one `GET /api/v1/datasets/:id` takes | Show that dataset. A video plays and an image holds. | the live Earth |
+| `fit` | `fill` | Stretch the picture to the page instead of letterboxing it. For a page used as a texture, whose shape the host may not keep at 2:1. | letterbox (`contain`) |
+| `width` | `1024`, `2048`, `4096`, `8192` | The picture's width in pixels; its height is half. A video stream is capped at the narrowest rendition at least this wide. | `4096` |
+| `rotation` | degrees | Which longitude faces front. Wrapped into 0–360. | `0` |
+| `debug` | present | The output's debug readout, drawn on the picture. | off |
+| `t` | seconds into the clip, 0 or more | Where the shared clock is. Without `t` there is no shared clock: each copy plays from when it loaded. | none |
+| `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when the page loaded |
+| `rate` | above 0, up to 16 | Playback speed; `1` is the clip's own. | `1` |
+| `paused` | present | Hold `t` exactly. Every copy shows the same frame. | playing |
+
+- **`dataset` is narrower than the main app's.** The app also resolves
+  legacy catalog ids (`INTERNAL_SOS_123`) and slugs; this page asks the
+  node for exactly the id it is given. A dataset the node doesn't have
+  leaves the live Earth up.
+- **Every value fails closed, one at a time.** A malformed or
+  out-of-range value is ignored and that setting keeps its default; the
+  page is never refused for it. `debug` and `paused` follow the
+  [truthy convention](#stability-guarantees).
+- **Paused is exact; playing is close.** Paused copies seek to `t`
+  itself. Playing copies steer their video toward the target the way
+  the desktop outputs do, so they stay within a fraction of a second
+  once settled, not on the same frame.
+- **Copies agree only as far as their clocks do.** Each works out
+  `now` from its own computer's clock, so the shared clock assumes
+  visitors' clocks are set from internet time.
+- **Whoever controls the globe writes a new `t` and `at` on every
+  pause, resume and jump.** Resuming at 40 s and resuming at 70 s are
+  then different addresses.
+- `mode` belongs to the desktop outputs and is outside this contract.
+  A page naming any geometry but the default reads none of the above.
+- The page sends no telemetry, here or on desktop.
+
+```text
+# The live Earth on a 2048×1024 media face
+https://terraviz.zyra-project.org/output/output?fit=fill&width=2048
+
+# A dataset, paused on one frame for everyone
+https://terraviz.zyra-project.org/output/output?dataset=<id>&fit=fill&width=2048#t=61.2&paused=1
+
+# The same dataset playing from 100 s, as of 17:00 UTC on 24 October 2026
+https://terraviz.zyra-project.org/output/output?dataset=<id>&fit=fill&width=2048#t=100&at=1792861200
+```
+
+---
+
 ## Composition examples
 
 These are the exact shapes the WordPress blocks (and the poster)
@@ -142,6 +219,7 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 | Grammar version | Date | Change |
 |---|---|---|
 | v1 | 2026-07-04 | Initial written contract. Documents the pre-existing `dataset` / `/dataset/:id` / `tour` / `catalog` / `preview` selectors and the `terrain` / `labels` / `borders` / `rotate` / `layout` / `setview` / `orbit` / `prompt` modifiers, and introduces the new `embed` minimal-chrome flag and its `chat` sub-flag. |
+| v1 | 2026-10-24 | Additive. The output page (`/output/output`) gains its parameters: `dataset`, `fit`, `width`, `rotation`, `debug`, and the shared clock `t` / `at` / `rate` / `paused`, read from the query and the fragment alike. No main-app parameter changes, and a bare output-page address draws what it always did. |
 
 ---
 
@@ -153,3 +231,5 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 - `src/utils/posterDeepLinks.ts` — `tour` / view-toggle / `orbit` dispatch
 - `src/services/deepLinkService.ts` — `/dataset/:id` path form and native `zyra://` links
 - `src/styles/embed.css` — the chrome-hiding rules `embed=1` switches on
+- `src/output/webMode.ts` — the output page's reader; `src/output/webClock.ts` — its shared clock
+- [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7 — why the output page takes these parameters
