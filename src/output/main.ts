@@ -42,7 +42,7 @@ import { createDatasetMirror, createDefaultMediaLoader } from './datasetMirror'
 import { IDENTITY_PARAMS } from './equirectRtt'
 import { createWebClockSteer } from './webClock'
 import { fetchWebDataset } from './webDataset'
-import { readWebSettings, rotationOffsetRadFor, type WebOutputSettings } from './webMode'
+import { readWebSettings, rotationOffsetRadFor, sameClock, type WebOutputSettings } from './webMode'
 import {
   OVERLAY_REFRESH_MS,
   createDebugOverlay,
@@ -502,16 +502,11 @@ async function boot(): Promise<void> {
 
   if (web && webSettings) {
     let current: WebOutputSettings = webSettings
-    const loadedAtMs = Date.now()
-    // Playing reuses the desktop playhead layer, against the clip's own
-    // seconds as a dated span; paused seeks exactly. See `webClock.ts`.
-    const clockSteer = createWebClockSteer({
-      loadedAtMs,
-      syncPlaying: ({ span, primary, playback }) => {
-        const shown = mirror.currentDataset()
-        return mirror.sync({ dataset: shown && { ...shown, ...span }, primary, playback })
-      },
-    })
+    /** When this copy read the clock: the anchor for one with no `at`. */
+    let clockReadAtMs = Date.now()
+    // Playing reuses the desktop playhead layer, round the loop; paused
+    // seeks exactly. See `webClock.ts`.
+    const clockSteer = createWebClockSteer()
 
     // From the mirror, as on desktop: what this window decoded, not what
     // the address asked for, so a dataset still loading is not drawn
@@ -559,6 +554,7 @@ async function boot(): Promise<void> {
     window.addEventListener('hashchange', () => {
       const next = readWebSettings(window.location.search, window.location.hash)
       applyWeb(next, current)
+      if (!sameClock(next.clock, current.clock)) clockReadAtMs = Date.now()
       current = next
       webSettings = next
     })
@@ -567,7 +563,7 @@ async function boot(): Promise<void> {
       const video = mirror.current()?.video ?? null
       if (!video) return
       const before = video.currentTime
-      lastSync = clockSteer.steer(video, current.clock, Date.now())
+      lastSync = clockSteer.steer(video, current.clock, Date.now(), clockReadAtMs)
       // A seek changes the decoded frame without the scene knowing.
       if (before !== video.currentTime) dirty = true
     })

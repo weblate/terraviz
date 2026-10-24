@@ -11,14 +11,14 @@
  * visitors' clocks are set from internet time.
  *
  * **Playing reuses the desktop steering; paused does not.** While
- * playing, the target is handed to the output's existing playhead layer
- * — `computeSiblingSyncCorrection` behind the seek-settle window and the
- * seek-cost floor — because "close" is what was asked for there and
- * that layer is already measured. Paused, the requirement is *exactly
- * the same frame*, and that layer leaves anything within 0.15 s alone
+ * playing, the target goes to the output's existing playhead layer,
+ * `computeSiblingSyncCorrection` behind the seek-settle window and the
+ * seek-cost floor, because "close" is what was asked for there and that
+ * layer is already measured. Paused, the requirement is *exactly the
+ * same frame*, and that layer leaves anything within 0.15 s alone
  * (`SIBLING_HARD_SEEK_THRESHOLD_S`), which is several frames apart at
  * 30 fps. So a paused clock seeks to its exact time whatever the drift,
- * once per target, and holds there. The desktop tolerance is unchanged.
+ * and holds there. The desktop tolerance is unchanged.
  *
  * **Dated, not by ratio.** A dataset with no time axis takes that
  * layer's `syncByRatio` on desktop, which seeks and never trims the rate.
@@ -33,16 +33,41 @@
  * the dated law as instants from the Unix epoch (`clipClockInputs`). The
  * law then trims an error inside its threshold away, as it does for a
  * sibling globe.
+ *
+ * **On the loop, not along the line.** The dated law measures error as
+ * the straight difference of two positions in [0, d), which is right for
+ * a dated span and wrong for a clip that loops: just after the target
+ * wraps to 0.5 s, a copy at 15.8 s of a 16 s clip is 0.7 s behind, and
+ * the law read it as 15.3 s ahead. Past a wrap it trimmed the wrong way,
+ * and with a slow seek raising its threshold it could stay out for tens
+ * of seconds (found in review, in simulation). So the law is shown the
+ * element *as seen from the target* (`loopView`): every position is
+ * measured round the loop and re-centred so the target sits mid-clip,
+ * and a seek is turned back into the real position. The error it sees is
+ * then always the short way round. An element that played to its end is
+ * at the same point of the loop as one at its start, and the law's
+ * `play()` rewinds it there, so the loop needs no case of its own.
  */
 
 import type { WebClock } from './webMode'
-import type { SyncOutcome, SyncTarget } from './outputSync'
-import type { MirroredPlayback, MirroredPrimary } from '../services/multiOutput/protocol'
+import { createPlayheadSync, syncVideoToState, type SyncOutcome, type SyncTarget } from './outputSync'
+import type {
+  MirroredDataset,
+  MirroredPlayback,
+  MirroredPrimary,
+} from '../services/multiOutput/protocol'
 import { SIBLING_MIN_READY_STATE } from '../utils/time'
 
 /** Closer than this to the paused target is the target. A frame at
  *  30 fps is 33 ms, so a millisecond is well inside one frame. */
 export const EXACT_PAUSE_EPS_S = 0.001
+
+/** How far off a seek this steer already made may land before it is
+ *  made again. A browser can read `currentTime` back a hair off what was
+ *  written, and re-seeking for that would seek every frame; a landing a
+ *  frame or more away is the wrong frame, and is retried. Half a frame at
+ *  30 fps. */
+export const HELD_TOLERANCE_S = 1 / 60
 
 /** `value` wrapped into [0, period), for a clip that loops. A value
  *  already inside is returned untouched: the modulo arithmetic would
@@ -53,22 +78,29 @@ function wrap(value: number, period: number): number {
   return ((value % period) + period) % period
 }
 
+/** A duration the clock can wrap on: finite and positive. An unbounded
+ *  stream reads `Infinity`, which `toISOString` throws on. */
+function usableDuration(video: SyncTarget): boolean {
+  return Number.isFinite(video.duration) && video.duration > 0
+}
+
 /**
  * Where the clip should be, in seconds, wrapped into the clip.
  *
- * `nowMs` and `loadedAtMs` are wall-clock milliseconds (`Date.now()`),
+ * `nowMs` and `readAtMs` are wall-clock milliseconds (`Date.now()`),
  * because the anchor is Unix time; a page-relative clock would put every
- * copy on its own epoch. A position past the end wraps, since the
- * datasets this plays loop.
+ * copy on its own epoch. `readAtMs` is when this copy read the clock, the
+ * anchor for one with no `at`. A position past the end wraps, paused or
+ * playing, since the datasets this plays loop.
  */
 export function clockTargetS(
   clock: WebClock,
   nowMs: number,
-  loadedAtMs: number,
+  readAtMs: number,
   durationS: number,
 ): number {
   if (clock.paused) return wrap(clock.positionS, durationS)
-  const anchorMs = clock.atUnixS === null ? loadedAtMs : clock.atUnixS * 1000
+  const anchorMs = clock.atUnixS === null ? readAtMs : clock.atUnixS * 1000
   return wrap(clock.positionS + ((nowMs - anchorMs) / 1000) * clock.rate, durationS)
 }
 
@@ -106,45 +138,107 @@ export function clipClockInputs(targetS: number, durationS: number, rate: number
   }
 }
 
-export interface WebClockSteer {
-  /** Steer `video` toward the clock. Called every frame, like the
-   *  desktop steering it reuses. */
-  steer(video: SyncTarget | null, clock: WebClock, nowMs: number): SyncOutcome
+/** What the law reads of a dataset is its span; the rest is never
+ *  looked at, and this names no real one. */
+const CLIP: Omit<MirroredDataset, 'startTime' | 'endTime'> = {
+  id: 'web-clock',
+  url: '',
+  kind: 'video',
+  overlay: {},
 }
 
-export function createWebClockSteer(deps: {
-  /** Wall-clock ms when the page loaded: the anchor for a clock with no
-   *  `at`. */
-  loadedAtMs: number
-  /** The desktop playhead layer, `DatasetMirror.sync`, fed the clip's
-   *  own seconds as a dated span. */
-  syncPlaying: (inputs: ClipClockInputs) => SyncOutcome
-}): WebClockSteer {
-  /** The paused target this steer last seeked to. Held so a browser
-   *  that reads `currentTime` back a hair off what was written cannot
-   *  turn one exact seek into a seek every frame. */
+/** An element seen from a target: positions round the loop, re-centred
+ *  on the target. One per element, kept for its life, because the
+ *  playhead layer recognises an element by identity and forgets its
+ *  seek-cost measurement when that changes. */
+interface LoopView extends SyncTarget {
+  readonly element: SyncTarget
+  /** Real position that reads as mid-clip. */
+  centreS: number
+}
+
+function loopView(element: SyncTarget): LoopView {
+  const view = {
+    element,
+    centreS: 0,
+    get readyState() {
+      return element.readyState
+    },
+    get duration() {
+      return element.duration
+    },
+    get paused() {
+      return element.paused
+    },
+    get seeking() {
+      return element.seeking
+    },
+    get currentTime() {
+      const d = element.duration
+      return wrap(element.currentTime - view.centreS + d / 2, d)
+    },
+    set currentTime(seen: number) {
+      const d = element.duration
+      element.currentTime = wrap(seen + view.centreS - d / 2, d)
+    },
+    get playbackRate() {
+      return element.playbackRate
+    },
+    set playbackRate(rate: number) {
+      element.playbackRate = rate
+    },
+    play: () => element.play(),
+    pause: () => element.pause(),
+  }
+  return view
+}
+
+export interface WebClockSteer {
+  /**
+   * Steer `video` toward the clock. Called every frame, like the
+   * desktop steering it reuses. `nowMs` is wall-clock time and
+   * `readAtMs` when this copy read the clock (see `clockTargetS`).
+   */
+  steer(video: SyncTarget | null, clock: WebClock, nowMs: number, readAtMs: number): SyncOutcome
+}
+
+export function createWebClockSteer(
+  deps: {
+    /** The playhead layer's own clock, monotonic, for its seek-settle
+     *  window and seek-cost measurement. */
+    monotonicMs?: () => number
+  } = {},
+): WebClockSteer {
+  // The web output's own playhead memory. Not the mirror's: that one is
+  // handed the real element, and the law here has to see `loopView`.
+  const playhead = createPlayheadSync(deps.monotonicMs)
+  let view: LoopView | null = null
+  /** The paused target this steer last seeked to. Held so a readback
+   *  a hair off does not earn a seek every frame, but only within
+   *  `HELD_TOLERANCE_S`: an element that is a frame or more away has not
+   *  been seeked there, whatever was held. It once held at any distance,
+   *  so a dataset switch at the same paused time left the new element at
+   *  0 while fresh copies sat on the frame (found in review). */
   let heldS: number | null = null
 
   return {
-    steer(video, clock, nowMs) {
-      if (!video || video.readyState < SIBLING_MIN_READY_STATE || !(video.duration > 0)) {
+    steer(video, clock, nowMs, readAtMs) {
+      if (!video || video.readyState < SIBLING_MIN_READY_STATE || !usableDuration(video)) {
         return { kind: 'not-ready', driftS: null, seeked: false }
       }
-      const targetS = clockTargetS(clock, nowMs, deps.loadedAtMs, video.duration)
+      const d = video.duration
+      const targetS = clockTargetS(clock, nowMs, readAtMs, d)
 
       if (!clock.paused) {
         heldS = null
-        // Played to its end ahead of the clock: wait there for the clock
-        // to come round. The element does not loop by itself. The law's
-        // `play()` on a finished element rewinds it to zero, and the next
-        // frame seeks it straight back to the end: two seeks a loop where
-        // one will do, each a stall on a slow stream. "Not yet round" is
-        // the target still in the clip's second half. Once it wraps, the
-        // law seeks the element to it, which is the one seek a loop costs.
-        if (video.paused && video.currentTime >= video.duration && targetS > video.duration / 2) {
-          return { kind: 'playing', driftS: video.currentTime - targetS, seeked: false }
-        }
-        return deps.syncPlaying(clipClockInputs(targetS, video.duration, clock.rate))
+        if (!view || view.element !== video) view = loopView(video)
+        view.centreS = targetS
+        const inputs = clipClockInputs(d / 2, d, clock.rate)
+        return playhead.sync(view, {
+          dataset: { ...CLIP, ...inputs.span },
+          primary: inputs.primary,
+          playback: inputs.playback,
+        })
       }
 
       if (!video.paused) video.pause()
@@ -152,7 +246,8 @@ export function createWebClockSteer(deps: {
       // frame is still on the glass; measuring it would be fiction.
       if (video.seeking) return { kind: 'seeking', driftS: null, seeked: false }
       const driftS = video.currentTime - targetS
-      if (Math.abs(driftS) > EXACT_PAUSE_EPS_S && heldS !== targetS) {
+      const alreadyAimed = heldS === targetS && Math.abs(driftS) < HELD_TOLERANCE_S
+      if (Math.abs(driftS) > EXACT_PAUSE_EPS_S && !alreadyAimed) {
         video.currentTime = targetS
         heldS = targetS
         return { kind: 'paused', driftS, seeked: true }
