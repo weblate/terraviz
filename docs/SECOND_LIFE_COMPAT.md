@@ -726,8 +726,8 @@ The work, smallest first:
        follows the real clock, and it should.
    - **The catch is reloading.** Changing the address makes every
      viewer reload the page and re-buffer its video. Changing only the
-     part after `#` might avoid that (§10 question 10). The kit's
-     `/7 hash` tests it.
+     part after `#` might avoid that (§10 question 10). The viewer's
+     source predicts it does. The kit's `/7 hash` tests it in-world.
      - **If the `#` test passes,** the design is the address alone,
        with no server.
      - **If it fails,** there is a choice to make. One option is to
@@ -741,10 +741,17 @@ The work, smallest first:
      `#` changes. A reload just reads the same address from scratch.
      The test decides what each change costs visitors, not what the
      page does.
-   - **A field of globes needs its own check** (§10 question 13).
-     Second Life viewers are believed to run only a limited number of
-     web pages at once, favouring the nearest, so distant globes might
-     stop or fall behind.
+   - **A field of globes degrades with distance** (§10 question 13).
+     - **Each visitor's viewer runs only a few globes properly.** The
+       viewer's source caps how many web pages run at once (8 by
+       default), and only the 2 that look largest on that visitor's
+       screen run at full priority. The rest are scaled down, update
+       only now and then, or don't load.
+     - **So past about six globes,** the distant ones in a field will
+       barely move.
+     - **The clock makes that harmless.** A globe that drops out and
+       loads again reads its address and lands on the shared moment,
+       so it falls back into step rather than drifting.
 5. **Cap the video quality to what the texture can show.** TerraViz's
    stream offers 4096×2048 at 27.7 Mbps, 2160×1080 at 9.0 Mbps and
    1440×720 at 4.6 Mbps (§11). At 2048×1024 the middle one is
@@ -1089,20 +1096,48 @@ Numbering is kept from the first version, so a reference like
       its user to run their own copy of the probe. A second avatar
       watching `/7 app` or `/7 sos` can confirm a reload but not a
       quiet success, since nothing on those pages changes visibly.
-    - In headless Chromium a `#` change mid-video arrives without a
-      reload and the video keeps playing (§11). That is what a browser
-      does; whether the viewer passes the change on is the open part.
+    - **The viewer's source predicts no reload** (§11). Any change to
+      an object's media address makes every viewer that has the page
+      loaded, or set to play automatically, navigate to the new
+      address. Along the way:
+      - it asks the page's server for its headers only, to learn the
+        page's type;
+      - it keeps the same browser process, since the type hasn't
+        changed;
+      - it passes the `#` part through untouched;
+      - it hands the address to the embedded Chromium.
+
+      The viewer has nothing specific for a `#` change. Chromium then
+      treats an address that differs only after `#` as the same page.
+    - **In headless Chromium,** a `#` change mid-video arrives without
+      a reload, and the video keeps playing (§11).
+    - **Still open:** Firestorm is a fork of this viewer, and the last
+      step happens inside its embedded browser. Only an in-world run
+      settles it.
 11. **Does a second avatar see the app and the output page?** It
     should — they come from TerraViz's site, not from a script — but
     nobody else was there to look.
 12. **How long does the full app run with a video playing?** It ran;
     it wasn't timed, and it wasn't tried on a flat panel (§4.5).
-13. **How many globes can stand in one field?** Each globe is a live
-    web page, with video, in every visitor's viewer. Second Life
-    viewers are believed to run only a limited number of media pages
-    at once, favouring the nearest, so distant globes might stop or
-    fall behind. Nobody has checked the number or what happens past
-    it (§7 item 4).
+13. **How many globes can stand in one field?** **Answered from the
+    official viewer's source**, not yet seen in-world (§11). Each globe
+    is a live web page, with video, in every visitor's viewer. Each
+    viewer ranks those pages by how large they look on that visitor's
+    screen. By default:
+    - at most **8 load at once**, or 6 on a machine with under 8 GB of
+      memory;
+    - the **2 largest on screen run at full priority**;
+    - the **next 4 run at low priority**, scaled down to the size
+      they're shown at;
+    - any others update only occasionally, and past 8 nothing loads;
+    - globes off screen are hidden;
+    - switching away from the viewer window drops every page to low
+      priority, which matters for a presenter checking their notes.
+
+    These are viewer settings (`PluginInstancesTotal`, `…Normal`,
+    `…Low`) a visitor can raise, but the defaults are what an audience
+    has. Firestorm may differ. §7 item 4 says why the clock keeps a
+    field in step anyway.
 
 ---
 
@@ -1124,6 +1159,14 @@ Numbering is kept from the first version, so a reference like
 - `indra/llmath/llvolume.cpp:7223` — texture coordinates `(ss, tt)`: U along the profile, V along the path
 - `indra/llprimitive/llmediaentry.h:187-188` — `MAX_WIDTH_PIXELS = 2048`, `MAX_HEIGHT_PIXELS = 2048`
 - `indra/llprimitive/llmediaentry.cpp:573`, `:580` — larger sizes return `LSL_STATUS_BOUNDS_ERROR`
+- `indra/newview/llviewermedia.cpp:333`, `:352`, `:382` (`updateMediaImpl`) — when an object's media update changes its current address, a viewer whose copy is loaded or auto-playing calls `navigateTo(url, "", true, true)`, with nothing specific for a `#` change. `indra/newview/llvovolume.cpp:2709` (`syncMediaData`) is the caller
+- `indra/newview/llviewermedia.cpp:2582`, `:2611` (`navigateTo`) — the new address is recorded first, and a page whose priority is "unloaded" returns there, so it loads the latest address when it next gets priority; `:2692` starts a headers-only request to learn the type; `:2775` treats a missing type as `text/html`
+- `indra/newview/llviewermedia.cpp:1702` (`initializeMedia`) — the browser plugin is kept unless the new type needs a different plugin
+- `indra/newview/llviewermedia.cpp:1977` (`loadURI`) and `indra/llcommon/lluri.cpp:291`, `:185` — the address is escaped part by part, and the `#` part keeps `#` and `=`, so `#h=1` reaches the browser as written
+- `indra/newview/llviewermedia.cpp:3530` — the viewer already recognises a `#`-only change of location reported by the browser as internal navigation (its comment cites SL-1005)
+- `indra/newview/llviewermedia.cpp:86-87`, `:258-271` (`setMaxInstances`) — 8 in-world media at once by default, 2 fewer on a machine with under 8 GB of memory, never below 6
+- `indra/newview/llviewermedia.cpp:727`, `:769`, `:779`, `:785`, `:798`, `:813`, `:818` (`updateMedia`) — past the limit, unloaded; off screen, hidden; the first `PluginInstancesNormal` at normal priority; the next `PluginInstancesLow` at low priority, scaled to their on-screen size; any more as "slideshow"; with the viewer window minimised, everything hidden; with it out of focus, nothing above low. `:599` (`priorityComparitor`) ranks larger on-screen area first
+- `indra/newview/app_settings/settings.xml:6651-6684` — defaults `PluginInstancesLow` 4, `PluginInstancesNormal` 2, `PluginInstancesTotal` 8
 
 **Platform state**
 - [SLua open beta announcement](https://community.secondlife.com/news/featured-news/announcing-the-slua-open-beta-modern-scripting-comes-to-second-life-r11237/) — Luau, 2 Dec 2025, runtime selection, memory claim
