@@ -1185,8 +1185,10 @@ yet.
     session: jump, rate, a still image (Nighttime Lights), the
     data-encoded smoke forecast clipped to the United States, rotation,
     and the refusal of a tour.
-  - **Not yet confirmed in-world:** what a second avatar sees (the
-    same frame when paused), touch, spin and telemetry.
+  - **A second avatar and spin worked too**, as reported: a second
+    avatar at the globe saw it as the first did, and `/8 spin` turned
+    it.
+  - **Not yet confirmed in-world:** a visitor's touch, and telemetry.
 - **"How close is close"** (above) now has numbers to answer it with:
   milliseconds once settled, and seconds after a seek, for as long as
   the visitor's connection can play the stream at all. One exception:
@@ -1544,5 +1546,5 @@ Numbering is kept from the first version, so a reference like
 - `[globe] The node has no dataset hurricane. The globe is unchanged.`
 - The readout before the frame-gate fix: `fps 60.0 (raf 60.0)` playing and paused, `draw 0.1 ms`, `buf 2048×1024`, `gpu ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Laptop GPU (0x00002717) Direct3D11 vs_5_0 ps_5_0, D3D11)`. After it: `fps 30` playing, `fps 1.5` paused
 - Pause and play by `#` alone: the video froze and resumed with no plain-Earth interval, which is how a reload shows on this page (§10 question 10). Seen by eye, not measured with `/7 hash`
-- Reported working afterwards: `/8 jump`, `/8 rate`, `/8 show lights`, `/8 show smoke`, `/8 rotation`, and the tour refusal
+- Reported working afterwards: `/8 jump`, `/8 rate`, `/8 show lights`, `/8 show smoke`, `/8 rotation`, the tour refusal, `/8 spin`, and a second avatar at the globe
 - An earlier attempt left `NODE` at `https://terraviz.zyra-project.org`, whose output page has no web mode yet, and showed the live Earth whatever was asked. That is the README's first trip-up
