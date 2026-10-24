@@ -2,9 +2,16 @@
 // Copyright 2026 The Zyra Project
 
 import { describe, expect, it, vi } from 'vitest'
-import { EXACT_PAUSE_EPS_S, clockTargetS, createWebClockSteer } from './webClock'
+import {
+  EXACT_PAUSE_EPS_S,
+  clipClockInputs,
+  clockTargetS,
+  createWebClockSteer,
+  type ClipClockInputs,
+} from './webClock'
 import type { WebClock } from './webMode'
-import type { SyncTarget } from './outputSync'
+import { createPlayheadSync, syncVideoToState, type SyncTarget } from './outputSync'
+import type { MirroredDataset } from '../services/multiOutput/protocol'
 
 const LOADED_AT = 1_761_288_000_000
 
@@ -57,12 +64,90 @@ describe('clockTargetS', () => {
   })
 })
 
+/** The desktop layer, as `main.ts` wires it: the clip's span in place of
+ *  the dataset's own. */
+const desktopLaw = (v: SyncTarget) => (inputs: ClipClockInputs) =>
+  syncVideoToState(v, {
+    dataset: { ...DATASET, ...inputs.span },
+    primary: inputs.primary,
+    playback: inputs.playback,
+  })
+
+const DATASET: MirroredDataset = {
+  id: 'D',
+  url: 'https://example/d.m3u8',
+  kind: 'video',
+  overlay: {},
+  startTime: null,
+  endTime: null,
+}
+
+describe('clipClockInputs', () => {
+  it('paces the law at exactly the clock rate', () => {
+    // The "primary" is a clip of the same length over the same span, so
+    // the law's pacing ratio is 1 and only the clock rate is left.
+    const v = video({ duration: 200, currentTime: 50 })
+    const outcome = desktopLaw(v)(clipClockInputs(50, 200, 0.5))
+    expect(outcome).toEqual({ kind: 'playing', driftS: 0, seeked: false })
+    expect(v.playbackRate).toBe(0.5)
+  })
+
+  it('never puts a target past the end of the span', () => {
+    // Past the end reads as out of range, which pauses the clip.
+    const inputs = clipClockInputs(100.00049, 100.0005, 1)
+    expect(Date.parse(inputs.playback.date!)).toBeLessThanOrEqual(Date.parse(inputs.span.endTime))
+    const v = video({ duration: 100.0005, currentTime: 100.0004 })
+    expect(desktopLaw(v)(inputs).kind).toBe('playing')
+  })
+})
+
 describe('createWebClockSteer', () => {
-  it('hands a playing clock to the desktop steering as a position in the clip', () => {
-    const syncPlaying = vi.fn(() => ({ kind: 'no-range' as const, driftS: 0, seeked: false }))
+  it('hands a playing clock to the desktop steering as a dated span', () => {
+    const syncPlaying = vi.fn(() => ({ kind: 'playing' as const, driftS: 0, seeked: false }))
     const steer = createWebClockSteer({ loadedAtMs: LOADED_AT, syncPlaying })
     steer.steer(video({ duration: 200 }), clock({ positionS: 50, atUnixS: LOADED_AT / 1000, rate: 0.5 }), LOADED_AT)
-    expect(syncPlaying).toHaveBeenCalledWith({ date: null, positionRatio: 0.25, paused: false, playbackRate: 0.5 })
+    expect(syncPlaying).toHaveBeenCalledWith(clipClockInputs(50, 200, 0.5))
+  })
+
+  it('trims away what a slow seek leaves behind, instead of holding it', () => {
+    // The first browser run's case. A seek that takes 2 s lands the copy
+    // 2 s behind, and the seek-cost floor then declines to seek for
+    // anything that small. The ratio path stopped there, at rate 1.
+    let now = LOADED_AT
+    const playhead = createPlayheadSync(() => now)
+    const v = video({ duration: 200, currentTime: 40 })
+    const steer = createWebClockSteer({
+      loadedAtMs: LOADED_AT,
+      syncPlaying: inputs =>
+        playhead.sync(v, { dataset: { ...DATASET, ...inputs.span }, primary: inputs.primary, playback: inputs.playback }),
+    })
+    const playing = clock({ positionS: 50, atUnixS: LOADED_AT / 1000 })
+
+    expect(steer.steer(v, playing, now).seeked).toBe(true)
+    expect(v.currentTime).toBe(50)
+    ;(v as { seeking: boolean }).seeking = true
+    now += 2_000
+    ;(v as { seeking: boolean }).seeking = false
+
+    const outcome = steer.steer(v, playing, now)
+    expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-2, 6), seeked: false })
+    expect(v.currentTime).toBe(50)
+    expect(v.playbackRate).toBeGreaterThan(1)
+  })
+
+  it('waits at the end of the clip for the clock to come round', () => {
+    const v = video({ duration: 100, currentTime: 100, paused: true })
+    const syncPlaying = vi.fn(desktopLaw(v))
+    const steer = createWebClockSteer({ loadedAtMs: LOADED_AT, syncPlaying })
+    const at = LOADED_AT / 1000
+    // Still short of the end: no `play()`, which would rewind to zero.
+    expect(steer.steer(v, clock({ positionS: 99.8, atUnixS: at }), LOADED_AT).seeked).toBe(false)
+    expect(syncPlaying).not.toHaveBeenCalled()
+    expect(v.play).not.toHaveBeenCalled()
+    // Come round: the one seek a loop costs, then play.
+    expect(steer.steer(v, clock({ positionS: 99.8, atUnixS: at }), LOADED_AT + 300).seeked).toBe(true)
+    expect(v.currentTime).toBeCloseTo(0.1, 6)
+    expect(v.play).toHaveBeenCalled()
   })
 
   it('does nothing before the element has metadata', () => {
@@ -116,7 +201,7 @@ describe('createWebClockSteer', () => {
   })
 
   it('forgets the held target when play resumes, so pausing at the same time seeks again', () => {
-    const syncPlaying = vi.fn(() => ({ kind: 'no-range' as const, driftS: 0, seeked: false }))
+    const syncPlaying = vi.fn(() => ({ kind: 'playing' as const, driftS: 0, seeked: false }))
     const steer = createWebClockSteer({ loadedAtMs: LOADED_AT, syncPlaying })
     const v = video({ currentTime: 10 })
     const paused = clock({ positionS: 50, paused: true })
