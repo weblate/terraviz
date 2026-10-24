@@ -991,31 +991,43 @@ Things this touches beyond the code:
   objects will depend on them. They belong in
   [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md), versioned the same
   way, which brings in the TerraViz Federation Reviewer.
-- **The web output page reports its own Essential telemetry.** This
-  reverses what the plan first said here, at the maintainer's request
-  on 24 October 2026, because a globe's use is worth counting the way
-  the app's is: which datasets are shown on globes, by how many
-  visitors, and what fails there. The multi-monitor design keeps
+- **The web output page can report its own Essential telemetry, when
+  the globe's owner turns it on.** This reverses what the plan first
+  said here, at the maintainer's request on 24 October 2026, because a
+  globe's use is worth counting the way the app's is: which datasets
+  are shown on globes, by how many visitors, and what fails there. The multi-monitor design keeps
   *desktop* outputs silent, and they still are: their control window
   reports for them, including a stream that died, which they now tell
   it over IPC. A web output has no control window, so it reports for
   itself (`src/output/webTelemetry.ts`):
+  - **Off unless the owner turns it on with `telemetry=1`.** This was
+    the maintainer's choice over on-by-default. The page loads for
+    everyone in range of a globe and shows no notice, and anyone can
+    point a globe at a public node. Every event carries a timestamp
+    and a country, and land owners commonly log avatar arrivals, so
+    anyone holding both could attach a country to a named avatar in a
+    quiet region. Opt-in keeps that to globes someone chose to measure,
+    whose owners can say so in-world. Embed mode's rule (the page that
+    places TerraViz owns consent) was the first model; it fits poorly
+    here, because a globe's visitor neither went to the page nor can see
+    a notice on it.
   - **Three things.** `session_start` marked `platform: 'web-output'`,
     so globe visitors are not counted as app sessions; `layer_loaded`
     with `trigger: 'output'` when a dataset reaches the picture; and
-    `error` under `category: 'output'` with a one-word `code`.
+    `error` under `category: 'output'` with a one-word `code`. **No
+    `session_end`**: on a globe the session's length is how long a
+    passer-by stood near it, which is dwell, and dwell is Research-only.
   - **Never the address's text,** the globe's location, or anything
     about who set it up or who is looking. `layer_id` is the id the
-    node returned, and an error's message is fixed text per code.
-  - **No banner and no Privacy panel,** which is embed mode's rule: the
-    page that places TerraViz owns consent. Here that is whoever sets
-    up the globe, and `telemetry=0` in the address turns it all off. A
-    visitor's own Off setting from the app, in the same browser, still
-    applies, and a viewer's media settings can stop the page loading.
-  - **Volume is bounded.** One session per visitor's copy, `layer_loaded`
-    capped at 30 a minute (a controller script sets that rate, not a
-    visitor), and the error reporter's per-signature caps on a dataset
-    that keeps failing.
+    node returned, and a record without one is refused. An error's
+    message is fixed text per code.
+  - **The visitor's controls are thin.** A Second Life viewer keeps its
+    own browser, so an Off setting from the app never reaches it. The
+    viewer's media settings can stop the page loading, picture and all.
+  - **Volume is bounded.** One session per copy of the page,
+    `layer_loaded` capped at 30 in any sixty seconds (a controller
+    script sets that rate, not a visitor), and the error reporter's
+    per-signature caps on a dataset that keeps failing.
 - **Video CORS travels with the node.** A page on
   `terraviz.zyra-project.org` can play that node's streams; a partner
   node's output page needs its own video host to allow it.
@@ -1095,10 +1107,10 @@ yet.
     the refresh itself). The response's `Date` header would remove
     that, but a page can read it only if the server exposes it.
     TerraViz's copy can expose it (`Access-Control-Expose-Headers`).
-- **Telemetry, added in the same PR.** The page reports the three
-  Essential events listed under "Things this touches" above, and the
-  control window now reports a desktop output's dead stream as
-  `output_failure` with `kind: 'hls-stalled'`. The privacy policy, the
+- **Telemetry, added in the same PR.** With `telemetry=1` the page
+  reports the three Essential events listed under "Things this touches"
+  above. The control window now reports a desktop output's dead stream
+  as `output_failure` with `kind: 'hls-stalled'`. The privacy policy, the
   analytics catalog, the query reference and a dashboard row (Globes)
   cover them. Nothing has been sent from a real globe yet.
 - **"How close is close"** (above) now has numbers to answer it with:

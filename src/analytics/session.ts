@@ -56,8 +56,15 @@ let visibleSince: number | null = null
  * `platform` is for a page that knows what it is better than the
  * detector can: the output page passes `'web-output'`, which no runtime
  * signal tells apart from a browser tab.
+ *
+ * `sessionEnd: false` sends no `session_end`. The output page passes it
+ * on a globe: its page loads when someone comes into range and unloads
+ * when they leave, so the session's length would be how long a passer-by
+ * stood near that globe, which is dwell, and dwell is Research-only.
  */
-export async function initSession(opts: { platform?: Platform } = {}): Promise<void> {
+export async function initSession(
+  opts: { platform?: Platform; sessionEnd?: boolean } = {},
+): Promise<void> {
   if (started) return
   started = true
 
@@ -79,6 +86,7 @@ export async function initSession(opts: { platform?: Platform } = {}): Promise<v
   }
   emit(event)
 
+  if (opts.sessionEnd === false) return
   if (typeof window !== 'undefined') {
     pagehideAbort = new AbortController()
     // Visibility accumulator FIRST — listeners fire in registration

@@ -161,7 +161,7 @@
       "id": 3,
       "type": "table",
       "title": "Layer load p95 — top 25 datasets",
-      "description": "p50 and p95 load time per dataset, network/HLS only (cache hits excluded).",
+      "description": "p50 and p95 load time per dataset, network/HLS only (cache hits excluded). Globe traffic (the output page in web mode) is left out; the Globes row shows it.",
       "gridPos": {
         "x": 0,
         "y": 8,
@@ -185,7 +185,7 @@
           "url": "/sql",
           "url_options": {
             "method": "POST",
-            "data": "SELECT blob5 AS layer_id, quantile(0.50)(double2) AS p50_ms, quantile(0.95)(double2) AS p95_ms, count() AS load_count FROM terraviz_events WHERE blob1 = 'layer_loaded' AND blob2 = '$environment' AND blob4 = '$internal' AND blob6 != 'cache' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY layer_id HAVING load_count > 10 ORDER BY p95_ms DESC LIMIT 25",
+            "data": "SELECT blob5 AS layer_id, quantile(0.50)(double2) AS p50_ms, quantile(0.95)(double2) AS p95_ms, count() AS load_count FROM terraviz_events WHERE blob1 = 'layer_loaded' AND blob8 != 'output' AND blob2 = '$environment' AND blob4 = '$internal' AND blob6 != 'cache' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY layer_id HAVING load_count > 10 ORDER BY p95_ms DESC LIMIT 25",
             "headers": [
               {
                 "key": "Content-Type",
@@ -224,7 +224,7 @@
       "id": 4,
       "type": "piechart",
       "title": "Load source mix",
-      "description": "How layers were loaded — network fetch vs local cache vs HLS vs raw image.",
+      "description": "How layers were loaded — network fetch vs local cache vs HLS vs raw image. Globe traffic (the output page in web mode) is left out; the Globes row shows it.",
       "gridPos": {
         "x": 12,
         "y": 8,
@@ -248,7 +248,7 @@
           "url": "/sql",
           "url_options": {
             "method": "POST",
-            "data": "SELECT blob6 AS source, count() AS loads FROM terraviz_events WHERE blob1 = 'layer_loaded' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY source ORDER BY loads DESC",
+            "data": "SELECT blob6 AS source, count() AS loads FROM terraviz_events WHERE blob1 = 'layer_loaded' AND blob8 != 'output' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY source ORDER BY loads DESC",
             "headers": [
               {
                 "key": "Content-Type",
@@ -277,7 +277,7 @@
       "id": 5,
       "type": "stat",
       "title": "Errors per session (last 24h)",
-      "description": "Total error events divided by distinct session count. Production-only; staff sessions excluded.",
+      "description": "Total error events divided by distinct session count. Production-only; staff sessions excluded. Globe traffic (the output page in web mode) is left out; the Globes row shows it.",
       "gridPos": {
         "x": 18,
         "y": 8,
@@ -301,7 +301,7 @@
           "url": "/sql",
           "url_options": {
             "method": "POST",
-            "data": "WITH s AS (SELECT count(DISTINCT index1) AS n FROM terraviz_events WHERE blob1 = 'session_start' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > NOW() - INTERVAL '1' DAY), e AS (SELECT count() AS n FROM terraviz_events WHERE blob1 = 'error' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > NOW() - INTERVAL '1' DAY) SELECT e.n / s.n AS errors_per_session FROM s, e",
+            "data": "WITH s AS (SELECT count(DISTINCT index1) AS n FROM terraviz_events WHERE blob1 = 'session_start' AND blob10 != 'web-output' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > NOW() - INTERVAL '1' DAY), e AS (SELECT count() AS n FROM terraviz_events WHERE blob1 = 'error' AND blob5 != 'output' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > NOW() - INTERVAL '1' DAY) SELECT e.n / s.n AS errors_per_session FROM s, e",
             "headers": [
               {
                 "key": "Content-Type",
@@ -325,7 +325,7 @@
       "id": 6,
       "type": "barchart",
       "title": "Errors by category × source",
-      "description": "Last 7 days of error events, grouped by classified category and originating source.",
+      "description": "Last 7 days of error events, grouped by classified category and originating source. Globe traffic (the output page in web mode) is left out; the Globes row shows it.",
       "gridPos": {
         "x": 18,
         "y": 13,
@@ -349,7 +349,7 @@
           "url": "/sql",
           "url_options": {
             "method": "POST",
-            "data": "SELECT blob5 AS category, blob8 AS source, count() AS occurrences FROM terraviz_events WHERE blob1 = 'error' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY category, source ORDER BY occurrences DESC",
+            "data": "SELECT blob5 AS category, blob8 AS source, count() AS occurrences FROM terraviz_events WHERE blob1 = 'error' AND blob5 != 'output' AND blob2 = '$environment' AND blob4 = '$internal' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY category, source ORDER BY occurrences DESC",
             "headers": [
               {
                 "key": "Content-Type",
@@ -572,7 +572,7 @@
       "id": 10,
       "type": "table",
       "title": "Country breakdown (top 20)",
-      "description": "Distinct sessions per country (2-letter ISO from CF-IPCountry). 'XX' (Tor / unknown) excluded.",
+      "description": "Distinct sessions per country (2-letter ISO from CF-IPCountry). 'XX' (Tor / unknown) excluded. Globe traffic (the output page in web mode) is left out; the Globes row shows it.",
       "gridPos": {
         "x": 12,
         "y": 26,
@@ -596,7 +596,7 @@
           "url": "/sql",
           "url_options": {
             "method": "POST",
-            "data": "SELECT blob3 AS country, count(DISTINCT index1) AS sessions FROM terraviz_events WHERE blob1 = 'session_start' AND blob2 = '$environment' AND blob4 = '$internal' AND blob3 != 'XX' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY country ORDER BY sessions DESC LIMIT 20",
+            "data": "SELECT blob3 AS country, count(DISTINCT index1) AS sessions FROM terraviz_events WHERE blob1 = 'session_start' AND blob10 != 'web-output' AND blob2 = '$environment' AND blob4 = '$internal' AND blob3 != 'XX' AND timestamp > toDateTime(intDiv($__from, 1000)) GROUP BY country ORDER BY sessions DESC LIMIT 20",
             "headers": [
               {
                 "key": "Content-Type",
@@ -1445,7 +1445,7 @@
       "id": 26,
       "type": "table",
       "title": "Globes (web output) — datasets shown",
-      "description": "The output page in web mode: a globe's texture, such as a Second Life prim, reporting for itself because no control window drives it. One layer_loaded per dataset that reached the glass with trigger='output' (capped at 30 a minute per copy, since a script cycling the address sets that rate), counted per dataset with the sessions that saw it — one session per visitor's copy of the page, so 'sessions' is roughly visitors in view of a globe. layer_id is the id the node returned, never the address's text. Desktop output windows never emit this: the control window's own layer_loaded already counts that view. AE positional layout: blob5=layer_id, blob6=layer_source, blob8=trigger, double2=load_ms.",
+      "description": "The output page in web mode: a globe's texture, such as a Second Life prim, reporting for itself because no control window drives it. One layer_loaded per dataset that reached the glass with trigger='output' (capped at 30 a minute per copy, since a script cycling the address sets that rate), counted per dataset with the sessions that saw it — one session per visitor's copy of the page, and a new one whenever the address's query changes and reloads it, so 'sessions' is an upper bound on visitors in view of a globe. Only globes whose owner turned telemetry on (telemetry=1) report at all, so this counts measured globes, not every globe. layer_id is the id the node returned, never the address's text. Desktop output windows never emit this: the control window's own layer_loaded already counts that view. AE positional layout: blob5=layer_id, blob6=layer_source, blob8=trigger, double2=load_ms.",
       "gridPos": {
         "x": 0,
         "y": 74,
@@ -1513,7 +1513,7 @@
       "id": 27,
       "type": "table",
       "title": "Globes (web output) — errors by code",
-      "description": "error rows with category='output', the output page in web mode, kept apart from category='hls' so a globe's visitors do not count against the app's stream health. code is bounded: not_found / not_playable / bad_response / http / network / media for a dataset that would not show (its first failure per address change, not each retry), and stream for a fatal stream error, whose message_class is hls.js's own error names. A rising not_found means a globe's address names a dataset the node no longer has. AE positional layout: blob5=category, blob6=code, blob7=message_class.",
+      "description": "error rows with category='output', the output page in web mode, kept apart from category='hls' so a globe's visitors do not count against the app's stream health. code is bounded: not_found / not_playable / bad_response / http / network / media for a dataset that would not show (its first failure per address change, not each retry), and stream for every fatal stream error hls.js reports, recovered or not, whose message_class is hls.js's own error names. A stream that will not load shows up under both: its stream rows, then one media row for the dataset. A rising not_found means a globe's address names a dataset the node no longer has. AE positional layout: blob5=category, blob6=code, blob7=message_class.",
       "gridPos": {
         "x": 12,
         "y": 74,

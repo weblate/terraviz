@@ -167,6 +167,22 @@ describe('fetchWebDataset', () => {
     await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'bad_response' })
   })
 
+  it('says network for a request that got no answer', async () => {
+    // Said where it is known. A `TypeError` from a bug elsewhere must not
+    // be reported as the network failing.
+    const fetchFn = vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'network' })
+  })
+
+  it("refuses a record with no id rather than taking the address's", async () => {
+    // The id is what the page reports as shown (`webTelemetry`), and it
+    // must be one the node gave, never the text of the address.
+    const fetchFn = node({ ...VIDEO_RECORD, id: undefined }, VIDEO_MANIFEST)
+    await expect(fetchWebDataset(ID, { frameWidth: 2048, fetchFn })).rejects.toMatchObject({ failure: 'bad_response' })
+  })
+
   it('escapes the id into the path', async () => {
     const fetchFn = node(VIDEO_RECORD, VIDEO_MANIFEST)
     await fetchWebDataset('a b', { frameWidth: 2048, fetchFn })

@@ -53,6 +53,9 @@ export type WebDatasetFailure =
   | 'bad_response'
   /** Any other HTTP failure. */
   | 'http'
+  /** The request got no answer at all: offline, DNS, a dropped
+   *  connection, or CORS. */
+  | 'network'
 
 export class WebDatasetError extends Error {
   constructor(
@@ -155,7 +158,14 @@ function directFile(files: unknown): string | undefined {
 }
 
 async function getJson(fetchFn: FetchFn, url: string, what: string): Promise<Record<string, unknown>> {
-  const res = await fetchFn(url, { headers: { Accept: 'application/json' } })
+  let res: Response
+  try {
+    res = await fetchFn(url, { headers: { Accept: 'application/json' } })
+  } catch {
+    // Said here, where it is known, rather than guessed later from the
+    // error's type: a `TypeError` is also what a bug throws.
+    throw new WebDatasetError('network', `${what}: no answer`)
+  }
   if (res.status === 404) throw new WebDatasetError('not_found', `${what} not found`)
   if (!res.ok) throw new WebDatasetError('http', `${what}: HTTP ${res.status}`)
   let body: unknown
@@ -182,6 +192,11 @@ export async function fetchWebDataset(
   const base = `${opts.apiBase ?? ''}/api/v1/datasets/${encodeURIComponent(id)}`
 
   const record = await getJson(fetchFn, base, `dataset ${id}`)
+  // The id is the node's, never the address's: what this page reports
+  // as shown (`webTelemetry`) must be a dataset the node said exists.
+  // The serializer always writes one, so a record without it is broken.
+  const recordId = str(record.id)
+  if (!recordId) throw new WebDatasetError('bad_response', `dataset ${id} came back with no id`)
   const format = typeof record.format === 'string' ? record.format : ''
   const kind = format.startsWith('video/') ? 'video' : format.startsWith('image/') ? 'image' : null
   if (!kind) throw new WebDatasetError('not_playable', `dataset ${id} is ${format || 'of no format'}, not an image or a video`)
@@ -202,7 +217,7 @@ export async function fetchWebDataset(
 
   return {
     dataset: {
-      id: str(record.id) ?? id,
+      id: recordId,
       url,
       kind,
       overlay: overlayFromRecord(record),

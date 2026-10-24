@@ -75,8 +75,8 @@ export interface WebOutputSettings {
   centreLonDeg: number
   /** Show the debug HUD. */
   debug: boolean
-  /** Report the page's own telemetry (`webTelemetry.ts`). Read when the
-   *  page loads; a later `#` change does not start or stop it. */
+  /** Report the page's own telemetry (`webTelemetry.ts`). Off unless
+   *  the address turns it on, and followed live like everything else. */
   telemetry: boolean
   /** Always a clock: a bare address plays from the start at the clip's
    *  own speed, from when this copy read it. */
@@ -116,14 +116,20 @@ function truthy(params: URLSearchParams, key: string): boolean {
   return lowered !== 'false' && lowered !== '0'
 }
 
-/** Whether the address leaves telemetry on: absent, or exactly `1` or
- *  `true` (any case). The usual boolean reading would take `off`, `no`
- *  and an empty value as on, and a privacy switch read that way does
- *  the opposite of what was written. So this one fails toward off. */
+/**
+ * Whether the address turns telemetry on: exactly `1` or `true` (any
+ * case), and off for anything else or nothing.
+ *
+ * Off by default because the page loads for everyone in range of a
+ * globe, who is shown no notice, and anyone can point a globe at a
+ * public node. So only a globe whose owner chose to measure it reports
+ * (the maintainer's decision, 24 October 2026). The usual boolean
+ * reading would take `off`, `no` and an empty value as on, and a privacy
+ * switch read that way does the opposite of what was written, so this
+ * one fails toward off.
+ */
 function telemetryOn(params: URLSearchParams): boolean {
-  const raw = params.get('telemetry')
-  if (raw === null) return true
-  const lowered = raw.toLowerCase()
+  const lowered = params.get('telemetry')?.toLowerCase()
   return lowered === '1' || lowered === 'true'
 }
 

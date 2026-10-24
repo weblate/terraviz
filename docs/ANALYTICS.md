@@ -151,8 +151,8 @@ must be corrected.
 
 | Event | Tier | Where it fires |
 |---|---|---|
-| `session_start` / `session_end` | A | `src/analytics/session.ts`. The output page in web mode (a globe's texture, such as a Second Life prim) starts its session with `platform: 'web-output'` through `src/output/webTelemetry.ts`, so a globe's visitors are not counted as `web` app sessions |
-| `layer_loaded` / `layer_unloaded` | A | `src/services/datasetLoader.ts`. The output page in web mode emits `layer_loaded` alone, with `trigger: 'output'`, when its address's dataset reaches the glass (`src/output/webTelemetry.ts`, capped at 30 a minute). It sends no `layer_unloaded`: a texture in view of a passer-by has no dwell worth the name |
+| `session_start` / `session_end` | A | `src/analytics/session.ts`. The output page in web mode (a globe's texture, such as a Second Life prim) starts its session with `platform: 'web-output'` through `src/output/webTelemetry.ts`, so a globe's visitors are not counted as `web` app sessions. It sends **no `session_end`**: on a globe the session's length is how long a passer-by stood near it, which is dwell. And it sends nothing at all unless the globe's address says `telemetry=1`: the page loads for everyone in range with no notice, so only globes an owner chose to measure report (the maintainer's decision, 24 October 2026) |
+| `layer_loaded` / `layer_unloaded` | A | `src/services/datasetLoader.ts`. The output page in web mode emits `layer_loaded` alone, with `trigger: 'output'`, when its address's dataset reaches the glass (`src/output/webTelemetry.ts`, capped at 30 in any sixty seconds). It sends no `layer_unloaded`: a texture in view of a passer-by has no dwell worth the name |
 | `camera_settled` | A | `src/services/mapRenderer.ts` (2D) + `src/services/vrInteraction.ts` (VR/AR) |
 | `map_click` | A | `src/services/mapRenderer.ts` |
 | `viewport_focus` / `layout_changed` | A | `src/services/viewportManager.ts` |
@@ -162,7 +162,7 @@ must be corrected.
 | `tour_started` / `tour_task_fired` / `tour_paused` / `tour_resumed` / `tour_ended` | A | `src/services/tourEngine.ts` |
 | `vr_session_started` / `vr_session_ended` / `vr_placement` | A | `src/services/vrSession.ts`, `src/services/vrPlacement.ts` |
 | `perf_sample` | A | `src/analytics/perfSampler.ts` |
-| `error` | A | `src/analytics/errorCapture.ts`. The output page in web mode reports under `category: 'output'` (`src/output/webTelemetry.ts`), with `code` one of `not_found` / `not_playable` / `bad_response` / `http` / `network` / `media` for a dataset that would not show (its first failure, not each retry) and `stream` for a fatal stream error, and a fixed message per code so the address's text never reaches the wire |
+| `error` | A | `src/analytics/errorCapture.ts`. The output page in web mode reports under `category: 'output'` (`src/output/webTelemetry.ts`), with `code` one of `not_found` / `not_playable` / `bad_response` / `http` / `network` / `media` for a dataset that would not show (its first failure, not each retry) and `stream` for every fatal stream error hls.js reports, recovered or not, and a fixed message per code so the address's text never reaches the wire. A stream that will not load reports both: its `stream` rows, then one `media` row |
 | `feedback` | A | `src/ui/helpUI.ts` (in-app form) + `src/ui/chatUI.ts` (Orbit thumbs) |
 | `dwell` | **B** | `src/analytics/dwell.ts` (panel + dataset dwell, called by chat / browse / info / tools UI) |
 | `orbit_interaction` / `orbit_turn` / `orbit_tool_call` / `orbit_load_followed` / `orbit_correction` | **B** | `src/ui/chatUI.ts`, `src/services/docentService.ts`, `src/services/datasetLoader.ts` |

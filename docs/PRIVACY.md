@@ -113,19 +113,26 @@ Small, anonymous events about the health of the app:
   one-word category for that, never which dataset it was
 - **A globe that shows only the picture** — a page we serve for a
   globe in a virtual world such as Second Life, or for a kiosk
-  screen, with no app around it. When your browser or viewer loads
-  one, it records: that it started, with the same buckets as above
-  and marked as a globe rather than the app; which dataset the globe
-  showed and how long it took to appear; and, if the dataset or its
-  video would not play, a one-word reason and the same sanitized
-  error summary as below. It never records the globe's address, where
-  the globe is, who set it up, or who is looking at it. Such a page
-  has no Privacy panel and shows no notice: as with a site that
-  embeds the app, whoever sets up the globe decides, and adding
-  `telemetry=0` to its address turns all of this off. An Off setting
-  you chose in the app on the same browser applies there too, and in
-  a virtual world your viewer's media settings can stop a globe's page
-  from loading at all
+  screen, with no app around it. Such a page records nothing unless
+  whoever set up the globe turned it on, by adding `telemetry=1` to its
+  address. We ask anyone who does to say so where the globe is. When it
+  is on and your browser or viewer loads the page, it records:
+  - that it started, with the same buckets as above, marked as a globe
+    rather than the app;
+  - which dataset the globe showed, and how long it took to appear;
+  - if the dataset or its video would not play, a one-word reason and
+    the same sanitized error summary as below.
+
+  It does not record how long the page stayed open, which on a globe
+  would be how long you stood near it. It never records the globe's
+  address, where the globe is, who set it up, or who is looking at it.
+  Like every event, these carry the time they arrived and the country
+  your request came from. The page has no Privacy panel and shows no
+  notice. An Off setting you chose in the app applies to such a page
+  only if it runs in the same browser, as a kiosk might. A virtual
+  world's viewer keeps its own browser, so there your control is the
+  viewer's media settings, which stop the globe's page from loading at
+  all, picture included
 - When something goes wrong — a classification of the error (tile
   fetch, video stream, AI model, uncaught exception, browser-console
   message, or native crash on desktop), a short sanitized summary of

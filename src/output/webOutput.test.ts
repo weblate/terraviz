@@ -69,7 +69,10 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
   const timers: { fn: () => void; ms: number; cleared: boolean }[] = []
   let now = T0
   let mono = 0
-  const report = { shown: vi.fn(), failed: vi.fn() }
+  const telemetry = { datasetShown: vi.fn(), datasetFailed: vi.fn(), streamError: vi.fn() }
+  const loadTelemetry = vi.fn(async () => telemetry)
+  /** The old names, read by the tests below. */
+  const report = { shown: telemetry.datasetShown, failed: telemetry.datasetFailed }
   const markDirty = vi.fn()
   const fetchDataset = vi.fn(
     opts.fetchDataset ?? (async (id: string): Promise<WebDataset> => ({ dataset: dataset(id), alternateUrls: [] })),
@@ -87,7 +90,7 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
     displaySizePx: () => ({ width: 2048, height: 1024 }),
     markDirty,
     fetchDataset,
-    report,
+    loadTelemetry,
     nowMs: () => now,
     monotonicMs: () => mono,
     setTimer: (fn, ms) => {
@@ -114,6 +117,8 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
     markDirty,
     fetchDataset,
     report,
+    telemetry,
+    loadTelemetry,
     show,
     onScreen,
     advance(ms: number) {
@@ -337,9 +342,25 @@ describe('applying the address', () => {
 })
 
 describe('reporting what reached the glass (webTelemetry)', () => {
-  it('reports a dataset once it is on screen, with how long it took', async () => {
+  // Telemetry is off unless the address turns it on, so every address
+  // here that expects a report says `telemetry=1`.
+  it('reports nothing, and loads no telemetry, unless the address turns it on', async () => {
     const h = harness()
     h.show('#dataset=A')
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.media.resolve(url('A'))
+    await until(() => h.onScreen() === url('A'), 'A on screen')
+    h.out.reportStreamError(new Error('networkError: fragLoadError'))
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(h.loadTelemetry).not.toHaveBeenCalled()
+    expect(h.telemetry.datasetShown).not.toHaveBeenCalled()
+    expect(h.telemetry.streamError).not.toHaveBeenCalled()
+  })
+
+  it('reports a dataset once it is on screen, with how long it took', async () => {
+    const h = harness()
+    h.show('#dataset=A&telemetry=1')
     await until(() => h.media.pending.length === 1, 'A to start loading')
     h.advance(750)
     h.media.resolve(url('A'))
@@ -349,6 +370,69 @@ describe('reporting what reached the glass (webTelemetry)', () => {
     expect(h.report.shown.mock.calls[0][0]).toMatchObject({ id: 'A' })
     expect(h.report.shown.mock.calls[0][1]).toBe(750)
     expect(h.report.failed).not.toHaveBeenCalled()
+    expect(h.loadTelemetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops reporting as soon as a # change turns it off', async () => {
+    const h = harness()
+    h.show('#dataset=A&telemetry=1')
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.media.resolve(url('A'))
+    await until(() => h.report.shown.mock.calls.length === 1, "A's report")
+
+    h.show('#dataset=B&telemetry=0')
+    await until(() => h.media.pending.length === 2, 'B to start loading')
+    h.media.resolve(url('B'))
+    await until(() => h.onScreen() === url('B'), 'B on screen')
+    h.out.reportStreamError(new Error('networkError: fragLoadError'))
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(h.report.shown.mock.calls.map(([d]) => d.id)).toEqual(['A'])
+    expect(h.telemetry.streamError).not.toHaveBeenCalled()
+  })
+
+  // Two checks, and each covers a race the other cannot.
+  it('drops a report made while on if the address turned it off before telemetry arrived', async () => {
+    const h = harness()
+    let arrive!: () => void
+    h.loadTelemetry.mockImplementation(() => new Promise(r => (arrive = () => r(h.telemetry))))
+    h.show('#telemetry=1')
+    h.out.reportStreamError(new Error('made while on'))
+    h.show('#telemetry=0')
+    arrive()
+    // The anchor: a report made now, with it on again, does arrive, so
+    // the one before it had every chance to.
+    await new Promise(r => setTimeout(r, 0))
+    h.show('#telemetry=1')
+    h.out.reportStreamError(new Error('made and delivered while on'))
+    await until(() => h.telemetry.streamError.mock.calls.length >= 1, 'the later report')
+
+    expect(h.telemetry.streamError.mock.calls.map(([e]) => (e as Error).message)).toEqual([
+      'made and delivered while on',
+    ])
+  })
+
+  it('drops a report made while off even if the address turns it on before delivery', async () => {
+    const h = harness()
+    h.show('#telemetry=1')
+    await until(() => h.loadTelemetry.mock.calls.length === 1, 'telemetry to load')
+    h.show('#telemetry=0')
+    h.out.reportStreamError(new Error('made while off'))
+    h.show('#telemetry=1')
+    h.out.reportStreamError(new Error('made while on'))
+    await until(() => h.telemetry.streamError.mock.calls.length >= 1, 'the report made while on')
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(h.telemetry.streamError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['made while on'])
+  })
+
+  it("reports a stream's fatal errors while it is on", async () => {
+    const h = harness()
+    h.show('#telemetry=1')
+    const err = new Error('mediaError: bufferStalledError')
+    h.out.reportStreamError(err)
+    await until(() => h.telemetry.streamError.mock.calls.length === 1, 'the report')
+    expect(h.telemetry.streamError).toHaveBeenCalledWith(err)
   })
 
   it('does not report a dataset the address had moved on from when it landed', async () => {
@@ -361,9 +445,9 @@ describe('reporting what reached the glass (webTelemetry)', () => {
         return { dataset: dataset(id), alternateUrls: [] }
       },
     })
-    h.show('#dataset=A')
+    h.show('#dataset=A&telemetry=1')
     await until(() => h.media.pending.length === 1, 'A to start loading')
-    h.show('#dataset=B')
+    h.show('#dataset=B&telemetry=1')
     await until(() => h.fetchDataset.mock.calls.length === 2, 'B to be fetched')
     h.media.resolve(url('A'))
     await until(() => h.onScreen() === url('A'), 'A on screen')
@@ -378,22 +462,23 @@ describe('reporting what reached the glass (webTelemetry)', () => {
   it('reports the first failure of each attempt, not its retries', async () => {
     const h = harness({
       fetchDataset: async () => {
-        throw new TypeError('Failed to fetch')
+        throw new WebDatasetError('network', 'no answer')
       },
     })
-    h.show('#dataset=A')
+    h.show('#dataset=A&telemetry=1')
     await until(() => h.timers.length === 1, 'the first retry to be scheduled')
-    expect(h.report.failed).toHaveBeenCalledTimes(1)
-    expect(h.report.failed.mock.calls[0][0]).toBeInstanceOf(TypeError)
+    await until(() => h.report.failed.mock.calls.length === 1, 'the first report')
+    expect(h.report.failed.mock.calls[0][0]).toMatchObject({ failure: 'network' })
 
     h.timers[0].fn()
     await until(() => h.timers.length === 2, 'the second retry to be scheduled')
+    await new Promise(r => setTimeout(r, 0))
     expect(h.report.failed).toHaveBeenCalledTimes(1)
 
     // A new address is a new attempt.
-    h.show('#dataset=B')
+    h.show('#dataset=B&telemetry=1')
     await until(() => h.timers.length === 3, "B's retry to be scheduled")
-    expect(h.report.failed).toHaveBeenCalledTimes(2)
+    await until(() => h.report.failed.mock.calls.length === 2, "B's report")
     expect(h.report.shown).not.toHaveBeenCalled()
   })
 })

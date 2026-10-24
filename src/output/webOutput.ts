@@ -49,6 +49,7 @@ import type { OutputScene } from './outputScene'
 import type { SyncOutcome } from './outputSync'
 import { createWebClockSteer } from './webClock'
 import { WebDatasetError, fetchWebDataset, type WebDataset } from './webDataset'
+import type { WebTelemetry } from './webTelemetry'
 import {
   defaultWebFramebufferWidth,
   readWebSettings,
@@ -141,14 +142,9 @@ export interface WebOutputDeps {
   /** Ask for a frame: something changed the scene can't see. */
   markDirty(): void
   fetchDataset?: (id: string, opts: { frameWidth: number }) => Promise<WebDataset>
-  /** Told what reached the glass and what would not (`webTelemetry.ts`).
-   *  Absent when the address turned telemetry off. */
-  report?: {
-    shown(dataset: MirroredDataset, loadMs: number): void
-    /** The first failure of each attempt to show a dataset, not its
-     *  retries. */
-    failed(err: unknown): void
-  }
+  /** Start the page's own telemetry (`webTelemetry.ts`), the first time
+   *  an address turns it on. Absent, the page reports nothing. */
+  loadTelemetry?: () => Promise<WebTelemetry | null>
   /** Wall-clock milliseconds, for the clock's anchor. */
   nowMs?: () => number
   /** Monotonic milliseconds, for how long a dataset took to show. */
@@ -162,6 +158,9 @@ export interface WebOutput {
   apply(settings: WebOutputSettings): void
   /** Steer the video to the clock. Every frame. */
   steer(): SyncOutcome
+  /** A fatal error from the stream, reported if the address has
+   *  telemetry on. */
+  reportStreamError(err: Error): void
   dispose(): void
 }
 
@@ -177,6 +176,20 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
   const clockSteer = createWebClockSteer()
 
   let current: WebOutputSettings | null = null
+  /** The page's telemetry, once an address has turned it on. */
+  let telemetry: Promise<WebTelemetry | null> | null = null
+  /**
+   * Report only while the address says so: checked when the report is
+   * made and again when it is delivered, so a `#telemetry=0` stops it as
+   * soon as it is applied, like every other setting. Turning it off
+   * stops this page sending more; what it already queued may still go.
+   */
+  const report = (send: (t: WebTelemetry) => void): void => {
+    if (!telemetry || !current?.telemetry || disposed) return
+    void telemetry.then(t => {
+      if (t && current?.telemetry && !disposed) send(t)
+    })
+  }
   /** When this copy read the clock: the anchor for one with no `at`. */
   let clockReadAtMs = nowMs()
   /** A newer address wins over a slower fetch, the rule `datasetMirror`
@@ -237,7 +250,8 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
         const outcome = await tryCandidates(found, mine)
         if (outcome === 'superseded') return
         if (outcome === 'shown') {
-          deps.report?.shown(found.dataset, monotonicMs() - startedMs)
+          const loadMs = monotonicMs() - startedMs
+          report(t => t.datasetShown(found.dataset, loadMs))
           return
         }
         failure = new Error(`no address for ${id} would load`)
@@ -246,7 +260,8 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       }
       if (mine !== generation || disposed) return
       logger.error(`[Output] could not show dataset ${id}:`, failure)
-      if (attempt === 0) deps.report?.failed(failure)
+      // The first failure of each address, not its retries.
+      if (attempt === 0) report(t => t.datasetFailed(failure))
       // The live Earth, so every copy at one globe agrees on what it
       // could not show.
       await apply(null)
@@ -270,9 +285,16 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       deps.setFill(next.fit === 'fill')
       scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(next.centreLonDeg) })
       deps.setDebug(next.debug)
+      // Before the dataset, so a dataset this address shows is reported.
+      // Loaded once; turning it off later gates it in `report`.
+      if (next.telemetry && !telemetry && deps.loadTelemetry) telemetry = deps.loadTelemetry()
       if (!previous || !sameClock(next.clock, previous.clock)) clockReadAtMs = nowMs()
       if (!previous || next.datasetId !== previous.datasetId) showDataset(next.datasetId)
       deps.markDirty()
+    },
+
+    reportStreamError(err) {
+      report(t => t.streamError(err))
     },
 
     steer() {

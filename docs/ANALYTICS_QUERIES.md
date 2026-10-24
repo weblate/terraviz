@@ -417,8 +417,11 @@ frame list).
 `hls` so a globe's visitors do not count against the app's stream
 health. Its `code` is bounded: `not_found` / `not_playable` /
 `bad_response` / `http` / `network` / `media` for a dataset that would
-not show, and `stream` for a fatal stream error (its `message_class`
-is hls.js's own error names). Desktop output windows never emit an
+not show, and `stream` for every fatal stream error hls.js reports,
+recovered or not (its `message_class` is hls.js's own error names), so
+a stream that will not load appears under both: its `stream` rows,
+then one `media` row. Only globes whose address says `telemetry=1`
+report at all. Desktop output windows never emit an
 `error`: a stream that dies there arrives as `output_failure` with
 `kind = 'hls-stalled'`, below.
 

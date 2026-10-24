@@ -51,7 +51,8 @@ describe('starting', () => {
     expect(createFetchTransport).toHaveBeenCalledTimes(1)
     expect(setTransport).toHaveBeenCalledWith({ name: 'transport' })
     // Not `'web'`: a globe's visitors must not count as app sessions.
-    expect(initSession).toHaveBeenCalledWith({ platform: 'web-output' })
+    // And no `session_end`, whose length on a globe would be dwell.
+    expect(initSession).toHaveBeenCalledWith({ platform: 'web-output', sessionEnd: false })
   })
 })
 
@@ -81,14 +82,21 @@ describe('a dataset on the glass', () => {
     ])
   })
 
-  it('is capped per minute, because a script cycling the address sets the rate', () => {
+  it('is capped over any sixty seconds, because a script cycling the address sets the rate', () => {
     let now = 0
     const t = startWebTelemetry({ start: () => {}, nowMs: () => now })
-    for (let i = 0; i < WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE + 5; i++) t.datasetShown(VIDEO, 10)
+    // One a second, up to the cap, then more in the same breath.
+    for (let i = 0; i < WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE; i++) {
+      now = i * 1_000
+      t.datasetShown(VIDEO, 10)
+    }
+    t.datasetShown(VIDEO, 10)
     expect(emit).toHaveBeenCalledTimes(WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE)
 
-    // A minute on, the next one is sent.
+    // A minute after the first send, only that send has aged out. A fixed
+    // window starting there would let a whole second cap through here.
     now = 60_000
+    t.datasetShown(VIDEO, 10)
     t.datasetShown(VIDEO, 10)
     expect(emit).toHaveBeenCalledTimes(WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE + 1)
   })
@@ -141,7 +149,10 @@ describe('errors', () => {
   it('classifies a failure into a bounded code', () => {
     expect(webOutputErrorCode(new WebDatasetError('http', 'HTTP 503'))).toBe('http')
     expect(webOutputErrorCode(new WebDatasetError('not_playable', 'a tour'))).toBe('not_playable')
-    expect(webOutputErrorCode(new TypeError('Failed to fetch'))).toBe('network')
+    expect(webOutputErrorCode(new WebDatasetError('network', 'no answer'))).toBe('network')
+    // A bug's `TypeError` is not the network failing; `webDataset` says
+    // `network` itself where the fetch fails.
+    expect(webOutputErrorCode(new TypeError('x is not a function'))).toBe('media')
     expect(webOutputErrorCode(new Error('no address for x would load'))).toBe('media')
     expect(webOutputErrorCode('something else')).toBe('media')
   })

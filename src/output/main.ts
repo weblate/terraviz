@@ -115,19 +115,6 @@ async function boot(): Promise<void> {
     return { width: canvas.clientWidth * ratio, height: canvas.clientHeight * ratio }
   }
   const firstWidth = webSettings ? framebufferFor(webSettings, displaySizePx()) : undefined
-  // The page reports for itself only in web mode, where no control
-  // window can, and only when the address leaves it on (`telemetry=0`
-  // turns it off). A desktop output window never loads this, so it
-  // loads no telemetry code at all. Started now and awaited where it is
-  // first needed, so the import costs the boot nothing.
-  const telemetryReady = webSettings?.telemetry
-    ? import('./webTelemetry')
-        .then(m => m.startWebTelemetry())
-        .catch(err => {
-          logger.warn('[Output] telemetry did not start:', err)
-          return null
-        })
-    : Promise.resolve(null)
 
   // The clouds follow the frame's width and the producer's schedule
   // (`cloudRefresh.ts`), on desktop and web alike — an installation
@@ -536,8 +523,6 @@ async function boot(): Promise<void> {
   }
 
   if (webSettings) {
-    const telemetry = await telemetryReady
-    if (telemetry) streamReports.error = err => telemetry.streamError(err)
     // See `webOutput.ts`: the address is this window's control window.
     const webOutput = createWebOutput({
       mirror,
@@ -548,13 +533,19 @@ async function boot(): Promise<void> {
       markDirty: () => {
         dirty = true
       },
-      report: telemetry
-        ? {
-            shown: (dataset, loadMs) => telemetry.datasetShown(dataset, loadMs),
-            failed: err => telemetry.datasetFailed(err),
-          }
-        : undefined,
+      // The page reports for itself only in web mode, where no control
+      // window can, and only once an address turns it on (`telemetry=1`).
+      // A desktop output window never gets here, so it loads no
+      // telemetry code at all.
+      loadTelemetry: () =>
+        import('./webTelemetry')
+          .then(m => m.startWebTelemetry())
+          .catch(err => {
+            logger.warn('[Output] telemetry did not start:', err)
+            return null
+          }),
     })
+    streamReports.error = err => webOutput.reportStreamError(err)
     // Read again, not `webSettings`: that reading sized the first frame,
     // and a `#` change may have landed while the scene was loading.
     // After this, every `#` change a controller makes is applied live.
