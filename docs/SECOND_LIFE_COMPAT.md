@@ -1014,19 +1014,31 @@ Things this touches beyond the code:
   - **Two things, in the first minute only.** `layer_loaded` with
     `trigger: 'output'` when a dataset reaches the picture, and `error`
     under `category: 'output'` with a one-word `code`, both within
-    sixty seconds of the page starting to report. The privacy review
-    found two problems with the first version, and the maintainer chose
-    this design over keeping a slimmed session event:
+    sixty seconds of the page loading, and nothing sent after about 66
+    s even on a retry. The privacy review found two problems with the
+    first version, and the maintainer chose this design over keeping a
+    slimmed session event:
     - **No session event.** `session_start` put the visitor's locale, OS
       and screen beside their arrival time, which is the match an
       arrival log invites.
-    - **The first minute.** Every event carries its offset from page
-      load, so later ones bounded how long a visitor stayed, and copies
-      reporting the same change together linked visitors who were
-      together.
+    - **The first minute, in page time.** Every event carries its time
+      since the page started reporting, and a copy keeps running for as
+      long as its visitor stays. So later rows, a batch retried after an
+      outage, or the batch sent as the page closes would each bound how
+      long a visitor stayed. Copies reporting one change together link
+      visitors who were together. Counting from page load, rather than
+      from a later `#telemetry=1`, keeps a late switch-on from opening a
+      minute on every copy in range at once.
 
     Visitors are still countable, as the distinct session ids on these
     rows.
+  - **Steer a measured globe after the `#`.** A change before it
+    reloads every viewer's copy at once, and each reload starts a new
+    session and a new first minute. That brings back the "who was
+    together" link, and a chain of sessions that bounds a stay. The
+    maintainer chose to document this rather than keep a marker on the
+    visitor's device, since this page shows no notice. On a
+    query-steered globe, distinct session ids overcount visitors.
   - **Never the address's text,** the globe's location, or anything
     about who set it up or who is looking. `layer_id` is the id the
     node returned, and a record without one is refused. An error's
@@ -1035,8 +1047,10 @@ Things this touches beyond the code:
   - **What is left is country and arrival time.** The server stamps
     country on every event, and a row from the first minute is close
     to the arrival. With a venue's arrival log that can still attach a
-    real-world country to a named avatar. Removing it would change the
-    ingest path, which is an escalation, and it is not done
+    real-world country to a named avatar. A venue that runs its own node
+    holds the raw rows and can do this for its own globes, which the
+    maintainer accepted on the record. Removing country would change the
+    ingest path, which is an escalation, so it is not done
     (`PRIVACY_ANALYSIS.md` §9k).
   - **The visitor's controls are thin.** A Second Life viewer keeps its
     own browser, so an Off setting from the app never reaches it. The

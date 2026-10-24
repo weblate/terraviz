@@ -194,10 +194,16 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
   Privacy panel, and anyone can point a globe at a public node, so only
   a globe whose owner chose to measure it reports. An owner who turns it
   on should say so where the globe is.
-  - **What it sends**, and only in the first minute after it starts
-    reporting: which dataset reached the picture and how long that
-    took, and a one-word reason when a dataset or its stream ran into
-    trouble ([`ANALYTICS.md`](ANALYTICS.md), [`PRIVACY.md`](PRIVACY.md)).
+  - **What it sends**, only in the first minute after the page loads
+    and with nothing sent after about 66 s, even on a retry: which
+    dataset reached the picture and how long that took, and a one-word
+    reason when a dataset or its stream ran into trouble
+    ([`ANALYTICS.md`](ANALYTICS.md), [`PRIVACY.md`](PRIVACY.md)). A
+    `telemetry=1` that arrives after that minute reports nothing.
+  - **Steer a measured globe after the `#`.** A change before it reloads
+    the page in every viewer, and each reload reports again as a new
+    visit, which links the visitors present and bounds how long they
+    stay.
   - **What it never sends:** a session event (so no operating system,
     language or screen), anything after that first minute, the
     address's text, the globe's location, or anything about who is

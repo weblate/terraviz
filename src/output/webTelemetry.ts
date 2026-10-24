@@ -20,12 +20,18 @@
  *   reaches the wire. A stream that will not load reports both: `stream`
  *   rows for hls.js's fatal errors, then one `media` row for the dataset.
  *
- * **Only in the first minute** (`WEB_OUTPUT_REPORT_WINDOW_MS`) after
- * telemetry starts on the page, and nothing after. Every event carries
- * its offset from that start, and a page keeps running for as long as
- * its visitor stays in range, so events later in a visit would show how
- * long someone stood near the globe, and copies at one globe reporting
- * the same change together would show who stood there together. **No
+ * **Only in the first minute after the page loads**
+ * (`WEB_OUTPUT_REPORT_WINDOW_MS`, page time), and **nothing sent after
+ * it** (`deadlineTransport`: no retry past the deadline, no beacon as
+ * the page closes). A page keeps running for as long as its visitor
+ * stays in range, so a row from later in a visit, or a batch retried
+ * after an outage, would show how long someone stood near the globe, and
+ * copies reporting the same change together would show who stood there
+ * together. Page time, not when telemetry turned on, so a late
+ * `#telemetry=1` reports nothing rather than opening a minute on every
+ * copy in range at once. A change before the `#` reloads the page and
+ * starts a new minute, so owners of a measured globe should steer it
+ * after the `#` (`EMBED_URL_GRAMMAR.md`). **No
  * session event at all**: `session_start` would put the visitor's
  * locale, OS and screen beside the moment they arrived, which is the
  * match a land owner's log of avatar arrivals invites. Visitors are
@@ -47,18 +53,48 @@
  */
 
 import {
+  BATCH_INTERVAL_MS,
   TELEMETRY_BUILD_ENABLED,
   TELEMETRY_CONSOLE_MODE,
   createFetchTransport,
   emit,
   reportError,
   setTransport,
+  type SendResult,
+  type Transport,
 } from '../analytics'
 import { WebDatasetError, type WebDatasetFailure } from './webDataset'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 
-/** How long after telemetry starts the page reports anything. */
+/** How long after the page loads it reports anything: page time, from
+ *  `performance.now()`, so an address that turns telemetry on later in a
+ *  visit reports nothing, rather than opening a fresh minute on every
+ *  copy in range at once. */
 export const WEB_OUTPUT_REPORT_WINDOW_MS = 60_000
+
+/** The last moment, in page time, the page sends anything: the window,
+ *  one batch interval for its last event to go, and a second's margin.
+ *  After it a batch is dropped, not retried, so an outage cannot deliver
+ *  first-minute rows minutes later and prove the page was still open. */
+export const WEB_OUTPUT_SEND_DEADLINE_MS = WEB_OUTPUT_REPORT_WINDOW_MS + BATCH_INTERVAL_MS + 1_000
+
+const DROPPED: SendResult = { status: null, ok: false, retryable: false, permanent: true }
+
+/**
+ * A transport that sends nothing after `deadlineMs` of page time, and
+ * never by beacon. After the deadline a send reports `permanent`, which
+ * the emitter treats as the kill switch: it stops and drops its queue.
+ * The beacon is what the emitter fires as the page closes, with whatever
+ * is still queued, and on a globe that would date the visitor's leaving;
+ * it claims success and sends nothing, so those last rows are lost.
+ */
+export function deadlineTransport(inner: Transport, deadlineMs: number, nowMs: () => number): Transport {
+  return {
+    endpoint: inner.endpoint,
+    send: (sessionId, events) => (nowMs() < deadlineMs ? inner.send(sessionId, events) : Promise.resolve(DROPPED)),
+    sendBeacon: () => true,
+  }
+}
 
 /** The most `layer_loaded` events a copy sends in its one minute,
  *  because a script cycling a globe's address sets that rate, not a
@@ -88,7 +124,7 @@ export interface WebTelemetry {
 }
 
 export interface WebTelemetryDeps {
-  /** Monotonic milliseconds, for the reporting window. */
+  /** Page time in milliseconds (`performance.now()`), for the window. */
   nowMs?: () => number
   /** Install the transport. Replaced in tests. */
   start?: () => void
@@ -99,7 +135,9 @@ export interface WebTelemetryDeps {
 function startForReal(): void {
   // As in the app: no transport in a telemetry-free build, and none in
   // console mode, where batches are logged rather than sent.
-  if (TELEMETRY_BUILD_ENABLED && !TELEMETRY_CONSOLE_MODE) setTransport(createFetchTransport())
+  if (TELEMETRY_BUILD_ENABLED && !TELEMETRY_CONSOLE_MODE) {
+    setTransport(deadlineTransport(createFetchTransport(), WEB_OUTPUT_SEND_DEADLINE_MS, () => performance.now()))
+  }
 }
 
 function browserGpc(): boolean {
@@ -121,8 +159,7 @@ export function startWebTelemetry(deps: WebTelemetryDeps = {}): WebTelemetry | n
   if ((deps.globalPrivacyControl ?? browserGpc)()) return null
   const nowMs = deps.nowMs ?? (() => performance.now())
   ;(deps.start ?? startForReal)()
-  const startedMs = nowMs()
-  const open = (): boolean => nowMs() - startedMs < WEB_OUTPUT_REPORT_WINDOW_MS
+  const open = (): boolean => nowMs() < WEB_OUTPUT_REPORT_WINDOW_MS
   let shown = 0
 
   return {

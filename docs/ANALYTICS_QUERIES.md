@@ -421,8 +421,8 @@ not show, and `stream` for every fatal stream error hls.js reports,
 recovered or not (its `message_class` is hls.js's own error names), so
 a stream that will not load appears under both: its `stream` rows,
 then one `media` row. Only globes whose address says `telemetry=1`
-report at all, and only in the first minute after the page starts
-reporting. Their errors carry no stack, so no `error_detail` follows.
+report at all, and only in the first minute after the page loads,
+with nothing sent after about 66 s. Their errors carry no stack, so no `error_detail` follows.
 Desktop output windows never emit an
 `error`: a stream that dies there arrives as `output_failure` with
 `kind = 'hls-stalled'`, below.

@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../analytics', () => ({
   TELEMETRY_BUILD_ENABLED: true,
   TELEMETRY_CONSOLE_MODE: false,
-  createFetchTransport: vi.fn(() => ({ name: 'transport' })),
+  BATCH_INTERVAL_MS: 5_000,
+  createFetchTransport: vi.fn(() => ({
+    endpoint: '/api/ingest',
+    send: vi.fn(async () => ({ status: 204, ok: true, retryable: false, permanent: false })),
+    sendBeacon: vi.fn(() => true),
+  })),
   emit: vi.fn(),
   reportError: vi.fn(),
   setTransport: vi.fn(),
@@ -17,6 +22,8 @@ import { WebDatasetError } from './webDataset'
 import {
   WEB_OUTPUT_LAYER_LOADED_MAX_PER_MINUTE,
   WEB_OUTPUT_REPORT_WINDOW_MS,
+  WEB_OUTPUT_SEND_DEADLINE_MS,
+  deadlineTransport,
   startWebTelemetry,
   webOutputErrorCode,
   type WebTelemetryDeps,
@@ -55,12 +62,17 @@ afterEach(() => {
 })
 
 describe('starting', () => {
-  it('installs the transport and sends no session event', () => {
+  it('installs a deadline-bound transport and sends no session event', () => {
     // No session_start: it would put locale, OS and screen beside the
     // moment a visitor arrived.
     startWebTelemetry({ globalPrivacyControl: () => false })
     expect(createFetchTransport).toHaveBeenCalledTimes(1)
-    expect(setTransport).toHaveBeenCalledWith({ name: 'transport' })
+    const installed = vi.mocked(setTransport).mock.calls[0][0]!
+    expect(installed.endpoint).toBe('/api/ingest')
+    // Wrapped: the beacon sends nothing, whatever the inner one would do.
+    const inner = vi.mocked(createFetchTransport).mock.results[0].value
+    expect(installed.sendBeacon('s', [])).toBe(true)
+    expect(inner.sendBeacon).not.toHaveBeenCalled()
     expect(emit).not.toHaveBeenCalled()
   })
 
@@ -118,8 +130,8 @@ describe('a dataset on the glass', () => {
 describe('the first minute only', () => {
   // Events later in a visit would show how long someone stood near the
   // globe, and copies reporting the same change together who stood there
-  // together.
-  it('reports nothing once the minute after starting is over', () => {
+  // together. The clock is page time.
+  it('reports nothing once the minute after the page loaded is over', () => {
     const { t, at } = started()
     at(WEB_OUTPUT_REPORT_WINDOW_MS - 1)
     t.datasetShown(VIDEO, 10)
@@ -131,6 +143,51 @@ describe('the first minute only', () => {
 
     expect(vi.mocked(emit).mock.calls.map(c => (c[0] as { layer_id: string }).layer_id)).toEqual(['ds-video'])
     expect(reportError).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports nothing when telemetry is turned on after the first minute', () => {
+    // A late `#telemetry=1` would otherwise open a minute on every copy
+    // in range at the same instant, and link everyone standing there.
+    const t = startWebTelemetry({
+      start: () => {},
+      globalPrivacyControl: () => false,
+      nowMs: () => WEB_OUTPUT_REPORT_WINDOW_MS + 30_000,
+    })!
+    t.datasetShown(VIDEO, 10)
+    t.streamError(new Error('networkError: fragLoadError'))
+    expect(emit).not.toHaveBeenCalled()
+    expect(reportError).not.toHaveBeenCalled()
+  })
+})
+
+describe('sending stops at the deadline', () => {
+  const inner = () => ({
+    endpoint: '/api/ingest',
+    send: vi.fn(async () => ({ status: 204, ok: true, retryable: false, permanent: false })),
+    sendBeacon: vi.fn(() => true),
+  })
+
+  it('sends before the deadline and drops for good after it, so a retry cannot land late', async () => {
+    let now = 0
+    const real = inner()
+    const t = deadlineTransport(real, WEB_OUTPUT_SEND_DEADLINE_MS, () => now)
+    now = WEB_OUTPUT_SEND_DEADLINE_MS - 1
+    expect(await t.send('s', [])).toMatchObject({ ok: true })
+    now = WEB_OUTPUT_SEND_DEADLINE_MS
+    // `permanent` is what makes the emitter stop and drop its queue.
+    expect(await t.send('s', [])).toEqual({ status: null, ok: false, retryable: false, permanent: true })
+    expect(real.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('never sends by beacon, which would date the visitor leaving', () => {
+    const real = inner()
+    const t = deadlineTransport(real, WEB_OUTPUT_SEND_DEADLINE_MS, () => 0)
+    expect(t.sendBeacon('s', [])).toBe(true)
+    expect(real.sendBeacon).not.toHaveBeenCalled()
+  })
+
+  it('leaves a batch room to go after the last event of the window', () => {
+    expect(WEB_OUTPUT_SEND_DEADLINE_MS).toBeGreaterThan(WEB_OUTPUT_REPORT_WINDOW_MS + 5_000)
   })
 })
 

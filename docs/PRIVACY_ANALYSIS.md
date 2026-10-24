@@ -882,21 +882,44 @@ decisions, 24 October 2026, after the privacy review):
   never with Global Privacy Control set.
 - **No `session_start` or `session_end`.** No OS, locale, screen or
   VR class leaves a globe, and no session length.
-- **Only the first minute** after telemetry starts on the page.
-  `client_offset_ms` is on every row, so later events would bound how
-  long a visitor stayed, and copies reporting the same change together
-  would link visitors who were together.
+- **Only the first minute after the page loads**, in page time, so a
+  late `#telemetry=1` reports nothing rather than opening a minute on
+  every copy in range at once. `client_offset_ms` is on every row, so
+  later events would bound how long a visitor stayed.
+- **Nothing sent after the window plus one batch interval**
+  (`WEB_OUTPUT_SEND_DEADLINE_MS`, about 66 s). After it the transport
+  reports `permanent`, so a batch retried through an outage is dropped
+  rather than landing minutes later as proof the page was still open.
+  The page never uses the leave-time beacon, which would date a short
+  stay's departure.
 
-**What remains, and is accepted.** `layer_loaded` and `error` rows
-from the first minute carry the server-stamped country and an arrival
-time to within the batch delay. Together with a venue's arrival log,
-that can still attach a real-world **country** to a named avatar in a
-quiet region. Removing country for this page would mean changing the
-ingest path (a new route, or not stamping a field), which is an
-escalation under `ANALYTICS_CONTRIBUTING.md` and is not done. The
-opt-in narrows the exposure to globes someone chose to measure. That
-someone may be the venue itself, so the request that owners disclose
-in-world is the visitor's only notice.
+**What remains, and is accepted** (the maintainer's decisions):
+
+- **Country and arrival time.** `layer_loaded` and `error` rows carry
+  the server-stamped country and an arrival time to within about 66 s.
+  Together with a venue's arrival log, that can attach a real-world
+  **country** to a named avatar in a quiet region. Removing country for
+  this page would change the ingest path (a new route, or not stamping a
+  field), which is an escalation under `ANALYTICS_CONTRIBUTING.md`, so
+  it is not done.
+- **The realistic adversary is the venue running its own node.** It
+  holds the raw Analytics Engine rows and its own arrival log, so it can
+  run that match for its own globes. The record accepts this; restricting
+  raw-row access for globe rows would be infrastructure work.
+- **Who was together is narrowed, not removed.** Visitors who arrive
+  within a minute of each other and see the same dataset change can
+  still be linked by its timing.
+- **Reloads.** A change before the `#` reloads every viewer's copy at
+  once. Each reload is a new session with a new first minute, which
+  reports together on every copy, and a chain of sessions from one
+  country bounds a stay. Owners of measured globes are asked to steer
+  after the `#` (`EMBED_URL_GRAMMAR.md`), and the privacy policy says
+  what a query-steered globe does. Counting visitors as distinct session
+  ids overcounts on such a globe.
+
+The opt-in narrows the exposure to globes someone chose to measure.
+That someone may be the venue itself, so the request that owners
+disclose in-world is the visitor's only notice.
 
 ---
 
