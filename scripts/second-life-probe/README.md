@@ -53,6 +53,7 @@ Said in local chat on channel 7, by the object's owner only.
 | `/7 globe` | Stands the sphere's poles upright and rotates its texture 90° | Fixes a default sphere's sideways mapping (below) |
 | `/7 turn`, `/7 mirror`, `/7 reset` | Rotate the texture a further 90°, flip it, or undo `globe` | For checking orientation against the grid |
 | `/7 face N` | Moves the media to face N | Only needed on a box; a sphere has just face 0 |
+| `/7 hash` | Changes only the part of the address after `#`, on whatever the face shows | Can a globe be steered live, for every visitor, without each viewer reloading? (The doc's §7, items 4 and 7.) Run it after `/7 video` to see whether a playing video survives it |
 | `/7 api` | Asks the node again | Needs `node-check.lsl` in the prim |
 
 Every command that shows a page loads it fresh, so repeating one reruns
@@ -104,6 +105,12 @@ local texture, and it costs nothing.
 | `[probe] The soak sent no heartbeat within 25 seconds of starting` | It went quiet in its first seconds — the failure bug #5189 describes |
 | `[page] soak webgl: no WebGL 2 context` | This viewer's browser has no WebGL 2, so the soak can't run. An answer in itself; TerraViz needs WebGL 2 |
 | `[probe] Soak ended by a new command` | You switched away; nothing went wrong |
+| `[probe] The page took the change without reloading, at most … ms after the script made it. The video kept playing.` followed by `[page] hash: #h=N, video t=…, playing, readyState 4` | **The answer the clock plan hopes for.** A change after `#` reached the page with no reload, and the video was still playing when it did. The time includes the report's trip back, so the page saw it sooner. Anything up to about 1,000 ms just means "within the second the script itself pauses after changing media" |
+| The same, but `But the video wasn't playing normally`, with `paused` or a low `readyState` in the `[page]` line | No reload, but the change stalled the video. That still costs every visitor a pause, so it isn't the clean answer |
+| `[probe] The viewer then reloaded the page anyway, … ms after the # change` | It took the change, then reloaded within the half minute. Count it as costing a reload |
+| `[probe] The viewer reloaded the page to apply the change, … ms after the # change`, then `[page] mode: … #h=N` | The change arrived, but by reloading the page, so the video starts over. Steering a globe this way costs every viewer a reload |
+| `[probe] The viewer reloaded the page … but the reload lost the # part` | It reloaded, and the change didn't arrive at all |
+| No answer about the change within half a minute of `/7 hash` (other `[page]` lines may still arrive) | The viewer didn't pass the change on. After the half minute a report is no longer counted as an answer: the face's address still carries the `#`, so every later reload carries it too |
 | `[page] TerraViz stream via hls.js: failed, networkError / manifestLoadError` | Expected. TerraViz's video host only lets pages from TerraViz's own site load its streams through hls.js, so the page falls back to a public test stream to check that video plays at all. (The page tries the browser's own HLS player first, which isn't held to that rule; Second Life's browser had none in October 2026, so that path didn't run) |
 
 When you report results, say which viewer and version (Help → About),
@@ -123,6 +130,25 @@ comes from one machine.
   number; a script asking for one gets a bounds error and no change.
 - **The output page's address is `/output/output`.** `/output.html` is
   answered by the main app.
+- **For `/7 hash`, your own viewer speaks for every viewer of its
+  kind.** A script's change reaches every viewer the same way, yours
+  included: as an update to the object. So the test page answers for
+  everyone running the same viewer.
+  - **To test a different viewer** (the official one, or the phone
+    app), its user runs their own copy of the probe. The test page
+    only renders for its owner.
+  - **A second avatar watching `/7 app` or `/7 sos` can confirm a
+    reload, nothing more.** Those pages can't report, and nothing on
+    them changes visibly with the `#`. So a restart means "costs a
+    reload", while no restart could mean the change arrived quietly or
+    never arrived.
+- **Don't click inside `/7 app` before `/7 hash`.** A click can move the
+  app to another address. `/7 hash` reads the face's own address
+  rather than the one it set, which copes, but there is no point
+  testing a navigation you didn't mean.
+- **`/7 hash` before the page has started tells you nothing.** If the
+  page hasn't reported starting (media auto-play off, say), the script
+  says so. Click the face and try again.
 
 ## Changing the kit
 

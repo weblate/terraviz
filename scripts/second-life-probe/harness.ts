@@ -25,6 +25,9 @@
  * embedded browser — headless Chromium is a newer browser with different
  * codecs — which is what the in-world run is for. So whether a video
  * *played* is printed, not judged; whether the chain reached its end is.
+ * The one exception is the `#` run, whose question is whether a change
+ * after `#` disturbs a playing video: it waits for one to play, and
+ * fails if the video isn't still playing when the page reports.
  *
  * `PLAYWRIGHT_CHROMIUM_PATH` picks the browser, the convention
  * `scripts/screenshots/core/browser.ts` uses, and `HTTPS_PROXY` is
@@ -49,16 +52,24 @@ interface ModeRun {
   label: string
   /** Hide native HLS, to take the path Second Life's browser takes. */
   noNativeHls?: boolean
-  /** Lines the run must produce, by prefix. */
-  expect: string[]
+  /** Lines the run must produce, by prefix or by pattern. */
+  expect: (string | RegExp)[]
   /** The run is over when this holds. */
   done: (lines: string[]) => boolean
   /** Lines that mean the run reached its end and failed. */
   fails?: string[]
+  /** Once this holds, change only the address's # part, as `/7 hash` does. */
+  hashAfter?: (lines: string[]) => boolean
+  /** For the whole run, the # change included. */
   deadlineMs: number
 }
 
-const has = (prefix: string) => (lines: string[]) => lines.some((l) => l.startsWith(prefix))
+/** How long a run is watched after its last report, for a late reload. */
+const SETTLE_MS = 3000
+
+const has = (match: string | RegExp) => (lines: string[]) =>
+  lines.some((l) => (typeof match === 'string' ? l.startsWith(match) : match.test(l)))
+const loads = (lines: string[]) => lines.filter((l) => l.startsWith('mode: ')).length
 const anyOf = (...prefixes: string[]) => (lines: string[]) => prefixes.some((p) => has(p)(lines))
 const beats = (lines: string[]) => lines.filter((l) => HEARTBEAT.test(l)).length
 
@@ -85,6 +96,14 @@ const RUNS: ModeRun[] = [
     query: 'video', label: 'video, native HLS hidden', noNativeHls: true, deadlineMs: 75_000,
     expect: ['mode: video', 'native HLS: no'],
     done: anyOf(...VIDEO_END.slice(1), 'hls.js: could not load'),
+  },
+  {
+    // Only once a stream is playing, so the report says whether the
+    // change disturbed it.
+    query: 'video', label: 'hash, mid-video', noNativeHls: true, deadlineMs: 90_000,
+    expect: ['mode: video', /^hash: #h=1, video t=[\d.]+s, playing, readyState [34]$/],
+    hashAfter: anyOf('TerraViz stream via hls.js: PLAYING', 'test stream via hls.js (not TerraViz data): PLAYING'),
+    done: has('hash:'),
   },
   {
     query: 'soak', label: 'soak', deadlineMs: 45_000,
@@ -129,9 +148,8 @@ function standIn(page: string, lines: string[], problems: string[]): Promise<Ser
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
 }
 
-/** Waits for `done` to hold, or for the deadline; says which. */
-async function until(done: () => boolean, deadlineMs: number): Promise<boolean> {
-  const end = Date.now() + deadlineMs
+/** Waits for `done` to hold, or for the clock to pass `end`; says which. */
+async function until(done: () => boolean, end: number): Promise<boolean> {
   while (!done()) {
     if (Date.now() > end) return false
     await new Promise((resolve) => setTimeout(resolve, 250))
@@ -161,12 +179,28 @@ export async function testPage(page: string, only?: string): Promise<boolean> {
           }
         })
       }
-      await tab.goto(`http://127.0.0.1:${port}/?${run.query}&n=1`)
-      const finished = await until(() => run.done(lines), run.deadlineMs)
+      const url = `http://127.0.0.1:${port}/?${run.query}&n=1`
+      const end = Date.now() + run.deadlineMs
+      // Counted from the browser's side as well as the page's: a reload
+      // that never reports, because it failed or went somewhere else,
+      // shows up only here. A change to the # alone requests nothing.
+      let documents = 0
+      tab.on('request', (r) => { if (r.isNavigationRequest() && r.frame() === tab.mainFrame()) documents++ })
+      // Each page reports its mode once per load, so a second is a reload,
+      // and the run stops there rather than waiting out its deadline.
+      const reloaded = () => loads(lines) > 1 || documents > 1
+      await tab.goto(url)
+      const hashAfter = run.hashAfter
+      if (hashAfter && await until(() => hashAfter(lines) || reloaded(), end) && !reloaded()) await tab.goto(`${url}#h=1`)
+      const finished = await until(() => run.done(lines) || reloaded(), end) && !reloaded()
+      // A reload just after the last report would otherwise pass.
+      if (finished) await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
       await tab.close()
 
-      if (!finished) problems.push(`did not reach its last report within ${run.deadlineMs / 1000} s`)
-      for (const prefix of run.expect) if (!has(prefix)(lines)) problems.push(`no "${prefix}" line`)
+      if (!finished && !reloaded()) problems.push(`did not reach its last report within ${run.deadlineMs / 1000} s`)
+      if (loads(lines) !== 1) problems.push(`the page loaded ${loads(lines)} times`)
+      if (documents !== 1) problems.push(`the browser requested the page ${documents} times`)
+      for (const match of run.expect) if (!has(match)(lines)) problems.push(`no "${match}" line`)
       for (const prefix of run.fails ?? []) if (has(prefix)(lines)) problems.push(`reported "${prefix}"`)
 
       console.log(`\n=== ${run.label}: ${problems.length === 0 ? 'ok' : 'FAILED'}`)
