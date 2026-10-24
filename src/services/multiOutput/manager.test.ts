@@ -1358,6 +1358,22 @@ describe('a stream that died on an output', () => {
     expect(stalledRows()).toHaveLength(2)
   })
 
+  it('does not reopen the bound when the output changes the id it names', async () => {
+    // The id is the output's to choose. Keyed on it, alternating two
+    // reopened the bound on every message (found in review).
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0 })
+    fake.send(ready('output-1'))
+    vi.mocked(emit).mockClear()
+
+    for (const datasetId of ['ds-a', 'ds-b', 'ds-a', null, 'ds-b']) {
+      fake.send({ type: 'output_dataset_stalled', label: 'output-1', datasetId })
+    }
+    expect(stalledRows()).toHaveLength(1)
+  })
+
   it('does not report one from a window on its way out', async () => {
     // Its stream ending is the close.
     const fake = createFakeHost()

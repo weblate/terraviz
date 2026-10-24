@@ -541,6 +541,59 @@ describe('HLSService native HLS path', () => {
 
     expect(seen).toEqual([])
   })
+
+  // A measured globe's telemetry is its reporter (`datasetMirror`), and
+  // this path once reached only the handler, so a native stream that
+  // died after loading sent no error row (found in review).
+  it('reports an error after load to the reporter, as hls.js errors are', async () => {
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = await nativeVideo()
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await p
+
+    video.dispatchEvent(new Event('error'))
+    expect(reported.map(e => e.message)).toEqual(['native: nativeHlsError'])
+  })
+
+  it('leaves an error before load to the rejection', async () => {
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = await nativeVideo()
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('error'))
+
+    await expect(p).rejects.toThrow('Native HLS load failed')
+    expect(reported).toEqual([])
+  })
+
+  it('reports nothing for a stream disposed or replaced', async () => {
+    // `destroy()`'s own `video.load()` can fire `error` on the listener
+    // left armed; a disposed panel's telemetry must not hear its stream
+    // fail. Nor must a stream's, once the element has been handed to the
+    // next load.
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = await nativeVideo()
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await p
+    svc.destroy()
+    video.dispatchEvent(new Event('error'))
+    expect(reported).toEqual([])
+
+    const other = await nativeVideo()
+    const first = svc.loadStream('https://example.com/a.m3u8', other)
+    other.dispatchEvent(new Event('loadedmetadata'))
+    await first
+    const second = svc.loadStream('https://example.com/b.m3u8', other)
+    other.dispatchEvent(new Event('loadedmetadata'))
+    await second
+    other.dispatchEvent(new Event('error'))
+    // One report, the current stream's, not one for each listener.
+    expect(reported.map(e => e.message)).toEqual(['native: nativeHlsError'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -582,6 +635,21 @@ describe('HLSService.loadDirect', () => {
     const seen: unknown[] = []
     svc.onFatalError((e) => seen.push(e))
     expect(seen).toEqual([{ type: 'native', details: 'mp4ErrorAfterLoad' }])
+  })
+
+  it('reports a failure after load, and nothing once disposed', async () => {
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = document.createElement('video')
+    const p = svc.loadDirect('https://example.com/v.mp4', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await p
+    video.dispatchEvent(new Event('error'))
+    expect(reported.map(e => e.message)).toEqual(['progressive: mp4ErrorAfterLoad'])
+
+    svc.destroy()
+    video.dispatchEvent(new Event('error'))
+    expect(reported).toHaveLength(1)
   })
 })
 

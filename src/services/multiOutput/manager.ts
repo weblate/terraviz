@@ -339,13 +339,17 @@ export interface OutputRecord {
    */
   gpuLost: boolean
   /**
-   * The dataset this output last reported a dead stream for, or `null`.
-   * One `hls-stalled` row per output per dataset, cleared when the
-   * control window publishes a dataset. The output already sends one
-   * per stream; this is the bound for an output that does not, a buggy
-   * future rebuild loop or a compromised window. Not persisted.
+   * Whether this output has reported a dead stream since the control
+   * window last published a dataset. One `hls-stalled` row per output
+   * per published dataset. The output already sends one per stream;
+   * this is the bound for an output that does not, a buggy future
+   * rebuild loop or a compromised window. A latch rather than the id
+   * the output names, because that id is the output's to choose: keyed
+   * on it, alternating two ids reopened the bound on every message
+   * (found in review). Only a publication, which this side makes,
+   * clears it. Not persisted.
    */
-  stallReportedFor: string | null
+  stallReported: boolean
   /**
    * The badge, derived from `ready`, `lastHealthCheckAtMs` and
    * `gpuLost`, and kept current by the heartbeat.
@@ -615,7 +619,7 @@ export class MultiOutputManager {
       lastEvent: null,
       lastHealthCheckAtMs: null,
       gpuLost: false,
-      stallReportedFor: null,
+      stallReported: false,
       health: 'starting',
       departing: false,
       announcedClosing: false,
@@ -1026,7 +1030,7 @@ export class MultiOutputManager {
         lastEvent: null,
         lastHealthCheckAtMs: null,
         gpuLost: false,
-        stallReportedFor: null,
+        stallReported: false,
         health: 'starting',
         departing: false,
         announcedClosing: false,
@@ -1246,7 +1250,7 @@ export class MultiOutputManager {
   async applyState(patch: Partial<MirroredGlobeState>): Promise<void> {
     // A new dataset is a new stream on every output, owed its own report
     // if it dies.
-    if ('dataset' in patch) for (const record of this.records.values()) record.stallReportedFor = null
+    if ('dataset' in patch) for (const record of this.records.values()) record.stallReported = false
     const message = this.aggregator.apply(patch)
     if (!message) return
     await this.broadcast(message)
@@ -1662,11 +1666,12 @@ export class MultiOutputManager {
       // not counted.
       //
       // Not from a window on its way out, whose stream ending is the
-      // close, and at most once per output per dataset (`stallReportedFor`).
+      // close, and at most once per output per published dataset
+      // (`stallReported`). The id is the output's word, so it names the
+      // dataset in the log and decides nothing.
       const datasetId = typeof event.datasetId === 'string' ? event.datasetId.slice(0, 64) : null
-      const key = datasetId ?? ''
-      if (!record.departing && !record.announcedClosing && record.stallReportedFor !== key) {
-        record.stallReportedFor = key
+      if (!record.departing && !record.announcedClosing && !record.stallReported) {
+        record.stallReported = true
         logger.error(`[multiOutput] ${event.label} could not play ${datasetId ?? 'its dataset'}`)
         reportOutputFailure({ kind: 'hls-stalled', retries: 0, recovered: false })
       }

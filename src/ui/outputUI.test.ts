@@ -40,7 +40,7 @@ function record(label: string, on: OutputMonitor): OutputRecord {
     ready: false,
     lastHealthCheckAtMs: null,
   gpuLost: false,
-  stallReportedFor: null,
+  stallReported: false,
     health: 'starting' as const,
     lastEvent: null,
     departing: false,

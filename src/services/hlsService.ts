@@ -220,6 +220,16 @@ export class HLSService {
   video: HTMLVideoElement | null = null
   private fatalErrorHandler: ((error: HlsFatalError) => void) | null = null
   private pendingFatalError: HlsFatalError | null = null
+  /**
+   * Which load the element's listeners belong to, moved on by every
+   * load and by `destroy()`. The native and progressive paths leave
+   * their `error` listener armed on purpose, and `destroy()`'s
+   * `video.load()` can fire it; nulling the handler kept that from the
+   * handler, but not from the reporter, which a measured globe's
+   * telemetry receives. A listener from a load since replaced or
+   * disposed goes quiet (found in review).
+   */
+  private loadGeneration = 0
   /** Where a fatal error is reported as telemetry. */
   private readonly reportTelemetry: (err: Error) => void
 
@@ -326,6 +336,7 @@ export class HLSService {
    */
   loadStream(hlsUrl: string, video: HTMLVideoElement, mobile = false, maxWidth?: number): Promise<void> {
     this.sourceUrl = hlsUrl
+    const generation = ++this.loadGeneration
     return new Promise((resolve, reject) => {
       // This promise settles on `MANIFEST_PARSED`, so anything that
       // fails later has no caller left to reject to. Route every
@@ -574,8 +585,17 @@ export class HLSService {
         // only report of a stream that dies during playback, which is
         // the case this whole seam exists for. `destroy()` drops the
         // handler, and the element goes with it.
-        video.addEventListener('error', () => fail('native', 'nativeHlsError',
-          new Error('Native HLS load failed')))
+        //
+        // After load it goes to the reporter too, as hls.js's fatal
+        // errors and the progressive file's do. It once reached only the
+        // handler, so a page whose reporter is its telemetry (a measured
+        // globe, `datasetMirror`) sent nothing for it (found in review).
+        // Before load the rejection is the report: the caller owns it.
+        video.addEventListener('error', () => {
+          if (generation !== this.loadGeneration) return
+          if (loaded) this.reportTelemetry(new Error('native: nativeHlsError'))
+          fail('native', 'nativeHlsError', new Error('Native HLS load failed'))
+        })
       } else {
         fail('unsupported', 'hlsUnsupported', new Error('HLS is not supported in this browser'))
       }
@@ -587,6 +607,7 @@ export class HLSService {
    */
   loadDirect(mp4Url: string, video: HTMLVideoElement): Promise<void> {
     this.sourceUrl = mp4Url
+    const generation = ++this.loadGeneration
     return new Promise((resolve, reject) => {
       // Tear down any hls.js instance before taking this element over.
       //
@@ -625,6 +646,7 @@ export class HLSService {
         resolve()
       }, { once: true })
       video.addEventListener('error', () => {
+        if (generation !== this.loadGeneration) return
         if (settled) {
           logger.warn('[HLS] Direct MP4 failed after load')
           this.reportTelemetry(new Error('progressive: mp4ErrorAfterLoad'))
@@ -717,7 +739,9 @@ export class HLSService {
   destroy(): void {
     // Before anything else: `video.load()` below can fire `error`, and
     // the native paths keep their listener armed on purpose. A panel
-    // being disposed must not be told its stream failed.
+    // being disposed must not be told its stream failed, and its
+    // telemetry must not hear it either (`loadGeneration`).
+    this.loadGeneration++
     this.fatalErrorHandler = null
     this.pendingFatalError = null
     if (this.hls) {
