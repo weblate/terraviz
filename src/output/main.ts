@@ -24,11 +24,25 @@
  * inside the hard-seek threshold it only trims the rate — so calling it
  * every frame is what keeps a sphere in step rather than sawtoothing
  * between diffs.
+ *
+ * **Off desktop, the page's own address is the control window**
+ * (`docs/SECOND_LIFE_COMPAT.md` §7). With no Tauri there is nothing to
+ * link to — in Second Life every visitor's viewer runs its own copy —
+ * so a `sos-equirect` page reads what to show from its URL
+ * (`webMode.ts`), fetches the dataset itself (`webDataset.ts`), steers
+ * to the shared clock in the address (`webClock.ts`), and re-reads it
+ * on every `hashchange`, which a browser applies without a reload. A
+ * bare address is the idle Earth it always was.
  */
 
 import './output.css'
 import { CALIBRATION_OVERLAY, MAX_PATTERN_WIDTH, createCalibrationCache } from './calibrationPattern'
-import { createDatasetMirror } from './datasetMirror'
+import { createCloudRefresh } from './cloudRefresh'
+import { createDatasetMirror, createDefaultMediaLoader } from './datasetMirror'
+import { IDENTITY_PARAMS } from './equirectRtt'
+import { createWebClockSteer } from './webClock'
+import { fetchWebDataset } from './webDataset'
+import { readWebSettings, type WebClock, type WebOutputSettings } from './webMode'
 import {
   OVERLAY_REFRESH_MS,
   createDebugOverlay,
@@ -53,11 +67,18 @@ import type { LinkHealth } from './linkWatchdog'
 import type { SyncOutcome } from './outputSync'
 import { createFullscreenController, resolveChromeHost } from '../services/windowChrome'
 import {
+  DEFAULT_FRAMEBUFFER_WIDTH,
   outputModeFromQuery,
   type OutputGlobeState,
   type OutputRenderConfig,
 } from '../services/multiOutput/protocol'
+import { cloudTextureUrlForWidth } from '../utils/deviceCapability'
 import { logger } from '../utils/logger'
+
+/** A clock for an address that names none: from the start of the clip,
+ *  at the clip's own speed, from when this page loaded. Each copy then
+ *  runs on its own, which is all one viewer needs. */
+const OWN_CLOCK: WebClock = { positionS: 0, atUnixS: null, rate: 1, paused: false }
 
 /** The same gate `bootMultiOutput` applies on the control side. */
 function isDesktop(): boolean {
@@ -86,8 +107,35 @@ async function boot(): Promise<void> {
     return
   }
 
-  const scene = await createOutputScene({ canvas, mode })
-  const mirror = createDatasetMirror()
+  // The web mode's settings are read before the scene exists, so the
+  // first frame is already the right size. Desktop gets its size from
+  // the manager's render config instead, once the link attaches.
+  const web = !isDesktop() && mode === 'sos-equirect'
+  let webSettings: WebOutputSettings | null = web
+    ? readWebSettings(window.location.search, window.location.hash)
+    : null
+
+  // The clouds follow the frame's width and the producer's schedule
+  // (`cloudRefresh.ts`), on desktop and web alike — an installation
+  // left running all day has the same stale sky a web page does.
+  let sceneRef: Awaited<ReturnType<typeof createOutputScene>> | null = null
+  const clouds = createCloudRefresh({
+    url: () =>
+      cloudTextureUrlForWidth(sceneRef?.size.width ?? webSettings?.framebufferWidth ?? DEFAULT_FRAMEBUFFER_WIDTH),
+    onImage: image => sceneRef?.setCloudImage(image),
+  })
+
+  const scene = await createOutputScene(
+    { canvas, mode, framebufferWidth: webSettings?.framebufferWidth ?? undefined },
+    { loadCloudImage: () => clouds.first() },
+  )
+  sceneRef = scene
+  clouds.start()
+  // A web output caps its video at its own frame, because every visitor
+  // streams their own copy. A desktop output is unchanged.
+  const mirror = createDatasetMirror(
+    web ? { loader: createDefaultMediaLoader({ maxVideoWidth: () => scene.size.width }) } : {},
+  )
   /** Per-frame work the link installs, if it attached. Empty on the web
    *  fixture page, where the loop is just the idle Earth. */
   const steerers: (() => void)[] = []
@@ -455,6 +503,77 @@ async function boot(): Promise<void> {
       // the missing output is reported (rung 13's health badges).
       logger.error('[Output] could not attach to the control window:', err)
     }
+  }
+
+  if (web && webSettings) {
+    const loadedAtMs = Date.now()
+    // Playing reuses the desktop playhead layer, against the clip's own
+    // seconds as a dated span; paused seeks exactly. See `webClock.ts`.
+    const clockSteer = createWebClockSteer({
+      loadedAtMs,
+      syncPlaying: ({ span, primary, playback }) => {
+        const shown = mirror.currentDataset()
+        return mirror.sync({ dataset: shown && { ...shown, ...span }, primary, playback })
+      },
+    })
+
+    // From the mirror, as on desktop: what this window decoded, not what
+    // the address asked for, so a dataset still loading is not drawn
+    // under the outgoing one's geometry.
+    const recompositeWeb = (): void => {
+      const media = mirror.current()
+      const shown = mirror.currentDataset()
+      scene.setLayers(media && shown ? [{ kind: media.kind, element: media.element, overlay: shown.overlay }] : [])
+      dirty = true
+    }
+
+    // A newer address wins over a slower fetch, the rule `datasetMirror`
+    // applies to loads; this applies it to the fetch before the load.
+    let datasetGeneration = 0
+    const showDataset = (id: string | null): void => {
+      const mine = ++datasetGeneration
+      if (id === null) {
+        void mirror.apply(null).then(recompositeWeb)
+        return
+      }
+      fetchWebDataset(id, { frameWidth: scene.size.width })
+        .then(async ds => {
+          if (mine !== datasetGeneration) return
+          await mirror.apply(ds)
+          if (mine === datasetGeneration) recompositeWeb()
+        })
+        // The idle Earth stays up; there is nobody on a sphere to tell.
+        .catch((err: unknown) => logger.error(`[Output] could not show dataset ${id}:`, err))
+    }
+
+    const applyWeb = (next: WebOutputSettings, previous: WebOutputSettings | null): void => {
+      // No-ops on an unchanged snapped size, so a fragment change that
+      // only moved the clock reallocates nothing.
+      scene.setFramebufferWidth(next.framebufferWidth ?? DEFAULT_FRAMEBUFFER_WIDTH)
+      document.body.classList.toggle('output-fit-fill', next.fit === 'fill')
+      scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: (next.rotationDeg * Math.PI) / 180 })
+      overlay.setVisible(next.debug)
+      if (!previous || next.datasetId !== previous.datasetId) showDataset(next.datasetId)
+      dirty = true
+    }
+    applyWeb(webSettings, null)
+
+    // The live half: a controller changes the part after `#`, which a
+    // browser applies without reloading the page.
+    window.addEventListener('hashchange', () => {
+      const next = readWebSettings(window.location.search, window.location.hash)
+      applyWeb(next, webSettings)
+      webSettings = next
+    })
+
+    steerers.push(() => {
+      const video = mirror.current()?.video ?? null
+      if (!video) return
+      const before = video.currentTime
+      lastSync = clockSteer.steer(video, webSettings?.clock ?? OWN_CLOCK, Date.now())
+      // A seek changes the decoded frame without the scene knowing.
+      if (before !== video.currentTime) dirty = true
+    })
   }
 
   const tick = (now: number): void => {
