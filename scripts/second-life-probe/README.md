@@ -98,9 +98,10 @@ command that changes the globe also says the address it set.
 
 ### How it steers every visitor
 
-The address has two halves. Before the `#` is only what the page must
-have when it loads: `fit=fill`, so the picture fills the face, and
-`telemetry`, since the page counts its one minute from when it loaded.
+The address has two halves. Before the `#` is only `fit=fill`, which
+never changes and makes the picture fill the face, and `telemetry`,
+which the page must have when it loads, since it counts its one minute
+from then.
 Everything a session changes sits after it: the dataset, the clock (`t`,
 `at`, `rate`, `paused`), `width`, `rotation` and `debug`. A browser
 applies a change after the `#` without reloading the page.
@@ -123,8 +124,8 @@ works out where the clip should be now from its own computer's clock.
 Copies agree as closely as visitors' clocks do, and most are set from
 internet time. The moment comes from the region's clock. If that is
 off, every copy is off alike while the clip plays, and it shows only at
-a pause or a resume: every copy jumps by the clock's error times the
-rate. That is nothing to see at rate 1, and about a second for every
+a pause, a resume or a change of rate: every copy jumps by the clock's
+error times the rate, or times the change in rate. That is nothing to see at rate 1, and about a second for every
 80 ms of error at 12.8.
 
 ### Smoke-testing the output page
@@ -191,9 +192,12 @@ what the readout showed for `sync`, `fps` and `gpu`.
   hands a click on a face with media to the media, whatever the media's
   permissions. Right-click and Touch reaches it.
 - **Spin off lines the viewers up again** by nudging the sphere's
-  rotation and setting it back, since each viewer keeps the angle it had
-  drawn. That is read from the viewer's source and hasn't been seen
-  in-world.
+  rotation and setting it back half a second later, since each viewer
+  keeps the angle it had drawn. That is read from the viewer's source
+  and hasn't been seen in-world.
+- **A long title is cut to 100 characters** in the hover text and in a
+  visitor's chat line, which both have a length limit. The telemetry
+  notice comes before it, so a cut never loses the notice.
 - **A reset puts the globe back on the live Earth**, stops any spin, and
   stands it upright again. Set `UPRIGHT_ON_START` to `FALSE` for a mesh
   globe with its own texture mapping, which keeps its own rotation.
@@ -342,11 +346,12 @@ comes from one machine.
 page:
 - every key the script writes, and every value it writes as written,
   must be one the page acts on;
-- only `fit` and `telemetry` may go before the `#`, and something always
-  follows it;
+- only `fit` and `telemetry` may go before the `#`, every key lands in
+  one half, and something always follows the `#`;
 - its rate limits must survive being written to three decimal places;
 - it must accept exactly the dataset ids the page does, presets
-  included.
+  included;
+- every media setting, the permissions included, goes with every call.
 
 A key added to the script fails that test until it is added there too,
 with a sample the page acts on. A change in what a value *means* isn't

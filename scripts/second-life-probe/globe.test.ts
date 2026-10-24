@@ -43,9 +43,11 @@ const segments = (source: string): Array<{ key: string; value: string }> =>
 
 const address = body(globe, 'string address()')
 /** What address() puts before the #: the lines that build `setup`. */
-const setupKeys = segments(address.split('\n').filter((line) => /\bsetup\b/.test(line)).join('\n')).map((s) => s.key)
+const setupSegments = segments(address.split('\n').filter((line) => /\bsetup\b/.test(line)).join('\n'))
 /** What it puts after: the lines that build `live`. */
-const liveKeys = segments(address.split('\n').filter((line) => /\blive\b/.test(line)).join('\n')).map((s) => s.key)
+const liveSegments = segments(address.split('\n').filter((line) => /\blive\b/.test(line)).join('\n'))
+const setupKeys = setupSegments.map((s) => s.key)
+const liveKeys = liveSegments.map((s) => s.key)
 
 const BARE = readWebSettings('', '')
 const ID = '01KQG611HF8YXJNRBEHT0757KT'
@@ -92,6 +94,11 @@ describe('second-life globe script', () => {
     // be there, since the page counts its minute from when it loaded.
     expect(new Set(setupKeys)).toEqual(new Set(['fit', 'telemetry']))
     expect(new Set(liveKeys)).toEqual(new Set(['dataset', 't', 'paused', 'at', 'rate', 'width', 'rotation', 'debug']))
+    // Every key written lands in one half or the other, once: a key on a
+    // line naming neither, a continuation of `setup` say, would slip
+    // past both lists above.
+    expect(setupSegments.length + liveSegments.length).toBe(segments(address).length)
+    expect(setupKeys.filter((key) => liveKeys.includes(key))).toEqual([])
     // Something always follows the #: the rotation and width go in
     // unconditionally, so no change can drop the fragment and reload.
     expect(address).toMatch(/^ {4}live \+= \["width=" \+ \(string\)gWidth, "rotation=" \+ num\(gRotation\)\];$/m)
@@ -149,6 +156,11 @@ describe('second-life globe script', () => {
     const max = Number(constant(globe, 'integer', 'ID_MAX'))
     expect(pageTakes('A'.repeat(max))).toBe(true)
     expect(pageTakes('A'.repeat(max + 1))).toBe(false)
+    // And the check uses them, rather than a number of its own.
+    const check = body(globe, 'integer isId(string s)')
+    expect(check).toContain('n > ID_MAX')
+    expect(check).toContain('llSubStringIndex(ID_CHARS,')
+    expect(check).not.toMatch(/n > \d/)
   })
 
   it('knows presets by lowercase names, with ids the page accepts', () => {
@@ -178,12 +190,16 @@ describe('second-life globe script', () => {
     // A visitor who can interact can navigate the face, and a viewer
     // broadcasts that navigation to everyone near the globe
     // (docs/SECOND_LIFE_COMPAT.md section 7, item 4). The permissions
-    // go with every call until one has carried them, since a face given
-    // only an address takes defaults that let anyone click.
+    // go with every call, in the one list the call sends, since a face
+    // given only an address takes defaults that let anyone click.
     const media = body(globe, 'integer setMedia()')
-    expect(media).toContain('PRIM_MEDIA_PERMS_INTERACT, PRIM_MEDIA_PERM_NONE')
-    expect(media).toContain('PRIM_MEDIA_PERMS_CONTROL, PRIM_MEDIA_PERM_NONE')
-    expect(media).toMatch(/if \(!gMediaReady\) p \+= \[/)
-    expect(media).toMatch(/gMediaReady = TRUE;\s+return TRUE;/)
+    const sent = media.match(/list p = \[([\s\S]*?)\];/)?.[1] ?? ''
+    expect(sent).toContain('PRIM_MEDIA_PERMS_INTERACT, PRIM_MEDIA_PERM_NONE')
+    expect(sent).toContain('PRIM_MEDIA_PERMS_CONTROL, PRIM_MEDIA_PERM_NONE')
+    expect(sent).toContain('PRIM_MEDIA_CURRENT_URL, url')
+    // Nothing chooses what goes: no condition before the call.
+    const call = media.indexOf('llSetPrimMediaParams(FACE, p)')
+    expect(call).toBeGreaterThan(-1)
+    expect(media.slice(0, call)).not.toMatch(/\bif\b|\bp \+=/)
   })
 })

@@ -113,9 +113,10 @@ list PRESETS = [
     "lights",     "01KQG629957NPZN7NTW4VK6FW0", "Nighttime Lights (still image)"
 ];
 
-// The page plays rates from 0.0834 to 12.8 and reads anything outside as
-// 1 (docs/EMBED_URL_GRAMMAR.md). Held a little inside 0.0834, because an
-// address carries three decimal places and 0.083 would read as 1.
+// The page plays rates from 1/12 (0.0833...) to 12.8 and reads anything
+// outside as 1 (docs/EMBED_URL_GRAMMAR.md). Held a little inside 1/12,
+// because an address carries three decimal places and 0.083 would read
+// as 1.
 float   MIN_RATE = 0.084;
 float   MAX_RATE = 12.8;
 
@@ -137,7 +138,6 @@ integer gTelemetry;
 integer gWidth = 2048;
 integer gHash = TRUE;   // changes go after the #
 
-integer gMediaReady;    // every media setting has been put on the face once
 float   gSpin;          // degrees a second, 0 for still
 key     gReq;           // the dataset check in flight, if any
 string  gReqId;         // the id it checks
@@ -212,8 +212,9 @@ float position()
 }
 
 // A plain decimal with at most three places, as the page reads numbers:
-// no exponent, no padding. LSL's own (string) gives six places. For
-// values under a million, which every caller holds to.
+// no exponent, no padding. LSL's own (string) gives six places. A
+// float's fraction coarsens as it grows, to about 8 ms once a clip has
+// played for a day at full speed, which the page does not notice.
 string num(float f)
 {
     string sign = "";
@@ -264,9 +265,9 @@ integer isId(string s)
 
 // The output page's address for the current state.
 // Before the #: the setup, fixed for the life of a page, so changing it
-// reloads every copy. That is only fit=fill and telemetry, which the page
-// must have when it loads, since it counts its minute from then. After
-// it: everything a session changes. It always has something after the #,
+// reloads every copy. That is only fit=fill, which never changes, and
+// telemetry, which the page must have when it loads, since it counts its
+// minute from then. After it: everything a session changes. It always has something after the #,
 // because a change from an address with one to an address without one is
 // a reload, not a #-only change.
 string address()
@@ -312,18 +313,19 @@ restore(list s)
     gHash = llList2Integer(s, 11);
 }
 
-// Puts the current state on the face. Every setting goes until one call
-// carrying them all has succeeded, and only the address after that: a
-// face given only an address takes media's defaults for the rest, which
-// let anyone click it. Each call sleeps the script for a second.
+// Puts the current state on the face, every setting every time: a face
+// given only an address takes media's defaults for the rest, which let
+// anyone click it, and the owner may have changed the face's media by
+// hand. Sending the rest costs nothing, since the call sleeps the script
+// for a second whatever it carries and a viewer navigates only when the
+// address changed (llviewermedia.cpp).
 // The media is not interactive for anyone, so no visitor's click can
 // move it to another address: a viewer broadcasts such a navigation to
 // everyone near the globe (docs/SECOND_LIFE_COMPAT.md section 7, item 4).
 integer setMedia()
 {
     string url = address();
-    list p = [PRIM_MEDIA_CURRENT_URL, url, PRIM_MEDIA_HOME_URL, url];
-    if (!gMediaReady) p += [
+    list p = [PRIM_MEDIA_CURRENT_URL, url, PRIM_MEDIA_HOME_URL, url,
         PRIM_MEDIA_AUTO_PLAY, TRUE,
         PRIM_MEDIA_AUTO_SCALE, FALSE,
         PRIM_MEDIA_AUTO_ZOOM, FALSE,
@@ -338,8 +340,16 @@ integer setMedia()
         llOwnerSay("[globe] Second Life refused the media (status " + (string)r + "). The globe is unchanged.");
         return FALSE;
     }
-    gMediaReady = TRUE;
     return TRUE;
+}
+
+// A title cut to a length every message it goes in can hold: a node's
+// titles run to 200 characters, and at three bytes each that pushes the
+// rest of a hover text or a chat line past its limit.
+string shorten(string title)
+{
+    if (llStringLength(title) <= 100) return title;
+    return llGetSubString(title, 0, 96) + "...";
 }
 
 // What a visitor sees over the globe and in its description. The
@@ -348,14 +358,15 @@ integer setMedia()
 describe()
 {
     string what = "The live Earth: today's clouds and the real day and night";
-    if (gDataset != "") what = gTitle;
+    if (gDataset != "") what = shorten(gTitle);
     string desc = "TerraViz globe: " + what;
     if (gTelemetry) desc = "TerraViz globe. Counts anonymous use: " + NODE + "/privacy";
     llSetObjectDesc(llGetSubString(desc, 0, 126));
     if (!HOVER_TEXT) { llSetText("", ZERO_VECTOR, 0.0); return; }
-    string s = "TerraViz globe\n" + what;
-    if (gTelemetry) s += "\nThis globe counts anonymous use: " + NODE + "/privacy";
-    llSetText(s, <1.0, 1.0, 1.0>, 1.0);
+    // The notice comes before the title: hover text stops at 254 bytes.
+    string s = "TerraViz globe\n";
+    if (gTelemetry) s += "This globe counts anonymous use: " + NODE + "/privacy\n";
+    llSetText(s + what, <1.0, 1.0, 1.0>, 1.0);
 }
 
 // Applies a change already made to the state, or puts the state back if
@@ -376,12 +387,16 @@ integer commit(list saved)
 // never moved, so setting it again alone changes nothing on screen. A
 // small turn first, then the real rotation, are two different updates.
 // From the viewer's source (llviewerobject.cpp); not yet seen in-world.
+// Local rotation, so a globe linked to a stand is set back where it was
+// rather than turned by the stand's rotation, and a pause between the two
+// so a busy region does not fold them into one update.
 stopSpin()
 {
-    rotation rest = llGetRot();
+    rotation rest = llGetLocalRot();
     llTargetOmega(ZERO_VECTOR, 0.0, 0.0);
-    llSetRot(rest * llAxisAngle2Rot(<0.0, 0.0, 1.0>, 0.01));
-    llSetRot(rest);
+    llSetLocalRot(rest * llAxisAngle2Rot(<0.0, 0.0, 1.0>, 0.01));
+    llSleep(0.5);
+    llSetLocalRot(rest);
     gSpin = 0.0;
 }
 
@@ -412,6 +427,9 @@ integer check(string id, string described)
     key req = llHTTPRequest(NODE + "/api/v1/datasets/" + id, [HTTP_BODY_MAXLENGTH, 2048], "");
     if (req == NULL_KEY)
     {
+        // Any earlier /8 show still waiting is dropped too, or it would
+        // land after the owner was told to try again.
+        gReq = NULL_KEY;
         llOwnerSay("[globe] Second Life is limiting this object's web requests. Try again in a minute.");
         return FALSE;
     }
@@ -470,14 +488,16 @@ default
         string url = NODE + "/";
         if (gDataset != "")
         {
-            what = gTitle;
+            what = shorten(gTitle);
             url = NODE + "/?dataset=" + gDataset;
         }
-        // Each link ends its line, so no punctuation joins the link.
+        // Each link ends its line, so no punctuation joins the link, and
+        // the notice comes before the title, so a chat line cut at its
+        // limit loses the title's end rather than the notice.
         string say = "This globe is TerraViz, a free, open-source globe for Earth data, most of it from "
-            + "NOAA's Science On a Sphere collection. It is showing " + what + ".\nExplore it in your web "
-            + "browser: " + url;
+            + "NOAA's Science On a Sphere collection.";
         if (gTelemetry) say += "\nThis globe counts anonymous use: " + NODE + "/privacy";
+        say += "\nIt is showing " + what + ".\nExplore it in your web browser: " + url;
         integer i;
         for (i = 0; i < n; ++i) llRegionSayTo(llDetectedKey(i), 0, say);
     }
@@ -523,11 +543,12 @@ default
         }
         if (cmd == "earth")
         {
-            gReq = NULL_KEY;   // a /8 show still waiting on the node is overtaken
             gDataset = "";
             gTitle = "";
             gPaused = FALSE;
-            if (commit(saved)) llOwnerSay("[globe] Back to the live Earth.");
+            if (!commit(saved)) return;
+            gReq = NULL_KEY;   // a /8 show still waiting on the node is overtaken
+            llOwnerSay("[globe] Back to the live Earth.");
             return;
         }
         if (cmd == "pause" || cmd == "play" || cmd == "jump" || cmd == "rate")
@@ -593,7 +614,7 @@ default
         {
             if (!isNumber(arg) || llFabs((float)arg) > 3600.0)
             {
-                llOwnerSay("[globe] Rotation in degrees east, like 90 or -75.");
+                llOwnerSay("[globe] Rotation in degrees east, from -3600 to 3600, like 90 or -75.");
                 return;
             }
             float r = (float)arg;
@@ -734,9 +755,10 @@ default
                 // globe on the live Earth.
                 if (llSubStringIndex(format, "image/") != 0 && llSubStringIndex(format, "video/") != 0)
                 {
-                    string kind = "a " + format;
-                    if (llSubStringIndex(format, "tour/") == 0) kind = "a tour, which drives the full app";
-                    llOwnerSay("[globe] " + gReqId + " is " + kind + ". A globe shows only images and videos. "
+                    string kind = "is in the format \"" + format + "\"";
+                    if (format == "") kind = "has no format";
+                    if (llSubStringIndex(format, "tour/") == 0) kind = "is a tour, which drives the full app";
+                    llOwnerSay("[globe] " + gReqId + " " + kind + ". A globe shows only images and videos. "
                         + "The globe is unchanged.");
                     return;
                 }
