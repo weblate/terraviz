@@ -1,0 +1,294 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Zyra Project
+
+/**
+ * The web mode's composition, driven through the real `datasetMirror`
+ * with loads resolved by hand, so the races are the real ones.
+ */
+
+import { describe, expect, it, vi } from 'vitest'
+import { RETRY_DELAYS_MS, createWebOutput, framebufferFor, isRetryable } from './webOutput'
+import { createDatasetMirror, type MediaLoader, type MediaSource } from './datasetMirror'
+import { WebDatasetError, type WebDataset } from './webDataset'
+import { readWebSettings, rotationOffsetRadFor } from './webMode'
+import type { SyncTarget } from './outputSync'
+import type { MirroredDataset } from '../services/multiOutput/protocol'
+import { until } from '../test-utils'
+
+const T0 = 1_761_288_000_000
+
+function dataset(id: string, url = `https://cdn.example/${id}.m3u8`): MirroredDataset {
+  return { id, url, kind: 'video', overlay: { datasetId: id }, startTime: null, endTime: null }
+}
+
+function videoTarget(over: Partial<SyncTarget> = {}): SyncTarget {
+  return {
+    readyState: 4,
+    duration: 1000,
+    paused: false,
+    seeking: false,
+    currentTime: 0,
+    playbackRate: 1,
+    play: vi.fn(),
+    pause: vi.fn(),
+    ...over,
+  }
+}
+
+/** A loader resolved by hand, tagged by URL. */
+function deferredLoader() {
+  const pending: { url: string; resolve: () => void; reject: (e: Error) => void }[] = []
+  const disposed: string[] = []
+  const elements = new Map<string, { tag: string }>()
+  const videos = new Map<string, SyncTarget>()
+  const loader: MediaLoader = {
+    load: ds =>
+      new Promise<MediaSource>((resolve, reject) => {
+        const element = { tag: ds.url }
+        const video = videoTarget()
+        elements.set(ds.url, element)
+        videos.set(ds.url, video)
+        pending.push({
+          url: ds.url,
+          resolve: () =>
+            resolve({ kind: 'video', element: element as never, video, dispose: () => disposed.push(ds.url) }),
+          reject,
+        })
+      }),
+  }
+  const resolve = (url: string) => pending.find(p => p.url === url)!.resolve()
+  const reject = (url: string) => pending.find(p => p.url === url)!.reject(new Error('404'))
+  return { loader, pending, disposed, elements, videos, resolve, reject }
+}
+
+function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = {}) {
+  const media = deferredLoader()
+  const mirror = createDatasetMirror({ loader: media.loader })
+  const layers: unknown[][] = []
+  const params: unknown[] = []
+  const timers: { fn: () => void; ms: number; cleared: boolean }[] = []
+  let now = T0
+  const markDirty = vi.fn()
+  const fetchDataset = vi.fn(
+    opts.fetchDataset ?? (async (id: string): Promise<WebDataset> => ({ dataset: dataset(id), alternateUrls: [] })),
+  )
+  const out = createWebOutput({
+    mirror,
+    scene: {
+      size: { width: 2048, height: 1024 },
+      setLayers: l => layers.push([...l]),
+      setFramebufferWidth: vi.fn(),
+      setParams: p => params.push(p),
+    },
+    setDebug: vi.fn(),
+    setFill: vi.fn(),
+    displayWidthPx: () => 2048,
+    markDirty,
+    fetchDataset,
+    nowMs: () => now,
+    setTimer: (fn, ms) => {
+      timers.push({ fn, ms, cleared: false })
+      return timers.length
+    },
+    clearTimer: handle => {
+      timers[(handle as number) - 1].cleared = true
+    },
+  })
+  const show = (hash: string) => out.apply(readWebSettings('', hash))
+  /** The element the scene was last handed, or null for the live Earth. */
+  const onScreen = () => {
+    const last = layers[layers.length - 1] as { element: { tag: string } }[] | undefined
+    return last && last.length ? last[0].element.tag : null
+  }
+  return {
+    out,
+    mirror,
+    media,
+    layers,
+    params,
+    timers,
+    markDirty,
+    fetchDataset,
+    show,
+    onScreen,
+    advance(ms: number) {
+      now += ms
+    },
+  }
+}
+
+const url = (id: string) => `https://cdn.example/${id}.m3u8`
+
+describe('the races review found', () => {
+  it('ends on the dataset gone back to, not on the video a late load released', async () => {
+    const h = harness()
+    h.show('#dataset=X')
+    await until(() => h.media.pending.length === 1, 'X to start loading')
+    h.media.resolve(url('X'))
+    await until(() => h.onScreen() === url('X'), 'X on screen')
+
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 2, 'A to start loading')
+    h.show('#dataset=X')
+    await until(() => h.fetchDataset.mock.calls.length === 3, 'X asked for again')
+    h.media.resolve(url('A'))
+    await until(() => h.media.disposed.includes(url('A')), 'A released')
+
+    expect(h.onScreen()).toBe(url('X'))
+    expect(h.media.disposed).not.toContain(url('X'))
+  })
+
+  it('leaves the live Earth up when told to show nothing during a load', async () => {
+    const h = harness()
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.show('')
+    h.media.resolve(url('A'))
+    await until(() => h.media.disposed.includes(url('A')), 'A released')
+    expect(h.onScreen()).toBeNull()
+    expect(h.mirror.current()).toBeNull()
+  })
+})
+
+describe('converging on what every copy can show', () => {
+  it('goes to the live Earth when the new dataset does not exist, and does not retry', async () => {
+    const h = harness({
+      fetchDataset: async id => {
+        if (id === 'B') throw new WebDatasetError('not_found', 'no B')
+        return { dataset: dataset(id), alternateUrls: [] }
+      },
+    })
+    h.show('#dataset=A')
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.media.resolve(url('A'))
+    await until(() => h.onScreen() === url('A'), 'A on screen')
+
+    h.show('#dataset=B')
+    await until(() => h.mirror.current() === null, 'the live Earth')
+    expect(h.onScreen()).toBeNull()
+    expect(h.timers).toEqual([])
+  })
+
+  it('retries a failure that may pass, and shows the dataset when it does', async () => {
+    let fails = 1
+    const h = harness({
+      fetchDataset: async id => {
+        if (fails-- > 0) throw new WebDatasetError('http', 'HTTP 503')
+        return { dataset: dataset(id), alternateUrls: [] }
+      },
+    })
+    h.show('#dataset=A')
+    await until(() => h.timers.length === 1, 'a retry to be scheduled')
+    expect(h.timers[0].ms).toBe(RETRY_DELAYS_MS[0])
+    h.timers[0].fn()
+    await until(() => h.media.pending.length === 1, 'A to start loading')
+    h.media.resolve(url('A'))
+    await until(() => h.onScreen() === url('A'), 'A on screen')
+  })
+
+  it('backs off, and keeps trying at the last interval', async () => {
+    const h = harness({ fetchDataset: async () => Promise.reject(new TypeError('Failed to fetch')) })
+    h.show('#dataset=A')
+    for (let i = 0; i < RETRY_DELAYS_MS.length + 1; i++) {
+      await until(() => h.timers.length === i + 1, `retry ${i + 1}`)
+      h.timers[i].fn()
+    }
+    await until(() => h.timers.length === RETRY_DELAYS_MS.length + 2, 'the next retry')
+    const last = RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]
+    expect(h.timers.map(t => t.ms)).toEqual([...RETRY_DELAYS_MS, last, last])
+  })
+
+  it('stops retrying once the address has moved on', async () => {
+    const h = harness({
+      fetchDataset: async id => {
+        if (id === 'A') throw new WebDatasetError('http', 'HTTP 503')
+        return { dataset: dataset(id), alternateUrls: [] }
+      },
+    })
+    h.show('#dataset=A')
+    await until(() => h.timers.length === 1, 'a retry to be scheduled')
+    h.show('#dataset=B')
+    expect(h.timers[0].cleared).toBe(true)
+  })
+
+  it("tries an image's other sizes before giving up", async () => {
+    const image = (u: string): MirroredDataset => ({ ...dataset('I', u), kind: 'image' })
+    const h = harness({
+      fetchDataset: async () => ({ dataset: image('https://i.example/2048.jpg'), alternateUrls: ['https://i.example/orig.jpg'] }),
+    })
+    h.show('#dataset=I')
+    await until(() => h.media.pending.length === 1, 'the picked size to start loading')
+    h.media.reject('https://i.example/2048.jpg')
+    await until(() => h.media.pending.length === 2, 'the original to start loading')
+    h.media.resolve('https://i.example/orig.jpg')
+    await until(() => h.onScreen() === 'https://i.example/orig.jpg', 'the original on screen')
+    expect(h.timers).toEqual([])
+  })
+
+  it('treats a picture that would not load as worth retrying, and a missing dataset as not', () => {
+    expect(isRetryable(new Error('Failed to load image'))).toBe(true)
+    expect(isRetryable(new WebDatasetError('http', 'HTTP 502'))).toBe(true)
+    expect(isRetryable(new WebDatasetError('not_found', 'no'))).toBe(false)
+    expect(isRetryable(new WebDatasetError('not_playable', 'a tour'))).toBe(false)
+    expect(isRetryable(new WebDatasetError('bad_response', 'not JSON'))).toBe(false)
+  })
+})
+
+describe('applying the address', () => {
+  it('sizes the frame by the address, else by the page as displayed', () => {
+    expect(framebufferFor(readWebSettings('?width=4096', ''), 1024)).toBe(4096)
+    expect(framebufferFor(readWebSettings('', ''), 1024)).toBe(1024)
+  })
+
+  it('puts the address rotation on the scene', () => {
+    const h = harness()
+    h.show('#rotation=90')
+    expect(h.params.at(-1)).toMatchObject({ rotationOffsetRad: rotationOffsetRadFor(90) })
+  })
+})
+
+describe('steering', () => {
+  async function playing(h: ReturnType<typeof harness>, hash: string) {
+    h.show(hash)
+    await until(() => h.media.pending.length === 1, 'the dataset to start loading')
+    h.media.resolve(url('A'))
+    await until(() => h.onScreen() === url('A'), 'the dataset on screen')
+    return h.media.videos.get(url('A'))!
+  }
+
+  it('reports not-ready with nothing loaded, so the HUD drops an old reading', () => {
+    expect(harness().out.steer()).toEqual({ kind: 'not-ready', driftS: null, seeked: false })
+  })
+
+  it('keeps a clock with no anchor running through a # change that left it alone', async () => {
+    const h = harness()
+    const v = await playing(h, '#dataset=A&t=40')
+    h.advance(600_000)
+    h.show('#dataset=A&t=40&debug=1')
+    v.currentTime = 640
+    expect(h.out.steer().driftS).toBeCloseTo(0, 6)
+  })
+
+  it('re-anchors a clock with no anchor when the address changes it', async () => {
+    // `#t=50` sent ten minutes in means 50 s now.
+    const h = harness()
+    const v = await playing(h, '#dataset=A&t=40')
+    h.advance(600_000)
+    h.show('#dataset=A&t=50')
+    v.currentTime = 50
+    expect(h.out.steer().driftS).toBeCloseTo(0, 6)
+  })
+
+  it('asks for a frame when a paused seek lands, not only when it is made', async () => {
+    const h = harness()
+    const v = await playing(h, '#dataset=A&t=30&paused=1')
+    h.out.steer()
+    expect(v.currentTime).toBe(30)
+    ;(v as { seeking: boolean }).seeking = true
+    h.out.steer()
+    h.markDirty.mockClear()
+    ;(v as { seeking: boolean }).seeking = false
+    h.out.steer()
+    expect(h.markDirty).toHaveBeenCalled()
+  })
+})

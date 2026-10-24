@@ -39,10 +39,8 @@ import './output.css'
 import { CALIBRATION_OVERLAY, MAX_PATTERN_WIDTH, createCalibrationCache } from './calibrationPattern'
 import { createCloudRefresh } from './cloudRefresh'
 import { createDatasetMirror, createDefaultMediaLoader } from './datasetMirror'
-import { IDENTITY_PARAMS } from './equirectRtt'
-import { createWebClockSteer } from './webClock'
-import { fetchWebDataset } from './webDataset'
-import { readWebSettings, rotationOffsetRadFor, sameClock, type WebOutputSettings } from './webMode'
+import { readWebSettings, type WebOutputSettings } from './webMode'
+import { createWebOutput, framebufferFor } from './webOutput'
 import {
   OVERLAY_REFRESH_MS,
   createDebugOverlay,
@@ -106,22 +104,25 @@ async function boot(): Promise<void> {
   // first frame is already the right size. Desktop gets its size from
   // the manager's render config instead, once the link attaches.
   const web = !isDesktop() && mode === 'sos-equirect'
-  let webSettings: WebOutputSettings | null = web
+  const webSettings: WebOutputSettings | null = web
     ? readWebSettings(window.location.search, window.location.hash)
     : null
+  /** The page's width as displayed, in device pixels: what a web
+   *  output's frame is sized to when its address names no `width`. */
+  const displayWidthPx = (): number => canvas.clientWidth * (window.devicePixelRatio || 1)
+  const firstWidth = webSettings ? framebufferFor(webSettings, displayWidthPx()) : undefined
 
   // The clouds follow the frame's width and the producer's schedule
   // (`cloudRefresh.ts`), on desktop and web alike — an installation
   // left running all day has the same stale sky a web page does.
   let sceneRef: Awaited<ReturnType<typeof createOutputScene>> | null = null
   const clouds = createCloudRefresh({
-    url: () =>
-      cloudTextureUrlForWidth(sceneRef?.size.width ?? webSettings?.framebufferWidth ?? DEFAULT_FRAMEBUFFER_WIDTH),
+    url: () => cloudTextureUrlForWidth(sceneRef?.size.width ?? firstWidth ?? DEFAULT_FRAMEBUFFER_WIDTH),
     onImage: image => sceneRef?.setCloudImage(image),
   })
 
   const scene = await createOutputScene(
-    { canvas, mode, framebufferWidth: webSettings?.framebufferWidth ?? undefined },
+    { canvas, mode, framebufferWidth: firstWidth },
     { loadCloudImage: () => clouds.first() },
   )
   sceneRef = scene
@@ -500,72 +501,26 @@ async function boot(): Promise<void> {
     }
   }
 
-  if (web && webSettings) {
-    let current: WebOutputSettings = webSettings
-    /** When this copy read the clock: the anchor for one with no `at`. */
-    let clockReadAtMs = Date.now()
-    // Playing reuses the desktop playhead layer, round the loop; paused
-    // seeks exactly. See `webClock.ts`.
-    const clockSteer = createWebClockSteer()
-
-    // From the mirror, as on desktop: what this window decoded, not what
-    // the address asked for, so a dataset still loading is not drawn
-    // under the outgoing one's geometry.
-    const recompositeWeb = (): void => {
-      const media = mirror.current()
-      const shown = mirror.currentDataset()
-      scene.setLayers(media && shown ? [{ kind: media.kind, element: media.element, overlay: shown.overlay }] : [])
-      dirty = true
-    }
-
-    // A newer address wins over a slower fetch, the rule `datasetMirror`
-    // applies to loads; this applies it to the fetch before the load.
-    let datasetGeneration = 0
-    const showDataset = (id: string | null): void => {
-      const mine = ++datasetGeneration
-      if (id === null) {
-        void mirror.apply(null).then(recompositeWeb)
-        return
-      }
-      fetchWebDataset(id, { frameWidth: scene.size.width })
-        .then(async ({ dataset: ds }) => {
-          if (mine !== datasetGeneration) return
-          await mirror.apply(ds)
-          if (mine === datasetGeneration) recompositeWeb()
-        })
-        // The idle Earth stays up; there is nobody on a sphere to tell.
-        .catch((err: unknown) => logger.error(`[Output] could not show dataset ${id}:`, err))
-    }
-
-    const applyWeb = (next: WebOutputSettings, previous: WebOutputSettings | null): void => {
-      // No-ops on an unchanged snapped size, so a fragment change that
-      // only moved the clock reallocates nothing.
-      scene.setFramebufferWidth(next.framebufferWidth ?? DEFAULT_FRAMEBUFFER_WIDTH)
-      document.body.classList.toggle('output-fit-fill', next.fit === 'fill')
-      scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(next.centreLonDeg) })
-      overlay.setVisible(next.debug)
-      if (!previous || next.datasetId !== previous.datasetId) showDataset(next.datasetId)
-      dirty = true
-    }
-    applyWeb(current, null)
-
+  if (webSettings) {
+    // See `webOutput.ts`: the address is this window's control window.
+    const webOutput = createWebOutput({
+      mirror,
+      scene,
+      setDebug: on => overlay.setVisible(on),
+      setFill: on => document.body.classList.toggle('output-fit-fill', on),
+      displayWidthPx,
+      markDirty: () => {
+        dirty = true
+      },
+    })
+    webOutput.apply(webSettings)
     // The live half: a controller changes the part after `#`, which a
     // browser applies without reloading the page.
-    window.addEventListener('hashchange', () => {
-      const next = readWebSettings(window.location.search, window.location.hash)
-      applyWeb(next, current)
-      if (!sameClock(next.clock, current.clock)) clockReadAtMs = Date.now()
-      current = next
-      webSettings = next
-    })
-
+    window.addEventListener('hashchange', () =>
+      webOutput.apply(readWebSettings(window.location.search, window.location.hash)),
+    )
     steerers.push(() => {
-      const video = mirror.current()?.video ?? null
-      if (!video) return
-      const before = video.currentTime
-      lastSync = clockSteer.steer(video, current.clock, Date.now(), clockReadAtMs)
-      // A seek changes the decoded frame without the scene knowing.
-      if (before !== video.currentTime) dirty = true
+      lastSync = webOutput.steer()
     })
   }
 
