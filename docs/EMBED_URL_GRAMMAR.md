@@ -158,7 +158,7 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
   then different addresses.
 - `mode` belongs to the desktop outputs and is outside this contract.
   A page naming any geometry but the default reads none of the above.
-- The page sends no telemetry, here or on desktop.
+- The page sends no telemetry, here or on desktop. A failing video stream is not reported either.
 
 ```text
 # The live Earth on a 2048×1024 media face

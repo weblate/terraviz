@@ -215,7 +215,11 @@ export function createDefaultMediaLoader(
       if (ds.kind === 'image') return loadImageSource(ds.url)
 
       const { HLSService } = await import('../services/hlsService')
-      const hls = new HLSService()
+      // Silent on a fatal error: an output emits no telemetry, desktop or
+      // web (`outputTelemetry.ts`). Left at the default, every desktop
+      // output and every Second Life visitor's copy would post its own
+      // error to the node.
+      const hls = new HLSService({ reportError: () => {} })
       const video = hls.createVideo()
       try {
         await (isHlsManifest(ds.url)

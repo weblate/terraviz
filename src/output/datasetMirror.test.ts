@@ -324,12 +324,16 @@ describe('isHlsManifest', () => {
  * blank sphere with no error anywhere.
  */
 describe('createDefaultMediaLoader', () => {
-  function mockHls(): { played: () => number; paused: () => number } {
+  function mockHls(): { played: () => number; paused: () => number; constructedWith: unknown[] } {
     let played = 0
     let paused = 0
+    const constructedWith: unknown[] = []
     vi.resetModules()
     vi.doMock('../services/hlsService', () => ({
       HLSService: class {
+        constructor(opts?: unknown) {
+          constructedWith.push(opts)
+        }
         createVideo(): HTMLVideoElement {
           const el = document.createElement('video')
           // A passive engine: `canplay` only ever arrives in response
@@ -355,7 +359,7 @@ describe('createDefaultMediaLoader', () => {
         destroy(): void {}
       },
     }))
-    return { played: () => played, paused: () => paused }
+    return { played: () => played, paused: () => paused, constructedWith }
   }
 
   afterEach(() => {
@@ -414,5 +418,18 @@ describe('createDefaultMediaLoader', () => {
     await createDefaultMediaLoader().load(ds)
 
     expect(calls.map(args => args[3])).toEqual([2048, 4096, undefined])
+  })
+
+  // An output emits no telemetry (`outputTelemetry.ts`). The stream's
+  // own fatal-error report is the one path that would have, from every
+  // desktop output and every Second Life visitor's copy.
+  it('builds a stream that reports its errors to nobody', async () => {
+    const counts = mockHls()
+    const { createDefaultMediaLoader } = await import('./datasetMirror')
+    await createDefaultMediaLoader().load({ kind: 'video', url: 'https://cdn.example/a.m3u8', overlay: {} } as never)
+
+    const opts = counts.constructedWith[0] as { reportError?: (err: Error) => void } | undefined
+    expect(opts?.reportError).toBeTypeOf('function')
+    expect(opts?.reportError?.(new Error('networkError: fragLoadError'))).toBeUndefined()
   })
 })

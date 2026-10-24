@@ -72,6 +72,11 @@ vi.mock('hls.js', () => {
   return { default: MockHls }
 })
 
+// The Tier A `error` report a fatal stream error makes. Mocked so a test
+// can tell the default reporter from an injected one.
+const analyticsMock = vi.hoisted(() => ({ reportError: vi.fn() }))
+vi.mock('../analytics', () => analyticsMock)
+
 // ---------------------------------------------------------------------------
 // HLSService — property defaults and lifecycle
 // ---------------------------------------------------------------------------
@@ -283,6 +288,25 @@ describe('HLSService fatal errors after load', () => {
     // Recovery is in progress — not something to report yet.
     expect(hlsMock.instance?.startLoad).toHaveBeenCalledTimes(3)
     expect(seen).toEqual([])
+  })
+
+  it('reports a terminal error as telemetry by default', async () => {
+    analyticsMock.reportError.mockClear()
+    const svc = new HLSService()
+    await loadAndSettle(svc)
+    hlsMock.fire('hlsError', NETWORK)
+    expect(analyticsMock.reportError).toHaveBeenCalledWith('hls', new Error('networkError: fragLoadError'))
+  })
+
+  it('reports to the injected reporter instead, when given one', async () => {
+    // The multi-monitor output's case: it emits no telemetry.
+    analyticsMock.reportError.mockClear()
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    await loadAndSettle(svc)
+    hlsMock.fire('hlsError', NETWORK)
+    expect(reported.map(e => e.message)).toEqual(['networkError: fragLoadError'])
+    expect(analyticsMock.reportError).not.toHaveBeenCalled()
   })
 
   it('reports a terminal media error too', async () => {

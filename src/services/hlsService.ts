@@ -201,6 +201,20 @@ export class HLSService {
   video: HTMLVideoElement | null = null
   private fatalErrorHandler: ((error: HlsFatalError) => void) | null = null
   private pendingFatalError: HlsFatalError | null = null
+  /** Where a fatal error is reported as telemetry. */
+  private readonly reportTelemetry: (err: Error) => void
+
+  /**
+   * `reportError` replaces the Tier A `error` report this service makes
+   * on a fatal error. The multi-monitor output passes one that does
+   * nothing, because an output emits no telemetry at all
+   * (`outputTelemetry.ts`): on desktop it is a capture surface, and on
+   * the web every Second Life visitor runs a copy. Everything else keeps
+   * the default.
+   */
+  constructor(opts: { reportError?: (err: Error) => void } = {}) {
+    this.reportTelemetry = opts.reportError ?? (err => reportError('hls', err))
+  }
 
   /**
    * Register a handler for fatal errors that arrive after the stream
@@ -481,7 +495,7 @@ export class HLSService {
         this.hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) {
             logger.warn('[HLS] Fatal error:', data.type, data.details)
-            reportError('hls', new Error(`${data.type}: ${data.details}`))
+            this.reportTelemetry(new Error(`${data.type}: ${data.details}`))
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
               if (networkRecoveries < MAX_RECOVERIES) {
                 networkRecoveries++
@@ -594,7 +608,7 @@ export class HLSService {
       video.addEventListener('error', () => {
         if (settled) {
           logger.warn('[HLS] Direct MP4 failed after load')
-          reportError('hls', new Error('progressive: mp4ErrorAfterLoad'))
+          this.reportTelemetry(new Error('progressive: mp4ErrorAfterLoad'))
           this.reportFatal({ type: 'native', details: 'mp4ErrorAfterLoad' })
           return
         }
