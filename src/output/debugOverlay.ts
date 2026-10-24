@@ -235,15 +235,20 @@ export function formatOverlay(reading: DebugOverlayReading): string[] {
  * fixed that, and restarting it at the frame that ended a silence kept
  * an outage from being charged to the recovery. But at the floor every
  * frame ends a silence, so a reading one callback after the frame
- * divided one frame by ~17 ms: a Second Life globe's readout showed
- * 58.8, or 2.0, or something between, over a paused picture drawing
- * once a second. Time between frames has neither problem: a reading
- * with no new interval keeps the last rate, and the floor reads 1.0
- * whenever the reading lands.
+ * divided one frame by ~17 ms and read 58.8, and no reading at the floor
+ * came out below about 1.9 (both worked out in review by simulation of
+ * this loop). Time between frames has neither problem: a reading with
+ * no new interval keeps the last rate, and the floor reads 1.0 whenever
+ * the reading lands.
  *
- * A gap longer than `FPS_OUTAGE_MS` is an outage, not a pace, and the
+ * A gap longer than `FPS_OUTAGE_MS` is an outage, not a pace. The
  * measurement starts again at the frame after it, so ten seconds of a
- * lost context followed by a healthy 30 fps reads 30 rather than 2.7.
+ * lost context followed by a healthy 30 fps reads 30 rather than 2.7,
+ * and the gap itself is charged to the reading the way a silence is.
+ * Both meters are read in the callback that ticked them, so without
+ * that the gap was never seen: callbacks throttled to one every 2.5 s
+ * read the last healthy rate, and a tab coming back from hiding read
+ * the rate it left with (found in review).
  *
  * While nothing is drawn the reading is held to the bound the silence
  * implies: no frame in `elapsed` ms means the rate is below
@@ -278,6 +283,7 @@ export function createFpsMeter(): FpsMeter {
   return {
     tick(now) {
       if (first === null || latest === null || now - latest > FPS_OUTAGE_MS) {
+        if (latest !== null) last = Math.min(last, 1000 / (now - latest))
         first = now
         intervals = 0
       } else {

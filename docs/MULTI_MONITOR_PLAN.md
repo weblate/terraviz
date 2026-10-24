@@ -5699,9 +5699,8 @@ reading), so a stall still collapses toward zero — continuously
 instead of by flicker — while an idle output holds near 1.
 (Superseded in October 2026: with the window restarted at the frame
 that ended a silence, a reading one callback after a floor frame
-divided one frame by ~17 ms and a Second Life globe read 58.8 over a
-paused picture. The meter now measures between frames; see
-`createFpsMeter`.)
+divided one frame by ~17 ms and read 58.8, by simulation of the loop.
+The meter now measures between frames; see `createFpsMeter`.)
 
 **And the instrument the last three checks were missing has been
 added rather than worked around.** Every frame number on this HUD

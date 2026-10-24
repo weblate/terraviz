@@ -1181,10 +1181,11 @@ yet.
     readout showed `fps 60.0 (raf 60.0)` over a paused frame. The fix
     is in `outputScene.ts` (`advanceFrameDeadline`), and in-world
     afterwards the globe read 30 fps playing. Paused it read 1.5,
-    which the readout could not be trusted on: its fps meter misread
-    the 1 Hz floor, anywhere from 1 to 58.8 depending on when it read.
-    The meter now measures between frames, and the paused reading
-    needs another look.
+    which is unexplained. The readout's fps meter misread the 1 Hz
+    floor, but by simulation it never read a clean floor below about
+    1.9, so 1.5 means either extra draws or a reading caught in
+    passing. The meter now measures between frames, and the paused
+    reading needs another look.
   - **The rest of the smoke test worked**, as reported from the
     session: jump, rate, a still image (Nighttime Lights), the
     data-encoded smoke forecast clipped to the United States, rotation,
@@ -1548,7 +1549,7 @@ Numbering is kept from the first version, so a reference like
 **In-world results, 24 Oct 2026** (Firestorm 7.2.4 (80712), CEF 139.0.40 / Chromium 139.0.7258.139, Windows 11, RTX 4090 laptop GPU, The Science Circle; the globe script against `https://claude-terraviz-second-life.terraviz.pages.dev`)
 - `[globe] Address: https://claude-terraviz-second-life.terraviz.pages.dev/output/output?fit=fill#dataset=01KQG611HF8YXJNRBEHT0757KT&t=0&at=…&width=2048&rotation=0&debug=1` · `[globe] Showing Hurricane Season - 2024 from its start, at its own speed.`
 - `[globe] The node has no dataset hurricane. The globe is unchanged.`
-- The readout before the frame-gate fix: `fps 60.0 (raf 60.0)` playing and paused, `draw 0.1 ms`, `buf 2048×1024`, `gpu ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Laptop GPU (0x00002717) Direct3D11 vs_5_0 ps_5_0, D3D11)`. After it: `fps 30` playing, `fps 1.5` paused, the paused figure from a meter that misread the 1 Hz floor (since fixed, not yet re-read in-world)
+- The readout before the frame-gate fix: `fps 60.0 (raf 60.0)` playing and paused, `draw 0.1 ms`, `buf 2048×1024`, `gpu ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Laptop GPU (0x00002717) Direct3D11 vs_5_0 ps_5_0, D3D11)`. After it: `fps 30` playing, `fps 1.5` paused. The paused figure is unexplained: the meter then in use never read a clean 1 Hz floor below about 1.9, by simulation. It has since been replaced and not yet re-read in-world
 - Pause and play by `#` alone: the video froze and resumed with no plain-Earth interval, which is how a reload shows on this page (§10 question 10). Seen by eye, not measured with `/7 hash`
 - Reported working afterwards: `/8 jump`, `/8 rate`, `/8 show lights`, `/8 show smoke`, `/8 rotation`, the tour refusal, `/8 spin`, and a second avatar at the globe
 - An earlier attempt left `NODE` at `https://terraviz.zyra-project.org`, whose output page has no web mode yet, and showed the live Earth whatever was asked. That is the README's first trip-up

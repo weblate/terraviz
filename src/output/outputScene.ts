@@ -180,8 +180,8 @@ export interface FrameDecisionState {
   kind: OutputContentKind
   /** The rAF timestamp for this callback. */
   nowMs: number
-  /** When the next frame is due — the last answer `advanceFrameDeadline`
-   *  gave, carried across callbacks by the loop. */
+  /** When the next frame is due — from the last answer
+   *  `advanceFrameDeadline` gave, carried across callbacks by the loop. */
   dueMs: number
   /** The interval `dueMs` was set for: the frame interval of the kind
    *  drawn when the deadline last moved, 0 before the first draw. A
@@ -267,28 +267,38 @@ export function shouldRenderFrame(state: FrameDecisionState): boolean {
 
 /**
  * A deadline set for a slower kind than the one now showing, and still
- * more than one of this kind's intervals out: the interval shrank, and
- * the deadline is the old kind's, not this one's.
+ * more than one of this kind's intervals out: the interval shrank
+ * (static → video), and the deadline is the old kind's, not this one's.
+ * One already within an interval of the new kind is kept, so the first
+ * video frame lands on the phase it was going to have rather than at
+ * once.
  *
- * Both halves are needed. Distance alone was the first version, and a
- * paced draw can legitimately leave the next deadline a little more
- * than an interval out (it may be up to half a callback early); a
- * callback that then came soon after read that as stale and drew again.
- * A cadence alternating short and long callbacks did that on every
- * pair, 66 fps on a 165 Hz display against a cap of 30 (found in review
- * by simulation). Only a deadline set for a longer interval can be
- * stale.
+ * The label is the half that matters. Distance alone was the first
+ * version, and a paced draw can legitimately leave the next deadline a
+ * little more than an interval out (it may be up to half a callback
+ * early); a callback that then came soon after read that as stale and
+ * drew again. A cadence alternating short and long callbacks did that
+ * on every pair, 66 fps on a 165 Hz display against a cap of 30 (found
+ * in review by simulation). Only a deadline set for a longer interval
+ * can be stale.
  */
 function isStaleDeadline(state: Omit<FrameDecisionState, 'dirty'>): boolean {
   const interval = frameIntervalMs(state.kind)
   return state.dueIntervalMs > interval && state.dueMs - state.nowMs > interval
 }
 
+/** A deadline and the interval it was set for, which the loop carries
+ *  whole from one draw to the next. */
+export type FrameDeadline = Pick<FrameDecisionState, 'dueMs' | 'dueIntervalMs'>
+
 /**
  * When the frame after this one is due, given a frame just drawn. Takes
  * the state `shouldRenderFrame` was given, so the two agree on which
- * draws were paced; the loop then records `frameIntervalMs(kind)` as
- * the new `dueIntervalMs`.
+ * draws were paced, and returns the deadline with the interval it was
+ * set for, so the label changes only when the deadline moves. The loop
+ * once set the two itself, in an order that mattered and that nothing
+ * tested: labelled first, a stale draw read as out of band and the first
+ * video frame waited up to a second (found in review).
  *
  * Three kinds of draw, told apart by where the deadline stood:
  *
@@ -296,13 +306,17 @@ function isStaleDeadline(state: Omit<FrameDecisionState, 'dirty'>): boolean {
  *   own test. The next is one whole interval on from the deadline just
  *   met, **not** from the moment it was met — that is the entire
  *   mechanism above, and the reason the rate survives a display whose
- *   refresh is not a multiple of the cap. The clamp to `nowMs` is for
- *   a display slower than the cap, which can never meet the deadline;
- *   unclamped it would accumulate debt for as long as the installation
- *   runs. It changes no decision, since every callback draws either
- *   way.
+ *   refresh is not a multiple of the cap. A deadline that fell more
+ *   than an interval behind starts again one interval from now: a
+ *   display slower than the cap can never meet it, and a gap in the
+ *   callbacks (boot, a hidden tab, a lost context) leaves it far
+ *   behind. Carried on, it would accumulate debt for as long as the
+ *   installation runs. Clamped to `nowMs`, as it first was, the next
+ *   callback drew too, two frames back to back after every gap (found
+ *   in review).
  * - **Out of band**: drawn early because something changed. The paced
- *   frame it came ahead of is still owed, so its deadline stands.
+ *   frame it came ahead of is still owed, so its deadline stands, and
+ *   so does the interval it was set for.
  *   Moving it on an interval from where it was due put it more than an
  *   interval out, and the runaway that started is the third paragraph
  *   above.
@@ -311,11 +325,14 @@ function isStaleDeadline(state: Omit<FrameDecisionState, 'dirty'>): boolean {
  *   static → video. It starts again from now; carrying it on would
  *   leave it out of reach for good.
  */
-export function advanceFrameDeadline(state: Omit<FrameDecisionState, 'dirty'>): number {
+export function advanceFrameDeadline(state: Omit<FrameDecisionState, 'dirty'>): FrameDeadline {
   const interval = frameIntervalMs(state.kind)
-  if (isStaleDeadline(state)) return state.nowMs + interval
-  if (state.dueMs - state.nowMs > state.sinceLastCallbackMs / 2) return state.dueMs
-  return Math.max(state.dueMs + interval, state.nowMs)
+  if (isStaleDeadline(state)) return { dueMs: state.nowMs + interval, dueIntervalMs: interval }
+  if (state.dueMs - state.nowMs > state.sinceLastCallbackMs / 2) {
+    return { dueMs: state.dueMs, dueIntervalMs: state.dueIntervalMs }
+  }
+  const next = state.dueMs + interval
+  return { dueMs: next < state.nowMs ? state.nowMs + interval : next, dueIntervalMs: interval }
 }
 
 // --- Scene construction ---

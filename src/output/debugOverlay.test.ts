@@ -202,9 +202,10 @@ describe('createFpsMeter', () => {
     const meter = createFpsMeter()
     meter.tick(100)
     meter.tick(100)
-    meter.sample(200)
-    // Same instant twice — a zero window would be Infinity or NaN on
-    // screen, which reads as a broken output rather than a fast one.
+    // Two frames at one instant, read at that instant — a zero span
+    // would be Infinity or NaN on screen, which reads as a broken
+    // output rather than a fast one.
+    expect(Number.isFinite(meter.sample(100))).toBe(true)
     expect(Number.isFinite(meter.sample(200))).toBe(true)
   })
 
@@ -218,7 +219,7 @@ describe('createFpsMeter', () => {
   // that counted over the reading's own window read 0.0 on every other
   // reading (found on hardware); one that restarted at the frame ending
   // a silence read 58.8 when a reading came one callback after the frame
-  // (found from a Second Life globe's readout, offset 17 here).
+  // (worked out in review by simulating the loop; offset 17 here).
   it.each([0, 17, 167, 499])('reads the 1 Hz floor as 1 with readings %i ms after each frame', offset => {
     const meter = createFpsMeter()
     const events: Array<[number, 'frame' | 'read']> = []
@@ -251,7 +252,7 @@ describe('createFpsMeter', () => {
     expect(later[2]).toBeLessThan(0.1)
   })
 
-  it('reports the real rate again once an output recovers', () => {
+  it.each([3000, 10000])('reports the real rate again after a %i ms outage', outageMs => {
     // An outage is not charged to the recovery: ten seconds of a lost
     // context followed by a healthy 30 fps once read as 1.4, and an
     // operator reading that concludes the output is still dark.
@@ -260,14 +261,48 @@ describe('createFpsMeter', () => {
     meter.tick(33)
     expect(meter.sample(66)).toBeGreaterThan(10)
 
-    // Ten seconds with nothing drawn, sampled throughout as the HUD
-    // does.
-    for (let now = 500; now <= 10000; now += 500) meter.sample(now)
-    expect(meter.sample(10000)).toBeLessThan(1)
+    // Nothing drawn, sampled throughout as the HUD does.
+    for (let now = 500; now <= outageMs; now += 500) meter.sample(now)
+    expect(meter.sample(outageMs)).toBeLessThan(1)
 
     // Recovery: a full 30 fps second.
-    for (let i = 0; i < 30; i++) meter.tick(10000 + i * (1000 / 30))
-    expect(meter.sample(11000)).toBeCloseTo(30, 0)
+    for (let i = 0; i < 30; i++) meter.tick(outageMs + i * (1000 / 30))
+    expect(meter.sample(outageMs + 1000)).toBeCloseTo(30, 0)
+  })
+
+  it('does not count frames from before an outage after it', () => {
+    // Frames drawn after the last reading, then an outage: the
+    // measurement after it starts at the first frame back.
+    const meter = createFpsMeter()
+    meter.tick(0)
+    meter.tick(33)
+    meter.sample(40)
+    meter.tick(66)
+    meter.tick(100)
+    let lastFrame = 0
+    for (let i = 0; i < 30; i++) meter.tick((lastFrame = 5000 + i * (1000 / 30)))
+    // Read at the last frame, where the silence bound cannot clamp an
+    // inflated count back down to the truth.
+    expect(meter.sample(lastFrame)).toBeCloseTo(30, 5)
+  })
+
+  it('charges an outage to the reading taken in the callback that ends it', () => {
+    // Both meters are read in the callback that ticked them, so the gap
+    // must show on its own, with no reading inside it: callbacks
+    // throttled to one every 2.5 s, and a tab back from a minute hidden.
+    const throttled = createFpsMeter()
+    for (let i = 0; i <= 60; i++) throttled.tick(i * (1000 / 60))
+    throttled.sample(1000)
+    for (let t = 3500; t <= 13500; t += 2500) {
+      throttled.tick(t)
+      expect(throttled.sample(t)).toBeCloseTo(0.4, 5)
+    }
+
+    const hidden = createFpsMeter()
+    for (let i = 0; i <= 60; i++) hidden.tick(i * (1000 / 60))
+    expect(hidden.sample(1000)).toBeCloseTo(60, 0)
+    hidden.tick(61000)
+    expect(hidden.sample(61000)).toBeLessThan(0.1)
   })
 
   it('charges a gap up to the outage threshold to the rate', () => {
