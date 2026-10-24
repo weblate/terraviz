@@ -420,21 +420,29 @@ export interface PlayheadSync {
  * set a 90 s floor that stopped the element seeking for good (found in
  * review of the web output).
  *
- * A gap counts as a stop only when it is both `STEER_GAP_DISCARD_MS`
- * long and `STEER_GAP_FACTOR` times the loop's own recent interval. A
+ * A stop is a gap longer than both `STEER_GAP_DISCARD_MS` and
+ * `STEER_GAP_FACTOR` times the loop's pace, the median of its last
+ * `STEER_PACE_WINDOW` intervals. The median, because neither one stop
+ * nor one unusually short interval moves it, and because it takes a
+ * reading on any loop, however slow: the shortest interval was tried and
+ * a single 0 ms one, two calls in an instant, made a slow loop's every
+ * frame a stop. A
  * fixed second, the first version, dropped every seek on a loop whose
  * frames take longer than that, a software-rendered VM say, and so
- * disabled the floor and re-opened the seek loop (found in review, in
- * simulation: 1.1 s frames went from one seek to a hundred). Relative
- * to the loop's own pace, a 1.1 s loop keeps its measurements and a
- * hidden 16 ms one still drops them. The base is three seconds so that
- * one long frame, such as the first draw after a load, is timed into the
- * seek it followed rather than dropping it: an over-estimate only slows
- * convergence, which the trim still completes. The slowest measured
- * running loop is WebKitGTK at 4096x2048, about 350 ms a callback.
+ * re-opened the seek loop (1.1 s frames went from one seek to a hundred,
+ * in simulation). A smoothed average with a 3 s base, the second, timed
+ * a 1 to 3 s stall into the seek it followed, which on desktop is the
+ * first draw after an output goes from idle to a dataset (a shader
+ * compile and the first 4096x2048 upload), and the inflated floor then
+ * slowed every later scrub (found in review). With the median, a 60 Hz
+ * loop's stops are anything over a second, which drops
+ * that stall and costs at most one more seek, while a 1.1 s loop's are
+ * anything over 4.4 s. The slowest measured running loop is WebKitGTK at
+ * 4096x2048, about 350 ms a callback.
  */
-export const STEER_GAP_DISCARD_MS = 3000
+export const STEER_GAP_DISCARD_MS = 1000
 export const STEER_GAP_FACTOR = 4
+export const STEER_PACE_WINDOW = 8
 
 export function createPlayheadSync(nowMs: () => number = () => performance.now()): PlayheadSync {
   let lastSeekAtMs = Number.NEGATIVE_INFINITY
@@ -442,23 +450,31 @@ export function createPlayheadSync(nowMs: () => number = () => performance.now()
   let lastSeekCostS = 0
   let steering: SyncTarget | null = null
   let lastCallAtMs = Number.NEGATIVE_INFINITY
-  /** The loop's recent interval between calls, smoothed; `null` until
-   *  there have been two. */
-  let typicalCallMs: number | null = null
+  /** The loop's last few intervals between calls; its pace is their
+   *  median. */
+  const recentCallMs: number[] = []
+  const paceMs = (): number => {
+    if (recentCallMs.length === 0) return 0
+    const sorted = [...recentCallMs].sort((a, b) => a - b)
+    return sorted[Math.floor((sorted.length - 1) / 2)]
+  }
 
   return {
     dropPendingSeek() {
       awaitingSeek = false
+      // The caller stopped calling on purpose, so the gap before its next
+      // call is not one of the loop's intervals either.
+      lastCallAtMs = Number.NEGATIVE_INFINITY
     },
 
     sync(video, state) {
       const now = nowMs()
       const sinceLastCallMs = now - lastCallAtMs
       lastCallAtMs = now
-      const stopped =
-        sinceLastCallMs > Math.max(STEER_GAP_DISCARD_MS, STEER_GAP_FACTOR * (typicalCallMs ?? 0))
-      if (!stopped && Number.isFinite(sinceLastCallMs)) {
-        typicalCallMs = typicalCallMs === null ? sinceLastCallMs : 0.8 * typicalCallMs + 0.2 * sinceLastCallMs
+      const stopped = sinceLastCallMs > Math.max(STEER_GAP_DISCARD_MS, STEER_GAP_FACTOR * paceMs())
+      if (Number.isFinite(sinceLastCallMs)) {
+        recentCallMs.push(sinceLastCallMs)
+        if (recentCallMs.length > STEER_PACE_WINDOW) recentCallMs.shift()
       }
 
       // A different element is a different measurement. `datasetMirror`

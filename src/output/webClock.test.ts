@@ -10,7 +10,7 @@ import {
   createWebClockSteer,
   type ClipClockInputs,
 } from './webClock'
-import type { WebClock } from './webMode'
+import { MAX_WEB_RATE, type WebClock } from './webMode'
 import { syncVideoToState, type SyncTarget } from './outputSync'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 
@@ -250,9 +250,9 @@ describe('createWebClockSteer', () => {
   })
 
   it('does not time a seek across a pause shorter than a steering gap', () => {
-    // The playhead layer drops a measurement across a gap of a second or
-    // more; a shorter pause would still be timed, so the paused branch
-    // drops it too.
+    // The playhead layer drops a measurement across a stop, a gap over a
+    // second and four times the loop's pace; a shorter pause would still
+    // be timed, so the paused branch drops the pending seek too.
     const { steer, advance } = harness()
     const v = video({ duration: 200, currentTime: 3 })
     steer.steer(v, clock({ positionS: 50, atUnixS: AT }), LOADED_AT, LOADED_AT)
@@ -275,6 +275,15 @@ describe('createWebClockSteer', () => {
     const v = video({ duration: 10.0007, currentTime: 6 })
     steer.steer(v, clock({ positionS: 0.0002, atUnixS: AT }), LOADED_AT, LOADED_AT)
     expect(v.currentTime).toBeLessThan(1)
+  })
+
+  it('leaves the trim room to catch up at the fastest rate the address allows', () => {
+    // At 16x the trim could not speed up, and a copy a seek left behind
+    // stayed behind for good (found in review); 12.8 leaves it a quarter.
+    const { steer } = harness()
+    const v = video({ duration: 1000, currentTime: 49.9 })
+    steer.steer(v, clock({ positionS: 50, atUnixS: AT, rate: MAX_WEB_RATE }), LOADED_AT, LOADED_AT)
+    expect(v.playbackRate).toBeGreaterThan(MAX_WEB_RATE)
   })
 
   it('takes a clock with no anchor from when this copy read it', () => {

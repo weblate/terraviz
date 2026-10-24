@@ -76,7 +76,11 @@ export interface DisplaySize {
  * picture twice its height wide, and sizing to the box drew a 4096 frame
  * to show 2048 pixels (found in review). Stretched, the frame has to
  * cover both directions, so a page taller than 2:1, a square face say,
- * takes a frame twice its height wide. Read when the address is
+ * takes a frame twice its height wide. That costs a 1024 square face
+ * the 2048 stream and four times the pixels of a 1024 frame, every
+ * visitor, and it is what full vertical resolution takes there; an
+ * address that would rather save the bandwidth says `width=1024`. Read
+ * when the address is
  * applied, at load and on every `#` change; a resize alone is not
  * followed.
  */

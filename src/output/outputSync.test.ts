@@ -779,6 +779,95 @@ describe('the measurement belongs to one element', () => {
     expect(playhead.sync(video, inputs()).seeked).toBe(true)
   })
 
+  /** A loop that has been steering at `frameMs` for a while. */
+  function runningLoop(frameMs: number, video: SyncTarget) {
+    let clock = 0
+    const playhead = createPlayheadSync(() => clock)
+    for (let i = 0; i < 10; i++) {
+      clock += frameMs
+      playhead.sync(video, inputs())
+    }
+    return {
+      playhead,
+      advance(ms: number) {
+        clock += ms
+      },
+    }
+  }
+
+  it('drops a seek across a stop on a loop that has a pace, and on a second stop after it', () => {
+    // The plain case the 60 s test above reaches only before the loop
+    // has a pace: real loops always have one by then.
+    const video = target({ currentTime: 50 })
+    const loop = runningLoop(16, video)
+    for (const gapMs of [60_000, 10_000]) {
+      video.currentTime = 10
+      expect(loop.playhead.sync(video, inputs()).seeked).toBe(true)
+      ;(video as { seeking: boolean }).seeking = true
+      loop.advance(gapMs)
+      ;(video as { seeking: boolean }).seeking = false
+      video.currentTime = 45
+      expect(loop.playhead.sync(video, inputs()).seeked).toBe(true)
+      for (let i = 0; i < 10; i++) {
+        loop.advance(16)
+        loop.playhead.sync(video, inputs())
+      }
+    }
+  })
+
+  it('drops the long first draw after a load rather than timing it into the seek', () => {
+    // On desktop a 1 to 3 s first frame (shader compile, first upload)
+    // follows the new element's first seek. Timed in, it set a floor that
+    // slowed every later scrub; dropped, the next scrub just seeks.
+    const video = target({ currentTime: 50 })
+    const loop = runningLoop(16, video)
+    video.currentTime = 10
+    loop.playhead.sync(video, inputs())
+    ;(video as { seeking: boolean }).seeking = true
+    loop.advance(2_500)
+    ;(video as { seeking: boolean }).seeking = false
+    loop.playhead.sync(video, inputs())
+    loop.advance(2_000)
+    // A 3 s scrub.
+    video.currentTime = 47
+    expect(loop.playhead.sync(video, inputs()).seeked).toBe(true)
+  })
+
+  it('takes a pace on a loop slower than the base, and times its seeks', () => {
+    const video = target({ currentTime: 50 })
+    const loop = runningLoop(3_500, video)
+    video.currentTime = 10
+    expect(loop.playhead.sync(video, inputs()).seeked).toBe(true)
+    ;(video as { seeking: boolean }).seeking = true
+    loop.advance(3_500)
+    loop.playhead.sync(video, inputs())
+    ;(video as { seeking: boolean }).seeking = false
+    loop.advance(3_500)
+    // 7 s of seek measured, a 10.5 s floor: 5 s out is trimmed.
+    video.currentTime = 45
+    expect(loop.playhead.sync(video, inputs()).seeked).toBe(false)
+  })
+
+  it('does not count the gaps after a deliberate drop as the loop pace', () => {
+    // Paused and resumed one frame at a time: each resume's gap is a
+    // pause, not an interval, and must not slow the pace until a real
+    // stop is timed (found in review).
+    const video = target({ currentTime: 50 })
+    const loop = runningLoop(16, video)
+    for (const gapMs of [2_900, 2_900, 4_200, 6_700, 5_000, 5_000, 5_000, 5_000]) {
+      loop.playhead.dropPendingSeek()
+      loop.advance(gapMs)
+      loop.playhead.sync(video, inputs())
+    }
+    video.currentTime = 10
+    loop.playhead.sync(video, inputs())
+    ;(video as { seeking: boolean }).seeking = true
+    loop.advance(8_000)
+    ;(video as { seeking: boolean }).seeking = false
+    video.currentTime = 45
+    expect(loop.playhead.sync(video, inputs()).seeked).toBe(true)
+  })
+
   it('still times a seek on a loop whose every frame is slow', () => {
     // A software-rendered loop at 1.5 s a frame. A fixed one-second gap
     // rule dropped every seek here, and seeked on every frame.
