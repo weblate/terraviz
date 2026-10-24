@@ -138,7 +138,7 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 | `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when this copy read the address: at load, or at the `#` change that last changed the clock |
 | `rate` | 0.0834 to 12.8 | Playback speed; `1` is the clip's own. The player's own limits are 0.0625 to 16, and a copy needs room above and below the rate to catch up or fall back, so values outside this narrower range read as `1`. | `1` |
 | `paused` | present | Hold `t` exactly. Every copy shows the same frame. | playing |
-| `telemetry` | `1` to turn it on | Whether the page reports its own anonymous Essential telemetry: which dataset it showed and anything that would not play (below). Followed live, like every other setting. | off |
+| `telemetry` | `1` or `true` (case-insensitive, untrimmed) to turn it on | Whether the page reports its own anonymous Essential telemetry: which dataset it showed and anything that would not play (below). Followed live, like every other setting. | off |
 
 - **`dataset` is narrower than the main app's.** The app also resolves
   legacy catalog ids (`INTERNAL_SOS_123`) and slugs; this page asks the
@@ -153,8 +153,8 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
   load) is retried after 5 s, 30 s and 2 minutes, then every 5 minutes,
   for as long as the address names the dataset. A dataset the node does
   not have, or cannot put on a sphere (a tour), is not retried. A
-  stream that fails after it has started playing is not noticed, and
-  keeps its last frame.
+  stream that fails after it has started playing is not recovered, and
+  keeps its last frame; with telemetry on, its errors are reported.
 - **Every value fails closed, one at a time.** A malformed or
   out-of-range value is ignored and that setting keeps its default; the
   page is never refused for it. That includes the clock: each of `t`,
@@ -202,9 +202,11 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
     address's text, the globe's location, or anything about who is
     looking.
   - **`telemetry` fails toward off**, the one flag that does: only `1`
-    or `true` turns it on, so `telemetry=off`, `=no`, a bare `telemetry`
-    and an empty value all leave it off. It is followed live: a later
-    `#telemetry=0` stops further reports.
+    or `true` (case-insensitive, untrimmed) turns it on, so
+    `telemetry=off`, `=no`, a bare `telemetry` and an empty value all
+    leave it off. It is followed live: a later `#telemetry=0` stops
+    further reports, though events the page already queued may still
+    be sent.
   - A desktop output window sends nothing itself. Its control window
     reports a stream that died there.
 
@@ -254,8 +256,9 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
   the output page's `debug` and `paused`, all treat presence as on and
   only `false`/`0` (case-insensitive, untrimmed) as off. New boolean
   flags should follow the same convention. The one exception is the
-  output page's `telemetry`, a privacy switch: only `1`/`true` is on,
-  and anything else, presence alone included, is off, because the
+  output page's `telemetry`, a privacy switch: only `1`/`true`
+  (case-insensitive, untrimmed) is on, and anything else, presence
+  alone included, is off, because the
   usual reading would turn it on for `telemetry=off`.
 - **Breaking changes bump the version.** Renaming or removing a
   parameter, or changing what an existing value does, is a v2 change
