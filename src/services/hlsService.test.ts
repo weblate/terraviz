@@ -292,14 +292,19 @@ describe('HLSService fatal errors after load', () => {
   })
 
   it('reports a terminal error as telemetry by default', async () => {
+    // Its own details string: earlier tests' reports resolve late, and
+    // must not be mistaken for this one.
+    const OWN = { fatal: true, type: 'networkError', details: 'defaultReporterCase' }
     analyticsMock.reportError.mockClear()
     const svc = new HLSService()
     await loadAndSettle(svc)
-    hlsMock.fire('hlsError', NETWORK)
+    hlsMock.fire('hlsError', OWN)
     // Asynchronous: the analytics package is imported when a stream
     // fails, not with this module.
-    await until(() => analyticsMock.reportError.mock.calls.length > 0, 'the error report')
-    expect(analyticsMock.reportError).toHaveBeenCalledWith('hls', new Error('networkError: fragLoadError'))
+    const mine = () =>
+      analyticsMock.reportError.mock.calls.some(([, e]) => (e as Error).message === 'networkError: defaultReporterCase')
+    await until(mine, 'the error report')
+    expect(analyticsMock.reportError).toHaveBeenCalledWith('hls', new Error('networkError: defaultReporterCase'))
   })
 
   it('reports to the injected reporter instead, when given one', async () => {
@@ -308,16 +313,19 @@ describe('HLSService fatal errors after load', () => {
     const reported: Error[] = []
     const svc = new HLSService({ reportError: err => reported.push(err) })
     await loadAndSettle(svc)
-    hlsMock.fire('hlsError', NETWORK)
-    expect(reported.map(e => e.message)).toEqual(['networkError: fragLoadError'])
+    hlsMock.fire('hlsError', { fatal: true, type: 'networkError', details: 'injectedCase' })
+    expect(reported.map(e => e.message)).toEqual(['networkError: injectedCase'])
     // The default report is asynchronous, so "not called" needs an
     // anchor: a service on the default reporter fails too, and once its
-    // report has arrived the injected one would have as well.
+    // report has arrived the injected one's would have as well. Both use
+    // details strings of their own, since earlier tests' reports can
+    // still be landing.
     const anchor = new HLSService()
     await loadAndSettle(anchor)
-    hlsMock.fire('hlsError', MEDIA)
-    await until(() => analyticsMock.reportError.mock.calls.length > 0, 'the default report')
-    expect(analyticsMock.reportError.mock.calls).toEqual([['hls', new Error('mediaError: bufferStalledError')]])
+    hlsMock.fire('hlsError', { fatal: true, type: 'mediaError', details: 'anchorCase' })
+    const messages = () => analyticsMock.reportError.mock.calls.map(([, e]) => (e as Error).message)
+    await until(() => messages().includes('mediaError: anchorCase'), 'the default report')
+    expect(messages()).not.toContain('networkError: injectedCase')
   })
 
   it('reports a terminal media error too', async () => {

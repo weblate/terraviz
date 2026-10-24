@@ -474,6 +474,11 @@ describe('createDefaultMediaLoader', () => {
       const opts = counts.constructedWith[0] as { reportError?: (err: Error) => void } | undefined
       expect(opts?.reportError).toBeTypeOf('function')
       opts?.reportError?.(new Error('networkError: fragLoadError'))
+      // The anchor for "not called": a reporter that went through the
+      // lazy import `hlsService` uses would have registered its callback
+      // before this import, so it has run by the time this resolves.
+      const reached = await import('../analytics')
+      expect(reached.reportError).toBe(analytics.reportError)
       await new Promise(resolve => setTimeout(resolve, 0))
       expect(analytics.reportError).not.toHaveBeenCalled()
       expect(analytics.emit).not.toHaveBeenCalled()
