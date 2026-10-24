@@ -120,6 +120,9 @@ function video(){
  else{a('native HLS','no');send();viaHlsjs()}
  setTimeout(function(){T.style.display='none'},40000);
 }
+window.onhashchange=function(){var v=document.querySelector('video');
+ a('hash',location.hash+(v?', video t='+v.currentTime.toFixed(1)+'s, '+(v.paused?'paused':'playing')+', readyState '+v.readyState:', no video'));send()};
 if(MODE=='image')image();else if(MODE=='video')video();
 else if(MODE=='soak')soak('webgl');else if(MODE=='soak2d')soak('2d');else probe();
+if(location.hash){a('loaded with',location.hash);send()}
 </script></body></html>

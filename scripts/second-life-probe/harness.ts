@@ -55,6 +55,8 @@ interface ModeRun {
   done: (lines: string[]) => boolean
   /** Lines that mean the run reached its end and failed. */
   fails?: string[]
+  /** Once this holds, change only the address's # part, as `/7 hash` does. */
+  hashAfter?: (lines: string[]) => boolean
   deadlineMs: number
 }
 
@@ -85,6 +87,13 @@ const RUNS: ModeRun[] = [
     query: 'video', label: 'video, native HLS hidden', noNativeHls: true, deadlineMs: 75_000,
     expect: ['mode: video', 'native HLS: no'],
     done: anyOf(...VIDEO_END.slice(1), 'hls.js: could not load'),
+  },
+  {
+    // Mid-video, so the report also says whether the video kept playing.
+    query: 'video', label: 'hash, mid-video', noNativeHls: true, deadlineMs: 90_000,
+    expect: ['mode: video', 'hash: #h=1, video t='],
+    hashAfter: anyOf(...VIDEO_END.slice(1)),
+    done: has('hash:'), fails: ['loaded with:'],
   },
   {
     query: 'soak', label: 'soak', deadlineMs: 45_000,
@@ -161,11 +170,17 @@ export async function testPage(page: string, only?: string): Promise<boolean> {
           }
         })
       }
-      await tab.goto(`http://127.0.0.1:${port}/?${run.query}&n=1`)
+      const url = `http://127.0.0.1:${port}/?${run.query}&n=1`
+      await tab.goto(url)
+      const hashAfter = run.hashAfter
+      if (hashAfter && await until(() => hashAfter(lines), run.deadlineMs)) await tab.goto(`${url}#h=1`)
       const finished = await until(() => run.done(lines), run.deadlineMs)
       await tab.close()
 
       if (!finished) problems.push(`did not reach its last report within ${run.deadlineMs / 1000} s`)
+      // Each page reports its mode once per load, so two mean it loaded twice.
+      const loads = lines.filter((l) => l.startsWith('mode: ')).length
+      if (loads !== 1) problems.push(`the page loaded ${loads} times`)
       for (const prefix of run.expect) if (!has(prefix)(lines)) problems.push(`no "${prefix}" line`)
       for (const prefix of run.fails ?? []) if (has(prefix)(lines)) problems.push(`reported "${prefix}"`)
 

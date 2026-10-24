@@ -53,6 +53,7 @@ Said in local chat on channel 7, by the object's owner only.
 | `/7 globe` | Stands the sphere's poles upright and rotates its texture 90° | Fixes a default sphere's sideways mapping (below) |
 | `/7 turn`, `/7 mirror`, `/7 reset` | Rotate the texture a further 90°, flip it, or undo `globe` | For checking orientation against the grid |
 | `/7 face N` | Moves the media to face N | Only needed on a box; a sphere has just face 0 |
+| `/7 hash` | Changes only the part of the address after `#`, on whatever the face shows | Can a globe be steered live, for every visitor, without each viewer reloading? (The doc's §7, items 4 and 7.) Run it after `/7 video` to see whether a playing video survives it |
 | `/7 api` | Asks the node again | Needs `node-check.lsl` in the prim |
 
 Every command that shows a page loads it fresh, so repeating one reruns
@@ -104,6 +105,9 @@ local texture, and it costs nothing.
 | `[probe] The soak sent no heartbeat within 25 seconds of starting` | It went quiet in its first seconds — the failure bug #5189 describes |
 | `[page] soak webgl: no WebGL 2 context` | This viewer's browser has no WebGL 2, so the soak can't run. An answer in itself; TerraViz needs WebGL 2 |
 | `[probe] Soak ended by a new command` | You switched away; nothing went wrong |
+| `[probe] The page took the change without reloading. The script heard back … ms after making it`, after `[page] hash: #h=1, video t=…, playing` | **The answer the clock plan hopes for.** A change after `#` reached the page with no reload, and the video kept playing. The time is an upper bound; it includes the report's own trip back |
+| `[probe] The page started again without a command`, then `[page] loaded with: #h=1` and `[probe] The viewer reloaded the page to apply the change` | The change arrived, but by reloading the page, so the video starts over. Steering a globe this way costs every viewer a reload |
+| Nothing at all within half a minute of `/7 hash` | The viewer didn't pass the change on |
 | `[page] TerraViz stream via hls.js: failed, networkError / manifestLoadError` | Expected. TerraViz's video host only lets pages from TerraViz's own site load its streams through hls.js, so the page falls back to a public test stream to check that video plays at all. (The page tries the browser's own HLS player first, which isn't held to that rule; Second Life's browser had none in October 2026, so that path didn't run) |
 
 When you report results, say which viewer and version (Help → About),
@@ -123,6 +127,13 @@ comes from one machine.
   number; a script asking for one gets a bounds error and no change.
 - **The output page's address is `/output/output`.** `/output.html` is
   answered by the main app.
+- **`/7 hash` with a second avatar needs `/7 app` or `/7 sos` first.**
+  The test page only renders for you, so another avatar can't see it.
+  The app and the output page can't report, so whoever is there
+  watches instead: if their screen starts over (the app's loading
+  screen, or its video jumping back), their viewer reloaded it. That
+  is the half of the question that matters most, because every visitor
+  at a globe would see each change.
 
 ## Changing the kit
 

@@ -34,6 +34,9 @@
 //   /7 mirror   flip the texture left-to-right
 //   /7 reset    back to the default rotation and texture mapping
 //   /7 face N   move the media to face N (a sphere only has face 0)
+//   /7 hash     change only the part of the address after # - does every
+//               viewer take it without reloading? (the doc's section 7,
+//               items 4 and 7)
 //
 // The page renders as a web page only for the object's owner, in their
 // own viewer, in the same region (llSetContentType) - a test kit, not an
@@ -79,7 +82,11 @@ string  gSoakLast;      // the most recent heartbeat
 integer gTexRot;        // texture rotation in degrees: 0, 90, 180 or 270
 integer gMirror;        // texture flipped left-to-right
 
-string HELP = "Commands on /7: probe, image, video, app, sos, soak, soak2d, globe, turn, mirror, reset, face N";
+string  gUrl;           // the address the face shows, without any # part
+integer gHashes;        // how many # changes this script has made
+float   gHashAt;        // the llGetTime() of the latest, or 0 if none is pending
+
+string HELP = "Commands on /7: probe, image, video, app, sos, soak, soak2d, globe, turn, mirror, reset, face N, hash";
 
 string page()
 {
@@ -206,8 +213,11 @@ string page()
     s += "else{a('native HLS','no');send();viaHlsjs()}\n";
     s += "setTimeout(function(){T.style.display='none'},40000);\n";
     s += "}\n";
+    s += "window.onhashchange=function(){var v=document.querySelector('video');\n";
+    s += "a('hash',location.hash+(v?', video t='+v.currentTime.toFixed(1)+'s, '+(v.paused?'paused':'playing')+', readyState '+v.readyState:', no video'));send()};\n";
     s += "if(MODE=='image')image();else if(MODE=='video')video();\n";
     s += "else if(MODE=='soak')soak('webgl');else if(MODE=='soak2d')soak('2d');else probe();\n";
+    s += "if(location.hash){a('loaded with',location.hash);send()}\n";
     s += "</script></body></html>\n";
     return s;
 }
@@ -283,6 +293,8 @@ integer show(string mode, string url)
         llOwnerSay("[probe] Soak ended by a new command. Last heartbeat: " + gSoakLast);
     gRun = run;
     gMode = mode;
+    gUrl = url;
+    gHashAt = 0.0;
     gStarts = 0;
     arm(watchFor(mode));
     llOwnerSay("[probe] Face " + (string)gFace + " now shows " + url);
@@ -341,6 +353,29 @@ default
         if (cmd == "app") { show("app", NODE + "/?embed=1"); return; }
         // `/output.html` falls through to the main app; this is the page.
         if (cmd == "sos") { show("sos", NODE + "/output/output"); return; }
+        if (cmd == "hash")
+        {
+            // A browser treats an address that differs only after # as the
+            // same page: no reload, just a hashchange event. Whether Second
+            // Life's viewers pass such a change on, and how, is the test.
+            // The run number is before the #, so the page keeps its run.
+            if (gUrl == "") { llOwnerSay("[probe] Show a page first: video, probe, app or sos."); return; }
+            integer h = gHashes + 1;
+            integer r = llSetPrimMediaParams(gFace, [PRIM_MEDIA_CURRENT_URL, gUrl + "#h=" + (string)h]);
+            if (r != STATUS_OK)
+            {
+                llOwnerSay("[probe] Could not change the address (status " + (string)r + ").");
+                return;
+            }
+            gHashes = h;
+            gHashAt = llGetTime();
+            string how = "The page should report it without starting again.";
+            if (gMode == "app" || gMode == "sos")
+                how = "This page can't report, so watch it, and ask anyone else there to: if it starts over, their viewer reloaded it.";
+            llOwnerSay("[probe] Changed only the part after # to h=" + (string)h + ". " + how
+                + " Nothing at all within half a minute means the viewer didn't pass it on.");
+            return;
+        }
         if (gBase == "") { llOwnerSay("[probe] Still waiting for a web address from the region."); return; }
         if (cmd == "probe" || cmd == "image" || cmd == "video" || cmd == "soak" || cmd == "soak2d")
         {
@@ -427,6 +462,19 @@ default
                 }
                 else if (llSubStringIndex(line, "webgl frames") == 0 && gWatch == WATCH_FRAMES)
                     arm(WATCH_NONE);
+                else if (llSubStringIndex(line, "hash: ") == 0 && gHashAt > 0.0)
+                {
+                    // The time includes the report's own trip back, so the
+                    // page saw the change sooner than this, not later.
+                    llOwnerSay("[probe] The page took the change without reloading. The script heard back "
+                        + (string)llRound((llGetTime() - gHashAt) * 1000.0) + " ms after making it.");
+                    gHashAt = 0.0;
+                }
+                else if (llSubStringIndex(line, "loaded with: ") == 0 && gHashAt > 0.0)
+                {
+                    llOwnerSay("[probe] The viewer reloaded the page to apply the change, so here a change after # costs a reload.");
+                    gHashAt = 0.0;
+                }
                 else if (llSubStringIndex(line, "soak ") == 0 && watchFor(gMode) == WATCH_HEARTBEAT)
                 {
                     if (llSubStringIndex(line, "s, ") != -1)
