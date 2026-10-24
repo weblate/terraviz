@@ -405,9 +405,11 @@ function syncByRatio(
 export interface PlayheadSync {
   sync(video: SyncTarget | null, state: SyncInputs): SyncOutcome
   /**
-   * Drop a seek still being timed, keeping the floor already measured.
-   * For a caller that stops calling `sync` on purpose, as the web clock
-   * does while paused: the pause would otherwise be timed as the seek.
+   * Drop a seek still being timed, keeping the floor already measured,
+   * and forget when `sync` was last called. For a caller that stops
+   * calling `sync` on purpose, as the web clock does while paused: the
+   * pause would otherwise be timed as the seek, and the gap before the
+   * next call counted as one of the loop's intervals.
    */
   dropPendingSeek(): void
 }
@@ -421,24 +423,37 @@ export interface PlayheadSync {
  * review of the web output).
  *
  * A stop is a gap longer than both `STEER_GAP_DISCARD_MS` and
- * `STEER_GAP_FACTOR` times the loop's pace, the median of its last
- * `STEER_PACE_WINDOW` intervals. The median, because neither one stop
- * nor one unusually short interval moves it, and because it takes a
- * reading on any loop, however slow: the shortest interval was tried and
- * a single 0 ms one, two calls in an instant, made a slow loop's every
- * frame a stop. A
- * fixed second, the first version, dropped every seek on a loop whose
- * frames take longer than that, a software-rendered VM say, and so
- * re-opened the seek loop (1.1 s frames went from one seek to a hundred,
- * in simulation). A smoothed average with a 3 s base, the second, timed
- * a 1 to 3 s stall into the seek it followed, which on desktop is the
- * first draw after an output goes from idle to a dataset (a shader
- * compile and the first 4096x2048 upload), and the inflated floor then
- * slowed every later scrub (found in review). With the median, a 60 Hz
- * loop's stops are anything over a second, which drops
- * that stall and costs at most one more seek, while a 1.1 s loop's are
- * anything over 4.4 s. The slowest measured running loop is WebKitGTK at
- * 4096x2048, about 350 ms a callback.
+ * `STEER_GAP_FACTOR` times the loop's pace. The pace is the median of
+ * the last `STEER_PACE_WINDOW` intervals, stops included, and the lower
+ * of the middle two since the window is even. The median, because
+ * neither one stop nor one unusually short interval moves it, and
+ * because it takes a reading on any loop, however slow.
+ *
+ * Three rules were tried first:
+ * - A fixed second dropped every seek on a loop whose frames take longer
+ *   than that, a software-rendered VM say, and so re-opened the seek loop
+ *   (1.1 s frames went from one seek to a hundred, in simulation).
+ * - A smoothed average with a 3 s base timed a long stall into the seek
+ *   it followed, and the inflated floor slowed every later scrub (found
+ *   in review). On desktop that stall is the first draw after an output
+ *   goes from idle to a dataset: a shader compile and the first
+ *   4096x2048 upload. Its length is estimated at one to three seconds,
+ *   not measured.
+ * - The shortest interval: a single 0 ms one, two calls in an instant,
+ *   made every frame of a slow loop a stop.
+ *
+ * With the median, a 60 Hz loop's stops are anything over a second,
+ * which drops that stall and costs at most one more seek, while a 1.1 s
+ * loop's are anything over 4.4 s. The slowest measured running loop is
+ * WebKitGTK at 4096x2048, about 350 ms a callback, which the base keeps
+ * from reading as a stop when it follows an idle 16 ms one.
+ *
+ * The base must stay at least `STATIC_FRAME_MS` (`outputScene.ts`). The
+ * pace cannot drop a seek on every frame unless long gaps are a
+ * minority of the window, and a static draw slow enough to make one
+ * comes due again as soon as it ends, so every frame turns slow alike.
+ * Below the static interval, a draw costing more than the base once a
+ * second would be a stop every second.
  */
 export const STEER_GAP_DISCARD_MS = 1000
 export const STEER_GAP_FACTOR = 4
