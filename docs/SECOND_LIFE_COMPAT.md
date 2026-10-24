@@ -689,14 +689,22 @@ The work, smallest first:
    - **Paused, everyone sees exactly the same frame.** Playing, close
      is enough, as long as everyone lands on the same frame when it
      pauses.
-   - **Left unused for a while, it goes back to the live Earth** with
-     today's clouds and the real day/night line.
+   - **Five minutes after the last visitor leaves, it goes back to the
+     live Earth**, with today's clouds and the real day/night line.
+     - It's timed from the visitor leaving, not from the last control
+       touched, so someone watching a long dataset without touching
+       anything isn't cut off partway through.
+     - It never happens during a talk.
+     - The five minutes is a setting on the in-world object, so an
+       exhibit can change it without new code.
+     - Agreed with Eric on 24 October.
    - **In a field of globes, each globe is its own experience.**
 
    Still open, and Eric's to answer:
    - Is sharing between walk-up visitors a must, or a should?
-   - How long is "a while"? How close is "close" while playing?
-   - What makes someone "at" a globe?
+   - How close is "close" while playing?
+   - What makes someone "at" a globe? The same answer decides when the
+     last visitor has left.
    - When two walk-up visitors both reach for one globe, who wins?
    - Should the globe show the date it's on?
    - What does a visitor see when their viewer can't keep up?
@@ -1055,8 +1063,8 @@ dataset globe that every visitor sees in step, under current clouds.
 **Phase 2 — an in-world globe controller.** An LSL object that applies
 the §5 recipe, sets the media at 2048×1024 and spins the globe. It also
 carries the controls §7 item 4 asks for: the presenter list, pause,
-jump, a dataset menu, and the return to the live Earth when nobody has
-used the globe for a while. Each control rewrites the media address,
+jump, a dataset menu, and the return to the live Earth five minutes
+after the last visitor leaves. Each control rewrites the media address,
 and the media itself stays non-interactive so that the controls are the
 only way in.
 It is the in-world half of Phase 1.
