@@ -421,9 +421,16 @@ not show, and `stream` for every fatal stream error the player
 reports: hls.js's, recovered or not, and a native-HLS stream or single
 file that dies after it loaded (its `message_class` is hls.js's own
 error names, or `native: nativeHlsError` / `progressive:
-mp4ErrorAfterLoad`), so
-a stream that will not load appears under both: its `stream` rows,
-then one `media` row. Only globes whose address says `telemetry=1`
+mp4ErrorAfterLoad`). An hls.js stream that will not load appears
+under both, its `stream` rows and then one `media` row; a native-HLS
+or single-file one appears only as the `media` row, since those paths
+report a stream only once it has loaded, so a query pairing the two
+reads Safari globes as clean streams. The app's own `category = 'hls'`
+rows carry the same `message_class` values. `native: nativeHlsError` is
+new there in October 2026, on Safari and iOS, and `progressive:
+mp4ErrorAfterLoad` dropped at the same time, since disposing a stream
+can fire its element's `error` listener and that no longer reports.
+Only globes whose address says `telemetry=1`
 report at all, and only in the first minute after the page loads,
 with nothing sent after about 66 s. Their errors carry no stack, so no `error_detail` follows.
 Desktop output windows never emit an
@@ -473,7 +480,7 @@ second "how healthy is this installation".
 > orphan answered the poke), `gpu-loss` (case 5) and `hls-stalled`: an
 > output's stream would not load while still the dataset asked for, or
 > died after loading once hls.js had spent its retries. At most one row
-> per output per dataset, with `retries: 0` (the app's attempts; hls.js's
+> per output per published dataset, with `retries: 0` (the app's attempts; hls.js's
 > own inside the output are not counted) and `recovered: false`, since
 > nothing rebuilds the stream yet (case 2's rebuild). `monitor-unplug` arrives with case 4. Of the `reason`s, only
 > `gpu-loss-timeout` is still without a detector — `monitor-gone` got

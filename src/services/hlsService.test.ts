@@ -568,6 +568,29 @@ describe('HLSService native HLS path', () => {
     expect(reported).toEqual([])
   })
 
+  it('reports the single file a rejected stream fell back to, once', async () => {
+    // `datasetLoader`'s fallback on this path: the stream rejects before
+    // load and the same service and element take the MP4. Two `error`
+    // listeners then share one element, the abandoned stream's and the
+    // file's, and only the file's may speak.
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const seen: unknown[] = []
+    svc.onFatalError((e) => seen.push(e))
+    const video = await nativeVideo()
+    const stream = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('error'))
+    await expect(stream).rejects.toThrow('Native HLS load failed')
+
+    const file = svc.loadDirect('https://example.com/v.mp4', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await file
+    video.dispatchEvent(new Event('error'))
+
+    expect(reported.map(e => e.message)).toEqual(['progressive: mp4ErrorAfterLoad'])
+    expect(seen).toEqual([{ type: 'native', details: 'mp4ErrorAfterLoad' }])
+  })
+
   it('reports nothing for a stream disposed or replaced', async () => {
     // `destroy()`'s own `video.load()` can fire `error` on the listener
     // left armed; a disposed panel's telemetry must not hear its stream
@@ -657,9 +680,10 @@ describe('HLSService.loadDirect', () => {
 // A rejected load is the caller's failure, not a later one
 //
 // `datasetLoader` catches a `loadStream` rejection and falls back to the
-// progressive MP4 through the *same* service and video, and `loadDirect`
-// does not tear the hls.js instance down. The abandoned stream keeps
-// emitting, and reporting that would condemn a healthy fallback.
+// progressive MP4 through the *same* service and video. `loadDirect`
+// tears the hls.js instance down on the way in, but the native path's
+// `error` listener stays on the element, and anything the abandoned
+// stream still emits must not condemn a healthy fallback.
 // ---------------------------------------------------------------------------
 
 describe('HLSService after a rejected load', () => {

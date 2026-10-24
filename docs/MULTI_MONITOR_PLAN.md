@@ -5083,7 +5083,8 @@ renderer somewhere" — which we don't. Direct RTT.
      > had spent its retries, is reported by the output over IPC as
      > `output_dataset_stalled` (declared in `protocol.ts` from the
      > start and unused until now). The manager emits at most one
-     > row per output per dataset, and none from a window that is
+     > row per output per published dataset, and only for the dataset
+     > it published, and none from a window that is
      > closing, with `retries: 0` and `recovered: false`. A load the
      > operator had already moved on from is not reported: its
      > failure says nothing about the output. Those are literal: nothing on the

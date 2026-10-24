@@ -1667,12 +1667,22 @@ export class MultiOutputManager {
       //
       // Not from a window on its way out, whose stream ending is the
       // close, and at most once per output per published dataset
-      // (`stallReported`). The id is the output's word, so it names the
-      // dataset in the log and decides nothing.
-      const datasetId = typeof event.datasetId === 'string' ? event.datasetId.slice(0, 64) : null
-      if (!record.departing && !record.announcedClosing && !record.stallReported) {
+      // (`stallReported`). Only a stall for the dataset this side has
+      // published counts: one for the dataset before, crossing the
+      // publication in flight, would otherwise take the new dataset's
+      // report (found in review). The id is the output's word, so it can
+      // match the publication or not and decides nothing else.
+      const datasetId = typeof event.datasetId === 'string' ? event.datasetId : null
+      const published = this.aggregator.current().dataset?.id ?? null
+      if (
+        !record.departing &&
+        !record.announcedClosing &&
+        !record.stallReported &&
+        datasetId !== null &&
+        datasetId === published
+      ) {
         record.stallReported = true
-        logger.error(`[multiOutput] ${event.label} could not play ${datasetId ?? 'its dataset'}`)
+        logger.error(`[multiOutput] ${event.label} could not play ${datasetId.slice(0, 64)}`)
         reportOutputFailure({ kind: 'hls-stalled', retries: 0, recovered: false })
       }
     }

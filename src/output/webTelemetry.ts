@@ -15,10 +15,12 @@
  * - **`error` with `category: 'output'`**: a dataset that would not show,
  *   and the fatal errors its stream reports, recovered or not. `code`
  *   says which (`WebOutputErrorCode`). The message is fixed text per
- *   code or hls.js's own error names, and the stack is dropped, so no
+ *   code or the player's own error name, and the stack is dropped, so no
  *   Research-tier `error_detail` follows and the address's text never
- *   reaches the wire. A stream that will not load reports both: `stream`
- *   rows for hls.js's fatal errors, then one `media` row for the dataset.
+ *   reaches the wire. An hls.js stream that will not load reports both:
+ *   `stream` rows for its fatal errors, then one `media` row for the
+ *   dataset. A native-HLS or single-file one reports only the `media`
+ *   row, since those report a stream only once it has loaded.
  *
  * **Only in the first minute after the page loads**
  * (`WEB_OUTPUT_REPORT_WINDOW_MS`, page time), and **nothing sent after
@@ -186,8 +188,10 @@ export function startWebTelemetry(deps: WebTelemetryDeps = {}): WebTelemetry | n
     },
     streamError(err) {
       if (!open()) return
-      // hls.js's error names (`networkError: fragLoadError`) or the
-      // progressive path's fixed one: no URL, no dataset id.
+      // hls.js's error names (`networkError: fragLoadError`), or the
+      // native and single-file paths' fixed ones (`native:
+      // nativeHlsError`, `progressive: mp4ErrorAfterLoad`): no URL, no
+      // dataset id.
       reportError('output', reportable(err.message, 'stream'))
     },
   }
