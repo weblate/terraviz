@@ -65,7 +65,7 @@ const decode = async (blob: Blob) => (await blob.text()) as unknown as TexImageS
 describe('createCloudRefresh', () => {
   function harness(url = () => 'https://clouds.example/clouds_4096.jpg') {
     const srv = server()
-    const timers: { fn: () => void; ms: number }[] = []
+    const timers: { fn: () => void; ms: number; cleared?: boolean }[] = []
     const images: unknown[] = []
     let now = T0 + 60_000
     const refresh = createCloudRefresh({
@@ -78,7 +78,9 @@ describe('createCloudRefresh', () => {
         timers.push({ fn, ms })
         return timers.length
       },
-      clearTimer: () => {},
+      clearTimer: handle => {
+        timers[(handle as number) - 1].cleared = true
+      },
     })
     return {
       srv,
@@ -109,6 +111,28 @@ describe('createCloudRefresh', () => {
     h.refresh.start()
     // Now is T0 + 1 min; the check is due at T0 + period + margin.
     expect(h.timers[0].ms).toBe(CLOUD_PERIOD_MS + CLOUD_MARGIN_MS - 60_000)
+  })
+
+  it('retimes a check started before the first image arrived', async () => {
+    // What the scene does: it starts checking without waiting for the
+    // first fetch, which then lands with the image's own time.
+    const h = harness()
+    h.refresh.start()
+    expect(h.timers[0].ms).toBe(CLOUD_PERIOD_MS)
+    await h.refresh.first()
+    expect(h.timers[0].cleared).toBe(true)
+    expect(h.timers[1].ms).toBe(CLOUD_PERIOD_MS + CLOUD_MARGIN_MS - 60_000)
+  })
+
+  it('never waits longer than a period and a margin, whatever the clock says', async () => {
+    // A visitor's clock far behind puts the due time far in the future.
+    // Unclamped, past 2^31 ms, `setTimeout` fires at once, and the page
+    // revalidated back to back.
+    const h = harness()
+    await h.refresh.first()
+    h.advance(-40 * 24 * 3600_000)
+    h.refresh.start()
+    expect(h.timers[0].ms).toBe(CLOUD_PERIOD_MS + CLOUD_MARGIN_MS)
   })
 
   it('hands on a replaced image, and only a replaced one', async () => {

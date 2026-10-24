@@ -25,6 +25,14 @@
  * frame gains nothing from a 4096-wide image, and every visitor
  * downloads their own copy. Video renditions are capped the same way,
  * by the HLS layer (`hlsService`'s `maxWidth`).
+ *
+ * **An image comes with the rest of its candidates.** For a `url:` row
+ * the node does not know which sizes exist: it lists the usual
+ * `_4096` / `_2048` / `_1024` names whether or not they are there. The
+ * main app tries every one and then the original (`datasetLoader`), and
+ * this page took only the one it picked, so a dataset the app showed
+ * could leave the page on the live Earth (found in review).
+ * `imageCandidates` gives the rest in the order to try them.
  */
 
 import type { MirroredDataset } from '../services/multiOutput/protocol'
@@ -34,8 +42,8 @@ import { toDisplayUnits } from '../types/unit-scale'
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 
-/** Why a dataset could not be shown. The page logs it and keeps the
- *  idle Earth; there is nobody on a sphere to show a message to. */
+/** Why a dataset could not be shown. The page logs it and shows the
+ *  live Earth; there is nobody on a sphere to show a message to. */
 export type WebDatasetFailure =
   /** The node has no public dataset with that id. */
   | 'not_found'
@@ -101,6 +109,30 @@ export function pickVariant(variants: readonly Variant[], frameWidth: number): V
   return sorted.find(v => v.width >= frameWidth) ?? sorted[sorted.length - 1]
 }
 
+/**
+ * Every address for an image, in the order to try them: the variant
+ * `pickVariant` chooses, then the wider ones narrowest first (they
+ * still fill the frame), then the narrower ones widest first (they do
+ * not, but beat nothing), then the original. Duplicates dropped.
+ */
+export function imageCandidates(variants: readonly Variant[], fallback: string | undefined, frameWidth: number): string[] {
+  const pick = pickVariant(variants, frameWidth)
+  const ascending = [...variants].sort((a, b) => a.width - b.width)
+  const wider = ascending.filter(v => v !== pick && pick !== undefined && v.width >= pick.width)
+  const narrower = ascending.filter(v => v !== pick && (pick === undefined || v.width < pick.width)).reverse()
+  const urls = [pick, ...wider, ...narrower].flatMap(v => (v ? [v.url] : []))
+  if (fallback) urls.push(fallback)
+  return [...new Set(urls)]
+}
+
+/** A dataset to show, and other addresses for the same picture. */
+export interface WebDataset {
+  dataset: MirroredDataset
+  /** Addresses to try in order if `dataset.url` will not load. The rest
+   *  of an image's candidates; none for a video. */
+  alternateUrls: string[]
+}
+
 function variantsOf(value: unknown): Variant[] {
   if (!Array.isArray(value)) return []
   return value.filter(
@@ -145,7 +177,7 @@ async function getJson(fetchFn: FetchFn, url: string, what: string): Promise<Rec
 export async function fetchWebDataset(
   id: string,
   opts: { frameWidth: number; fetchFn?: FetchFn; apiBase?: string },
-): Promise<MirroredDataset> {
+): Promise<WebDataset> {
   const fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, init))
   const base = `${opts.apiBase ?? ''}/api/v1/datasets/${encodeURIComponent(id)}`
 
@@ -159,18 +191,22 @@ export async function fetchWebDataset(
     throw new WebDatasetError('bad_response', `manifest for ${id} says ${String(manifest.kind)}, the record says ${kind}`)
   }
 
-  const url =
+  const urls =
     kind === 'video'
-      ? (str(manifest.hls) ?? directFile(manifest.files))
-      : (pickVariant(variantsOf(manifest.variants), opts.frameWidth)?.url ?? str(manifest.fallback))
+      ? [str(manifest.hls) ?? directFile(manifest.files)].filter((u): u is string => u !== undefined)
+      : imageCandidates(variantsOf(manifest.variants), str(manifest.fallback), opts.frameWidth)
+  const [url, ...alternateUrls] = urls
   if (!url) throw new WebDatasetError('not_playable', `manifest for ${id} names nothing to play`)
 
   return {
-    id: str(record.id) ?? id,
-    url,
-    kind,
-    overlay: overlayFromRecord(record),
-    startTime: str(record.startTime) ?? null,
-    endTime: str(record.endTime) ?? null,
+    dataset: {
+      id: str(record.id) ?? id,
+      url,
+      kind,
+      overlay: overlayFromRecord(record),
+      startTime: str(record.startTime) ?? null,
+      endTime: str(record.endTime) ?? null,
+    },
+    alternateUrls,
   }
 }

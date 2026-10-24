@@ -138,8 +138,26 @@ export function createCloudRefresh(deps: CloudRefreshDeps): CloudRefresh {
 
   const schedule = (): void => {
     if (!running) return
-    const delay = Math.max(0, nextCloudCheckMs(heldModifiedMs(), nowMs()) - nowMs())
+    // Clamped to a period and a margin. The due time is an absolute one
+    // read off this computer's clock, and a clock far enough behind put
+    // it more than 2^31 ms out, which `setTimeout` fires at once: the
+    // page then rescheduled the same overflow forever, revalidating
+    // back to back (found in review). A clock merely hours out delayed
+    // every refresh by hours. Clamped, the worst a wrong clock costs is
+    // alignment with other visitors, never the refresh itself.
+    const delay = Math.min(
+      CLOUD_PERIOD_MS + CLOUD_MARGIN_MS,
+      Math.max(0, nextCloudCheckMs(heldModifiedMs(), nowMs()) - nowMs()),
+    )
     timer = setTimer(() => void check(), delay)
+  }
+
+  /** Replace a pending check with one timed from what is held now. */
+  const reschedule = (): void => {
+    if (!running) return
+    if (timer !== null) clearTimer(timer)
+    timer = null
+    schedule()
   }
 
   const check = async (): Promise<void> => {
@@ -157,7 +175,13 @@ export function createCloudRefresh(deps: CloudRefreshDeps): CloudRefresh {
   return {
     async first() {
       try {
-        return await fetchIfChanged()
+        const image = await fetchIfChanged()
+        // The scene does not wait for this before `start()` is called,
+        // so checking may already be running, timed from nothing. Retime
+        // it from the image now held, or copies that loaded at different
+        // moments stay out of step for the first cycle (found in review).
+        reschedule()
+        return image
       } catch (err) {
         logger.warn('[Output] cloud texture unavailable:', err)
         return null

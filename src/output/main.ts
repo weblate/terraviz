@@ -528,7 +528,7 @@ async function boot(): Promise<void> {
         return
       }
       fetchWebDataset(id, { frameWidth: scene.size.width })
-        .then(async ds => {
+        .then(async ({ dataset: ds }) => {
           if (mine !== datasetGeneration) return
           await mirror.apply(ds)
           if (mine === datasetGeneration) recompositeWeb()

@@ -2,7 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 import { describe, expect, it, vi } from 'vitest'
-import { WebDatasetError, fetchWebDataset, overlayFromRecord, pickVariant } from './webDataset'
+import { WebDatasetError, fetchWebDataset, imageCandidates, overlayFromRecord, pickVariant } from './webDataset'
 import { parseColorScale } from '../types/color-scale'
 import { toDisplayUnits } from '../types/unit-scale'
 
@@ -51,9 +51,10 @@ function node(record: unknown, manifest: unknown, status = { record: 200, manife
 describe('fetchWebDataset', () => {
   it('builds the MirroredDataset a desktop output would be handed', async () => {
     const fetchFn = node(VIDEO_RECORD, VIDEO_MANIFEST)
-    const ds = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn })
+    const { dataset: ds, alternateUrls } = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn })
     expect(fetchFn).toHaveBeenCalledWith(`/api/v1/datasets/${ID}`, expect.anything())
     expect(fetchFn).toHaveBeenCalledWith(`/api/v1/datasets/${ID}/manifest`, expect.anything())
+    expect(alternateUrls).toEqual([])
     expect(ds).toEqual({
       id: ID,
       url: VIDEO_MANIFEST.hls,
@@ -87,7 +88,7 @@ describe('fetchWebDataset', () => {
         { quality: '1080p', width: 1920, link: 'https://v.example/1080.mp4' },
       ],
     }
-    const ds = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(VIDEO_RECORD, manifest) })
+    const { dataset: ds } = await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(VIDEO_RECORD, manifest) })
     expect(ds.url).toBe('https://v.example/1080.mp4')
   })
 
@@ -103,18 +104,24 @@ describe('fetchWebDataset', () => {
       fallback: 'https://i.example/original.jpg',
     }
     const at = (w: number) => fetchWebDataset(ID, { frameWidth: w, fetchFn: node(record, manifest) })
-    expect((await at(2048)).url).toBe('https://i.example/2048.jpg')
-    expect((await at(1500)).url).toBe('https://i.example/2048.jpg')
-    expect((await at(8192)).url).toBe('https://i.example/4096.jpg')
-    const ds = await at(2048)
+    expect((await at(2048)).dataset.url).toBe('https://i.example/2048.jpg')
+    expect((await at(1500)).dataset.url).toBe('https://i.example/2048.jpg')
+    expect((await at(8192)).dataset.url).toBe('https://i.example/4096.jpg')
+    const { dataset: ds, alternateUrls } = await at(2048)
     expect(ds.kind).toBe('image')
     expect(ds.startTime).toBeNull()
+    // The rest, for when the picked one is not there.
+    expect(alternateUrls).toEqual([
+      'https://i.example/4096.jpg',
+      'https://i.example/1024.jpg',
+      'https://i.example/original.jpg',
+    ])
   })
 
   it('falls back to the original image when there are no variants', async () => {
     const record = { ...VIDEO_RECORD, format: 'image/png' }
     const manifest = { kind: 'image', variants: [], fallback: 'https://i.example/original.png' }
-    expect((await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(record, manifest) })).url).toBe(
+    expect((await fetchWebDataset(ID, { frameWidth: 2048, fetchFn: node(record, manifest) })).dataset.url).toBe(
       'https://i.example/original.png',
     )
   })
@@ -198,6 +205,26 @@ describe('overlayFromRecord', () => {
 
   it('ignores a longitude origin that is not a number', () => {
     expect(overlayFromRecord({ lonOrigin: '180' }).lonOrigin).toBeUndefined()
+  })
+})
+
+describe('imageCandidates', () => {
+  const v = (width: number) => ({ width, url: `w${width}` })
+
+  it('tries the pick, then wider narrowest first, then narrower widest first, then the original', () => {
+    expect(imageCandidates([v(1024), v(8192), v(2048), v(4096)], 'orig', 2048)).toEqual([
+      'w2048',
+      'w4096',
+      'w8192',
+      'w1024',
+      'orig',
+    ])
+  })
+
+  it('falls back to the original alone, and drops a repeat of it', () => {
+    expect(imageCandidates([], 'orig', 2048)).toEqual(['orig'])
+    expect(imageCandidates([{ width: 2048, url: 'orig' }], 'orig', 2048)).toEqual(['orig'])
+    expect(imageCandidates([], undefined, 2048)).toEqual([])
   })
 })
 
