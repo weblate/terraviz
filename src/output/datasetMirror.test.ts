@@ -392,4 +392,27 @@ describe('createDefaultMediaLoader', () => {
 
     expect(counts.paused()).toBe(1)
   })
+
+  // A web output streams one copy per visitor, so it caps the rendition
+  // at its framebuffer. A desktop output passes nothing and is unchanged.
+  it('hands the frame width to the stream, read at load time', async () => {
+    mockHls()
+    const calls: unknown[][] = []
+    const { HLSService } = await import('../services/hlsService')
+    HLSService.prototype.loadStream = function (...args: unknown[]) {
+      calls.push(args)
+      return Promise.resolve()
+    } as never
+    const { createDefaultMediaLoader } = await import('./datasetMirror')
+    let width: number | undefined = 2048
+    const loader = createDefaultMediaLoader({ maxVideoWidth: () => width })
+    const ds = { kind: 'video', url: 'https://cdn.example/a.m3u8', overlay: {} } as never
+
+    await loader.load(ds)
+    width = 4096
+    await loader.load(ds)
+    await createDefaultMediaLoader().load(ds)
+
+    expect(calls.map(args => args[3])).toEqual([2048, 4096, undefined])
+  })
 })

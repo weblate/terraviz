@@ -201,8 +201,15 @@ export function isHlsManifest(url: string): boolean {
  * `HLSService` arrives through a dynamic import so an output showing
  * image datasets never pays for hls.js — the same lazy-seam discipline
  * `outputScene` uses for Three and `photorealEarth`.
+ *
+ * `maxVideoWidth`, when given, is read at each load and caps the HLS
+ * renditions at the narrowest one that still fills that width. The web
+ * output passes its framebuffer width, because every visitor streams
+ * their own copy; a desktop output passes nothing and is unchanged.
  */
-export function createDefaultMediaLoader(): MediaLoader {
+export function createDefaultMediaLoader(
+  opts: { maxVideoWidth?: () => number | undefined } = {},
+): MediaLoader {
   return {
     async load(ds) {
       if (ds.kind === 'image') return loadImageSource(ds.url)
@@ -212,7 +219,7 @@ export function createDefaultMediaLoader(): MediaLoader {
       const video = hls.createVideo()
       try {
         await (isHlsManifest(ds.url)
-          ? hls.loadStream(ds.url, video)
+          ? hls.loadStream(ds.url, video, false, opts.maxVideoWidth?.())
           : hls.loadDirect(ds.url, video))
         // A loaded stream is not a decodable one, and on WebKitGTK it
         // is not even on its way to being one: that engine does not

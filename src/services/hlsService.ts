@@ -162,6 +162,28 @@ export function selectRendition(
   return cheapest
 }
 
+/**
+ * The `autoLevelCapping` index that stops at the narrowest level still
+ * at least `maxWidth` wide, or -1 (no cap) when every level is narrower
+ * or no level states a width.
+ *
+ * For an output drawing into a frame of known width: anything wider is
+ * pixels the frame cannot show, and on a web output every visitor
+ * streams their own copy — at 2048 wide, TerraViz's 2160×1080 rung looks
+ * the same as its 4096×2048 one at a third of the bandwidth. hls.js caps
+ * by *index*, allowing every level at or below it, which is why this
+ * returns the narrowest qualifying level's index rather than a width.
+ */
+export function capLevelForWidth(widths: readonly number[], maxWidth: number): number {
+  let cap = -1
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i]
+    if (!(w >= maxWidth)) continue
+    if (cap === -1 || w < widths[cap]) cap = i
+  }
+  return cap
+}
+
 export class HLSService {
   private hls: Hls | null = null
   /**
@@ -263,9 +285,13 @@ export class HLSService {
   }
 
   /**
-   * Load an HLS stream into the video element
+   * Load an HLS stream into the video element.
+   *
+   * `maxWidth`, when given, caps the renditions at the narrowest one at
+   * least that wide (`capLevelForWidth`) — for a caller that knows how
+   * wide its frame is. Combined with the phone cap, the tighter wins.
    */
-  loadStream(hlsUrl: string, video: HTMLVideoElement, mobile = false): Promise<void> {
+  loadStream(hlsUrl: string, video: HTMLVideoElement, mobile = false, maxWidth?: number): Promise<void> {
     this.sourceUrl = hlsUrl
     return new Promise((resolve, reject) => {
       // This promise settles on `MANIFEST_PARSED`, so anything that
@@ -337,6 +363,15 @@ export class HLSService {
             }, 0)
             this.hls!.autoLevelCapping = cap
             logger.info(`[HLS] Mobile ABR capped at level ${cap} (${this.hls!.levels[cap].width}x${this.hls!.levels[cap].height}) for screen ${maxScreenDim}px`)
+          }
+
+          if (maxWidth !== undefined) {
+            const cap = capLevelForWidth(this.hls!.levels.map(l => l.width), maxWidth)
+            const current = this.hls!.autoLevelCapping
+            if (cap >= 0 && (current < 0 || cap < current)) {
+              this.hls!.autoLevelCapping = cap
+              logger.info(`[HLS] ABR capped at level ${cap} (${this.hls!.levels[cap].width}x${this.hls!.levels[cap].height}) for a ${maxWidth}px frame`)
+            }
           }
 
           succeed()
