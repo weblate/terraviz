@@ -534,7 +534,7 @@ they all come along, because it is the real app.
 
 | Option | What you get | Status after testing | Who can see it |
 |---|---|---|---|
-| **E. The full app on a flat panel** *(new)* | The real TerraViz, interactive, measurement tools included | **Works today**, no TerraViz changes | Anyone with a viewer that runs it — not yet confirmed with a second avatar |
+| **E. The full app on a flat panel** *(new)* | The real TerraViz, interactive, measurement tools included | **Works today**, no TerraViz changes; typing confirmed in Firestorm | Anyone with a viewer that runs it — not yet confirmed with a second avatar |
 | **C. A live globe from the output page** *(reshaped)* | A correctly wrapped, live Earth on a sphere | **Idle Earth works today.** Datasets need one TerraViz change (§7) | Same as E |
 | **A. Scripts talk to the server** | Links out, event boards, kiosks | **Verified.** One small endpoint worth adding | Everyone |
 | **B. Flipbook globe** | An animated globe from uploaded frames | **Mapping verified.** Uploads cost L$ | Everyone, likely phones too |
@@ -561,6 +561,55 @@ What to know:
   (`PRIM_MEDIA_PERMS_INTERACT`): owner, group or anyone.
 - **Every visitor needs WebGL 2 in their viewer**, and pays for the
   rendering on their own machine.
+- **Typing works.** Eric typed into the full app at
+  `terraviz.zyra-project.org` on a flat panel in Firestorm 7.2.4 on
+  24 October, which is what search and Orbit need. That was the first
+  time anyone typed into the app in-world.
+- **A navigation is shared, though, and that is the panel's one
+  catch.** If a visitor does something that loads a *different page*,
+  such as the Privacy page, the blog or "Meet Orbit", their viewer
+  sends the new address to the region. Every viewer near the panel then
+  follows it, reloading at that page and losing whatever its visitor
+  was doing (`mediaNavigated`, §11). This is from the viewer's source
+  and not yet seen in-world. Loading a dataset only rewrites the app's
+  own address (`pushState` in `main.ts` and `datasetLoader.ts`) rather
+  than navigating, so it is expected not to spread, but that is
+  unconfirmed too. Both are one check with a second avatar: the first
+  clicks the Privacy link, then loads a dataset, and the second watches
+  their own panel.
+- **The panel runs the full app's telemetry**, Essential on by default,
+  unlike a globe, which reports nothing unless its owner turns it on.
+  The concern the privacy review raised for globes applies here too: a
+  venue matching its own log of avatar arrivals to `session_start`'s
+  locale, OS and screen. It is worth settling before a public
+  installation.
+
+**Setting up a self-serve kiosk.** A face showing the app's homepage,
+with no script, is a kiosk: every visitor explores on their own. The
+face's Media Settings should then be:
+- **Permissions → Interact: Anyone**, so visitors can click and type.
+- **Permissions → Control bar: Owner only.** Otherwise anyone can type
+  a new address into the media bar, and it goes to everyone.
+- **Security → whitelist on**, with `terraviz.zyra-project.org` only.
+  A click on an outside link, such as a dataset's source, then can't
+  move everyone's panel off-site.
+- **General: Auto play and Auto scale on.** Auto zoom is a choice: on a
+  large panel it pulls each visitor's camera in when they click.
+- **An optional reset.** A few lines of LSL can read the face's current
+  address every minute or so and, after a few idle minutes away from
+  the homepage, put the homepage back, so one visitor's click on the
+  Privacy page doesn't stay there for the next.
+
+**A panel everyone shares** is not something the homepage can do,
+since nothing inside the app is shared between viewers. The shared path
+is the one Phase 1 built: the output page steered by a script. It
+doesn't need a sphere. On a flat 2:1 face it draws the same picture as
+a world map, in step for every visitor and driven by the same address.
+The globe script's spin and its texture recipe for spheres don't apply
+to a flat face, so a flat-panel mode is a small addition to the Phase 2
+controller. An exhibit can have both: the shared globe for the room,
+and a kiosk panel beside it where visitors explore and ask Orbit on
+their own.
 
 ### Option C — a live globe from the output page
 
@@ -708,15 +757,79 @@ The work, smallest first:
      - Agreed with Eric on 24 October.
    - **In a field of globes, each globe is its own experience.**
 
-   Still open, and Eric's to answer:
-   - Is sharing between walk-up visitors a must, or a should?
-   - How close is "close" while playing?
-   - What makes someone "at" a globe? The same answer decides when the
-     last visitor has left.
-   - When two walk-up visitors both reach for one globe, who wins?
-   - Should the globe show the date it's on?
-   - What does a visitor see when their viewer can't keep up?
-   - Who keeps the presenter list?
+   **The rest was decided with Eric on 24 October 2026**, in a second
+   round of the same interview. Each number below is a setting on the
+   in-world object, like the five minutes, so an exhibit can change it
+   without new code.
+   - **Sharing between walk-up visitors is a must.** Everyone at a
+     globe always sees the same dataset and moment. Shared media
+     already gives this: the address the script sets reaches every
+     viewer.
+   - **"Close" while playing means about a second.** Today's behaviour
+     meets it (the status note below has the numbers). Copies agree to
+     the millisecond once settled, differ briefly after a jump or a
+     slow first load, and land on the same frame when paused.
+   - **Someone is "at" a globe when they are within a set distance of
+     it**, checked every few seconds. The default is 15 m, about as far
+     as the media stays legible. The same check decides when the last
+     visitor has left. Anyone on the parcel was ruled out: in a field
+     of globes, no globe would ever reset.
+   - **When two walk-up visitors reach for one globe, a short hold
+     decides.** Whoever acts keeps control until 60 s after their last
+     action. Anyone else who reaches for it is told who has it, and
+     when it frees up.
+   - **The date shows in the hover text**, readable from every side and
+     leaving the picture alone. It is exact when paused and updated
+     every few seconds while playing, worked out from the record's
+     start time and the position in the clip.
+   - **A visitor whose viewer can't keep up sees the right moment at a
+     lower quality.** That is the Video Streaming Engineer's
+     recommendation, in the status note below.
+   - **The presenter list is a notecard inside the globe**, one name per
+     line, reread when it changes. It needs no server, and each globe
+     can have its own list.
+   - **Credit has two parts.**
+     - **A short credit goes in the hover text**, from the record's
+       attribution, such as `Credit: NOAA · CC BY 4.0`.
+     - **A touch gives the abstract and the full credit.** If the globe
+       holds a notecard named by the dataset's id, the visitor is given
+       that. Otherwise the script sends the abstract, the credit and
+       the licence link to that visitor alone, in private chat, in
+       pieces of about 1 KB, with a link to the dataset's page. A
+       script can't write a notecard at runtime in Second Life, so
+       notecards are for curated datasets and chat covers the rest.
+   - **A presenter starts a talk** from the globe's menu with "Start
+     talk". It ends on "End talk", or once no presenter has been at the
+     globe for 2 minutes, so a presenter who logs off doesn't lock the
+     globe.
+
+   **What those decisions bring with them:**
+   - **List presenters by username, not display name.** A display name
+     can be changed, and two avatars can share one, so a visitor could
+     take a presenter's display name and get control.
+   - **The date needs the clip's length, and the wire doesn't always
+     carry it.** The record has a start and an end time, but the
+     manifest reports a duration of 0 for videos the node hosts itself.
+     Without the length a script can't turn a position into a date.
+     Phase 2 does both of these:
+     - add a duration to the manifest, an additive v1 change for the
+       Federation reviewer;
+     - show the dataset's date range when the exact date can't be
+       worked out.
+   - **The slow-link behaviour is page work, not the controller's.** It
+     lives in the clock steering and the HLS player, plus a 1024×512
+     rendition in the transcode pipeline. That is two pull requests
+     apart from Phase 2's, with the Video Streaming Engineer reviewing.
+   - **Touch on the globe itself is unconfirmed.** From the viewer's
+     source, a left-click on a face showing media goes to the media,
+     and only right-click → Touch reaches the script. If visitors'
+     left-clicks don't arrive, the controls and the credit move to a
+     touchable stand beside the globe. One in-world check settles it:
+     a second avatar left-clicks the globe, and the smoke-test script,
+     which answers a touch in chat, shows whether it arrived.
+   - **The hover text holds 254 bytes**, shared by the title, the date,
+     the credit and any telemetry notice. Phase 2 needs a fixed order
+     for them and a rule for shortening.
 
    **What that means for the design.** The first version of this item
    had each copy work out its position from the time of day. That only
@@ -1198,8 +1311,9 @@ yet.
     avatar at the globe saw it as the first did, and `/8 spin` turned
     it.
   - **Not yet confirmed in-world:** a visitor's touch, and telemetry.
-- **"How close is close"** (above) now has numbers to answer it with:
-  milliseconds once settled, and seconds after a seek, for as long as
+- **"How close is close"** (above, decided as about a second) has
+  numbers behind it: milliseconds once settled, and seconds after a
+  seek, for as long as
   the visitor's connection can play the stream at all. One exception:
   on a short loop, a seek costing a third of the clip or more (a slow
   first seek, with its network fetch) ends seeking for that copy, since
@@ -1210,8 +1324,9 @@ yet.
   the clip lets almost nothing through, and a lower one brings back the
   seek loop on the slow links that make seeks slow.
 - **"What does a visitor see when their viewer can't keep up?"**
-  (above) is still Eric's to answer, and the Video Streaming Engineer's
-  review gave a recommendation for it. Today a copy of a long clip on a
+  (above) is decided: the Video Streaming Engineer's recommendation
+  below, which Eric chose on 24 October. It is page work, in two pull
+  requests of its own. Today a copy of a long clip on a
   link too slow for its rendition seeks every few seconds, landing
   behind each time; a short loop stops seeking and speeds up instead
   (above). Either way the rate trim asks for up to 25% more bandwidth
@@ -1265,9 +1380,9 @@ yet.
     - Data-encoded streams have no probe, since hls.js skips it for a
       single rendition.
   - **Credit.** A CC-BY dataset on a prim reaches every visitor with no
-    credit, because the page shows nothing but the picture. The Phase 2
-    controller's hover text could carry it. That's a decision for the
-    maintainer.
+    credit, because the page shows nothing but the picture. Decided on
+    24 October: the Phase 2 controller carries a short credit in its
+    hover text, and a touch gives the full one (item 4 above).
   - **The manifest has no published schema**, and the output page is
     now a third reader of it. A `manifest.schema.json` beside the other
     v1 schemas would pin what Second Life globes rely on.
@@ -1291,13 +1406,30 @@ Written down so these don't get re-proposed in six months.
   also be a product with no users and permanent maintenance. No.
 - **Rebuilding the catalog in LSL.** Option A is read-only. In-world
   objects display TerraViz state; nothing in-world writes back.
-- **An in-world Orbit chatbot driven by scripts.** Orbit streams its
-  replies and scripts can't consume a stream, on top of the reply and
-  memory limits in §4.1. Option E brings the real Orbit to a flat
-  panel through the existing chat path; anything script-driven would
-  have to follow [`CONTRIBUTING.md`](../CONTRIBUTING.md) §LLM
-  Integrations and belongs in
-  [`LLM_INTEGRATION_OPPORTUNITIES.md`](LLM_INTEGRATION_OPPORTUNITIES.md).
+- **An in-world Orbit chatbot driven by scripts, through today's chat
+  endpoint.** The first version gave the reason as "Orbit streams its
+  replies and scripts can't consume a stream". That is out of date:
+  the endpoint also answers in one reply when asked (`stream: false`,
+  `functions/api/chat/completions.ts`). What stands in the way is
+  this:
+  - **The prompt is built in the visitor's browser.** Orbit's
+    instructions and catalog are put together by `docentContext.ts`,
+    which a script can't run, and the catalog alone is far past the
+    reply and memory limits in §4.1.
+  - **The endpoint refuses a request without an allowed `Origin`
+    header.** A script would have to fake one, which defeats the check.
+  - **Its rate limit is per IP address**, 30 requests a minute. Scripts'
+    requests come from Linden Lab's simulator hosts, so every globe on
+    a host would share one budget.
+
+  Option E brings the real Orbit to a flat panel today, through the
+  existing chat path, with each visitor's conversation their own. Orbit
+  steering a globe for everyone at it needs a narrow endpoint of its
+  own, built under [`CONTRIBUTING.md`](../CONTRIBUTING.md) §LLM
+  Integrations. It is entry 10 in
+  [`LLM_INTEGRATION_OPPORTUNITIES.md`](LLM_INTEGRATION_OPPORTUNITIES.md),
+  and comes after Phase 2, whose touch, presenter and hold rules it
+  uses.
 - **Patching around #5189 inside TerraViz.** Nothing here reproduced
   it, and there is nothing in TerraViz to change if it does fire — it
   is a crash in the viewer's own embedded browser.
@@ -1336,11 +1468,16 @@ end of §7.*
 
 **Phase 2 — an in-world globe controller.** An LSL object that applies
 the §5 recipe, sets the media at 2048×1024 and spins the globe. It also
-carries the controls §7 item 4 asks for: the presenter list, pause,
-jump, a dataset menu, and the return to the live Earth five minutes
-after the last visitor leaves. Each control rewrites the media address,
-and the media itself stays non-interactive so that the controls are the
-only way in.
+carries the controls §7 item 4 asks for: the presenter list, talks,
+pause, jump, a dataset menu, the short hold between walk-up visitors,
+the date and credit in the hover text, the abstract on touch, and the
+return to the live Earth five minutes after the last visitor leaves.
+Each control rewrites the media address, and the media itself stays
+non-interactive so that the controls are the only way in. Its first
+check is whether a visitor's left-click reaches the script at all,
+since that decides whether the controls sit on the globe or on a stand
+beside it. The manifest gains a clip duration for the date, and the
+slow-link work is two page PRs beside it (§7 item 4).
 It is the in-world half of Phase 1.
 *A smoke-test script exists, not the controller.*
 [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe)
@@ -1348,8 +1485,8 @@ does the recipe, the media, the spin, pause, jump, rate, rotation and
 dataset switching. It is driven by its owner in chat, with
 non-interactive media. It has no presenter list, no controls visitors
 can touch, and no automatic return to the live Earth after the last
-visitor leaves (`/8 earth` is the owner's, by hand), which all wait on
-the open questions in §7 item 4.
+visitor leaves (`/8 earth` is the owner's, by hand). The questions those
+waited on were decided on 24 October (§7 item 4).
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.
@@ -1441,8 +1578,11 @@ Numbering is kept from the first version, so a reference like
       - **Still open** for the official Linden Lab viewer and the phone
         app, each of which needs its own run.
 11. **Does a second avatar see the app and the output page?** It
-    should — they come from TerraViz's site, not from a script — but
-    nobody else was there to look.
+    should — they come from TerraViz's site, not from a script.
+    **Answered for the output page** on 24 October: a second avatar at
+    the globe saw what the first did (§7 status note). **Still open for
+    the app on a flat panel**, together with whether one visitor's
+    navigation moves the other's panel (§6 Option E).
 12. **How long does the full app run with a video playing?** It ran;
     it wasn't timed, and it wasn't tried on a flat panel (§4.5).
 13. **How many globes can stand in one field?** **Answered from the
