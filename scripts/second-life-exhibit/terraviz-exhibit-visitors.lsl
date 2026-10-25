@@ -194,9 +194,12 @@ integer bytes(string s)
 }
 
 // A string cut to fit, since a menu past either limit isn't shown at all.
+// A character takes at least a byte, so the first cut is by characters.
 string fit(string s, integer max)
 {
-    while (bytes(s) > max) s = llGetSubString(s, 0, -2);
+    if (bytes(s) <= max) return s;
+    s = llGetSubString(s, 0, max - 1);
+    while (bytes(s) > max) s = llDeleteSubString(s, -1, -1);
     return s;
 }
 
@@ -482,6 +485,8 @@ default
             list w = llParseString2List(llToLower(llStringTrim(msg, STRING_TRIM)), [" "], []);
             string cmd = llList2String(w, 0);
             if (cmd == "presenters") llOwnerSay("[exhibit] " + summary());
+            else if (cmd == "memory")
+                llOwnerSay("[exhibit] Visitors script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64.");
             else if (cmd == "talk")
             {
                 string what = llList2String(w, 1);

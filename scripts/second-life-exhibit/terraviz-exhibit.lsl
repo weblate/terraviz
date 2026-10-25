@@ -64,6 +64,7 @@
 //   /9 steer hash|query    where changes go in the address (see above)
 //   /9 status              the current address and state
 //   /9 upright             stand the poles upright again
+//   /9 memory              each of the three scripts says how much of its 64 KB it uses
 // The visitors script answers /9 talk and /9 presenters too.
 //
 // TELEMETRY
@@ -145,7 +146,7 @@ help()
 {
     llOwnerSay("[exhibit] Commands on /" + (string)CHAN + ": show <name or id>, list, earth, pause, play, "
         + "jump <s or m:ss>, rate <speed>, rotation <degrees>, spin <degrees/s or off>, debug on|off, "
-        + "width 1024|2048, telemetry on|off, steer hash|query, status, upright, talk, presenters");
+        + "width 1024|2048, telemetry on|off, steer hash|query, status, upright, memory, talk, presenters");
 }
 
 // Tells whoever asked. The owner hears it privately wherever they are; a
@@ -717,6 +718,11 @@ act(key who, integer owner, string msg)
     {
         upright();
         tell(who, "Poles upright, texture turned 90 degrees, spin off.");
+        return;
+    }
+    if (cmd == "memory")
+    {
+        tell(who, "Globe script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64.");
         return;
     }
     // The visitors script's commands, which it answers itself.
