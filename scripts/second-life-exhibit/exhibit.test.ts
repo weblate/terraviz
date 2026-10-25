@@ -100,7 +100,7 @@ describe('second-life exhibit scripts', () => {
       ...all(visitors, /\bask\(who, "(\w+)/g),
       ...all(visitors, /MSG_CONTROL, "(\w+)/g),
     ])
-    expect(asked).toEqual(new Set(['show', 'earth', 'rest', 'pause', 'play', 'jump', 'nudge', 'restart', 'turn']))
+    expect(asked).toEqual(new Set(['show', 'earth', 'rest', 'pause', 'play', 'jump', 'nudge', 'restart', 'turn', 'tilt', 'level']))
     for (const cmd of asked) expect(allowed, cmd).toContain(cmd)
     // The rate stays the owner's, even though the globe's check that the
     // live Earth has no clock to change names it before the gate. So does
@@ -119,13 +119,43 @@ describe('second-life exhibit scripts', () => {
     const turn = Number(constant(visitors, 'integer', 'TURN'))
     expect(turn).toBeGreaterThan(0)
     expect(turn).toBeLessThanOrEqual(360)
-    expect(visitors).toContain('if (msg == BTN_EAST) { ask(who, "turn " + (string)TURN); return; }')
-    expect(visitors).toContain('if (msg == BTN_WEST) { ask(who, "turn -" + (string)TURN); return; }')
+    expect(visitors).toContain('if (msg == BTN_EAST) ask(who, "turn " + (string)TURN);')
+    expect(visitors).toContain('else if (msg == BTN_WEST) ask(who, "turn -" + (string)TURN);')
     // The owner's rotation is home, and the scripts' own return goes back
     // to it, even on a live Earth a visitor only turned.
     expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(/gHome = gRotation;/)
-    expect(act).toContain('if (cmd == "rest") gRotation = gHome;')
+    expect(act).toContain('if (cmd == "rest") { gRotation = gHome; if (gTilted) level(); }')
     expect(body(visitors, 'check()')).toContain('(gDataset != "" || gTurned)')
+  })
+
+  it('tip a pole toward whoever asked, and stand the globe back up', () => {
+    // A tilt turns the sphere itself, which the region sends every
+    // viewer, toward the asker's own position, stepping no further than
+    // facing them.
+    const tilt = body(globe, 'integer tilt(key who, integer south)')
+    expect(tilt).toContain('llGetObjectDetails(who, [OBJECT_POS])')
+    expect(tilt).toContain('if (step > angle) step = angle;')
+    expect(tilt).toContain('llSetRot(r * llAxisAngle2Rot(llVecNorm(axis), step));')
+    expect(Number(constant(globe, 'float', 'TILT'))).toBe(30)
+    // The north pole is whichever of the sphere's own axes is up at rest.
+    expect(body(globe, 'home()')).toContain('gNorth = <0.0, 0.0, 1.0> / gHomeRot;')
+    expect(globe).toMatch(/upright\(\);\n {8}else stopSpin\(\);\n {8}home\(\);/)
+    // A tilted sphere counts as turned, so the idle return comes for it,
+    // and a spin, about the region's vertical, waits until it is level.
+    expect(body(globe, 'broadcast()')).toContain('"turned", gRotation != gHome || gTilted,')
+    expect(body(globe, 'act(key who, integer owner, string msg)')).toContain('if (gTilted) { tell(who, "Not while the globe is tilted')
+    const turn = body(visitors, 'turnMenu(key who)')
+    expect(turn).toContain('[BTN_NORTH, BTN_SOUTH, BTN_LEVEL, BTN_WEST, BTN_EAST, BTN_MENU], gDlgTurn);')
+    expect(visitors).toContain('else if (msg == BTN_SOUTH) ask(who, "tilt south");')
+    expect(visitors).toContain('else if (msg == BTN_NORTH) ask(who, "tilt north");')
+    expect(visitors).toContain('else if (msg == BTN_LEVEL) ask(who, "level");')
+  })
+
+  it('label every button within the 24 bytes a menu allows', () => {
+    const labels = [...visitors.matchAll(/^string\s+BTN_\w+ = "([^"]*)";/gm)].map((m) => m[1])
+    expect(labels.length).toBeGreaterThan(10)
+    for (const label of labels) expect(bytes(label), label).toBeLessThanOrEqual(24)
+    expect(new Set(labels).size).toBe(labels.length)
   })
 
   it('never offer more than a menu holds', () => {
@@ -261,8 +291,10 @@ describe('second-life exhibit scripts', () => {
     expect(body(visitors, 'mainMenu(key who)')).toContain('menu(who, text, b, gDlg);')
     expect(body(visitors, 'datasetsMenu(key who, integer page)')).toContain('menu(who, text, b, gDlgSets);')
     expect(visitors).toContain('llTextBox(who, "Jump to where in the clip? Seconds, like 90, or minutes and seconds, like 1:30.", gDlgJump);')
-    expect(visitors).toMatch(/gDlgSets = gDlg \+ 1;\n\s+gDlgJump = gDlg \+ 2;/)
-    expect(visitors).toMatch(/gDlg = -3 - /)
+    expect(body(visitors, 'turnMenu(key who)')).toContain('gDlgTurn);')
+    expect(visitors).toMatch(/gDlgSets = gDlg \+ 1;\n\s+gDlgJump = gDlg \+ 2;\n\s+gDlgTurn = gDlg \+ 3;/)
+    // Every channel the menus use stays negative, where no avatar can chat.
+    expect(visitors).toMatch(/gDlg = -4 - /)
   })
 })
 

@@ -66,6 +66,10 @@
 //   /9 telemetry on|off    anonymous counts (reloads every visitor's page)
 //   /9 steer hash|query    where changes go in the address (see above)
 //   /9 status              the current address and state
+//   /9 tilt south|north    tip the sphere 30 degrees so that pole comes round toward
+//                          you, until it faces you. Visitors' "South Pole to me" and
+//                          "North Pole to me" buttons do this.
+//   /9 level               stand a tilted sphere back as it was
 //   /9 upright             stand the poles upright again
 //   /9 memory              each of the three scripts says how much of its 64 KB it uses
 // The visitors script answers /9 talk and /9 presenters too.
@@ -135,6 +139,10 @@ float   gRate = 1.0;
 integer gPaused;
 float   gRotation;      // degrees east at the picture's centre, [0, 360)
 float   gHome;          // the owner's rotation, which a visitor's turn doesn't outlast
+rotation gHomeRot;      // the sphere's own rotation at rest, upright
+vector  gNorth;         // its north pole, in its own axes: the one up at rest
+integer gTilted;        // a tilt has tipped it from gHomeRot
+float   TILT = 30.0;    // degrees a tilt tips it
 integer gDebug;
 integer gTelemetry;
 integer gWidth = 2048;
@@ -149,7 +157,7 @@ key     gReqWho;        // who asked: the owner, a visitor, or NULL_KEY
 help()
 {
     llOwnerSay("[exhibit] Commands on /" + (string)CHAN + ": show <name or id>, list, earth, pause, play, "
-        + "jump <s or m:ss>, rate <speed>, rotation <degrees>, turn <degrees east>, spin <degrees/s or off>, debug on|off, "
+        + "jump <s or m:ss>, rate <speed>, rotation <degrees>, turn <degrees east>, tilt south|north, level, spin <degrees/s or off>, debug on|off, "
         + "width 1024|2048, telemetry on|off, steer hash|query, status, upright, memory, talk, presenters");
 }
 
@@ -353,7 +361,7 @@ broadcast()
     llMessageLinked(LINK_THIS, MSG_STATE, llList2Json(JSON_OBJECT, [
         "dataset", gDataset, "title", gTitle,
         "pos", gPos, "atS", gAtS, "atMs", gAtMs, "rate", gRate, "paused", gPaused,
-        "telemetry", gTelemetry, "turned", gRotation != gHome, "node", NODE]), NULL_KEY);
+        "telemetry", gTelemetry, "turned", gRotation != gHome || gTilted, "node", NODE]), NULL_KEY);
 }
 
 // Puts the current state on the face, every setting every time: a face
@@ -437,6 +445,55 @@ stopSpin()
     llSleep(0.5);
     llSetLocalRot(rest);
     gSpin = 0.0;
+}
+
+// The rotation the sphere rests at, and which of its own axes is its
+// north pole: the one pointing up at rest, which for a default sphere
+// upright() puts there, and for a mesh globe is its own.
+home()
+{
+    gHomeRot = llGetRot();
+    gNorth = <0.0, 0.0, 1.0> / gHomeRot;
+    gTilted = FALSE;
+}
+
+level()
+{
+    llSetRot(gHomeRot);
+    gTilted = FALSE;
+}
+
+// Tips the sphere a step about a level axis, so that one pole comes round
+// toward the avatar who asked, and no further than facing them: three
+// steps from upright put it on the equator in front of them. The region
+// sends the rotation to every viewer, so all see the same angle, unlike
+// a spin, which each draws for itself and which a tilt therefore ends.
+integer tilt(key who, integer south)
+{
+    list d = llGetObjectDetails(who, [OBJECT_POS]);
+    if (d == []) return FALSE;
+    vector to = llList2Vector(d, 0) - llGetPos();
+    to.z = 0.0;
+    if (llVecMag(to) < 0.01) return FALSE;
+    to = llVecNorm(to);
+    if (gSpin != 0.0) stopSpin();
+    rotation r = llGetRot();
+    vector pole = gNorth * r;
+    if (south) pole = -pole;
+    float c = pole * to;
+    if (c > 1.0) c = 1.0;
+    if (c < -1.0) c = -1.0;
+    float angle = llAcos(c);
+    if (angle < 0.01) return TRUE;
+    float step = TILT * DEG_TO_RAD;
+    if (step > angle) step = angle;
+    // About pole x to, which carries the pole toward them; for a pole
+    // pointing straight away, over the top instead.
+    vector axis = pole % to;
+    if (llVecMag(axis) < 0.001) axis = pole % <0.0, 0.0, 1.0>;
+    llSetRot(r * llAxisAngle2Rot(llVecNorm(axis), step));
+    gTilted = TRUE;
+    return TRUE;
 }
 
 // The spin axis is the region's vertical, since llTargetOmega spins a
@@ -552,7 +609,7 @@ act(key who, integer owner, string msg)
         gDataset = "";
         gTitle = "";
         gPaused = FALSE;
-        if (cmd == "rest") gRotation = gHome;
+        if (cmd == "rest") { gRotation = gHome; if (gTilted) level(); }
         if (!commit(saved)) { tell(who, "The globe couldn't change just now."); return; }
         gReq = NULL_KEY;   // a show still waiting on the node is overtaken
         tell(who, "Back to the live Earth.");
@@ -605,6 +662,22 @@ act(key who, integer owner, string msg)
         gPos = to;
         anchor();
         if (commit(saved)) tell(who, "At " + num(gPos) + " s, " + llList2String(["playing.", "paused."], gPaused));
+        return;
+    }
+    if (cmd == "tilt")
+    {
+        if (larg != "south" && larg != "north") { tell(who, "Tilt which pole toward you, south or north?"); return; }
+        if (!tilt(who, larg == "south")) { tell(who, "The globe couldn't tell where you are."); return; }
+        broadcast();
+        tell(who, "Tilted. The " + llList2String(["North", "South"], larg == "south") + " Pole is coming round toward you.");
+        return;
+    }
+    if (cmd == "level")
+    {
+        if (!gTilted) { tell(who, "The globe is already upright."); return; }
+        level();
+        broadcast();
+        tell(who, "Upright again.");
         return;
     }
     if (cmd == "turn")
@@ -675,6 +748,9 @@ act(key who, integer owner, string msg)
             tell(who, "Spin in degrees a second, up to 90, like 6 for a turn a minute, or off.");
             return;
         }
+        // The spin turns about the region's vertical, which a tilted
+        // sphere's poles no longer are.
+        if (gTilted) { tell(who, "Not while the globe is tilted: /" + (string)CHAN + " level first."); return; }
         gSpin = rate;
         llTargetOmega(<0.0, 0.0, 1.0>, gSpin * DEG_TO_RAD, 1.0);
         tell(who, "Spinning at " + num(gSpin) + " degrees a second. Each viewer draws the spin for itself, so "
@@ -746,6 +822,8 @@ act(key who, integer owner, string msg)
     if (cmd == "upright")
     {
         upright();
+        home();
+        broadcast();
         tell(who, "Poles upright, texture turned 90 degrees, spin off.");
         return;
     }
@@ -768,6 +846,7 @@ default
         if (llGetObjectName() == "Object") llSetObjectName("TerraViz globe");
         if (UPRIGHT_ON_START) upright();
         else stopSpin();
+        home();
         anchor();
         if (setMedia())
         {

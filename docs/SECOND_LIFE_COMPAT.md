@@ -1546,10 +1546,17 @@ driven by its owner in chat, with none of the visitor controls.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start
-  over, a dataset, the live Earth, and Turn east and Turn west, which
-  turn the globe 30° (added on 25 October). East is the way the Earth
-  turns, so the places facing a visitor move to their right. The
-  controls are offered when that
+  over, a dataset, the live Earth, and a Turn menu (added on 25
+  October). Turn east and Turn west turn the picture 30° about the
+  poles: east is the way the Earth turns, so the places facing a
+  visitor move to their right. South Pole to me and North Pole to me
+  tip the sphere itself 30° a press so that pole comes round toward
+  whoever pressed, until it faces them, so a presenter can put the
+  ozone hole on the equator in front of their audience; Upright again
+  undoes it. A tilt is the prim's rotation, which the region sends
+  every viewer, so all see one angle; turning the picture to put a pole
+  at the front instead is Phase 4's (§7 item 7). The controls are
+  offered when that
   visitor may act: outside a talk, nobody else holds the globe;
   during one, they are a presenter. A hold ends when it runs out or
   when its holder leaves the globe. Presenters also get "Start talk"
@@ -1557,8 +1564,8 @@ driven by its owner in chat, with none of the visitor controls.
   start a talk whoever holds the globe. A visitor
   doesn't change the rate, the width or the telemetry, which stay the
   owner's, in chat. Nor does a turn change the owner's rotation: that
-  is where the globe goes back to, with the live Earth, once the last
-  visitor has gone.
+  is where the globe goes back to, upright and with the live Earth,
+  once the last visitor has gone.
 - **Notecards in the globe, all optional, re-read when they change:**
   - `presenters`: one username a line. A legacy name such as "Eric
     Hackathorn" is read as its username. A display name never is.
@@ -1593,9 +1600,10 @@ driven by its owner in chat, with none of the visitor controls.
   - **The sphere prim itself**, through its local rotation
     (`llSetLinkPrimitiveParamsFast` with `PRIM_ROT_LOCAL`) so the
     handle doesn't turn with it. The region sends the rotation to
-    every viewer, so all see one angle. It has to compose with
-    `/9 upright` and end any `/9 spin` first, since `llTargetOmega` is
-    drawn by each viewer for itself.
+    every viewer, so all see one angle. The menu's pole buttons already
+    tip the sphere this way, ending any `/9 spin` first, since
+    `llTargetOmega` is drawn by each viewer for itself; a handle would
+    drag the same rotation smoothly instead of in 30° steps.
   - **The address's `rotation`**, as the turn buttons use. Every viewer
     applies it after the `#` with no reload, but the globe script
     sleeps a second after each media change, so a drag would move in
@@ -1604,8 +1612,7 @@ driven by its owner in chat, with none of the visitor controls.
   The first follows the hand more closely, and the second keeps the
   picture's own longitude as the one thing turned. Either way, a
   drag goes through the visitors script's hold and talk rules like
-  any other control. Until then, Turn east and Turn west in the menu
-  do the job.
+  any other control. Until then, the Turn menu does the job in steps.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.

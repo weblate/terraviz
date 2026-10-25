@@ -21,10 +21,12 @@
 // - During a talk, only the presenters may act. A presenter starts a talk
 //   from the menu, whoever holds the globe. It ends when one chooses "End
 //   talk", or once no presenter has been at the globe for "talk minutes".
-// - Anyone who may act can turn the globe 30 degrees east or west.
+// - Anyone who may act can turn the globe 30 degrees east or west, and
+//   tip it so the South or North Pole comes round toward them, 30
+//   degrees a press until it faces them, as for the ozone hole.
 // - "idle minutes" after the last visitor leaves the globe, it goes back
-//   to the live Earth, turned back to the owner's rotation, but never
-//   during a talk.
+//   to the live Earth, turned back to the owner's rotation and upright,
+//   but never during a talk.
 // Everyone at the globe sees every change, since there is one globe.
 //
 // TOUCHING THE GLOBE
@@ -106,8 +108,12 @@ string  BTN_EARTH = "Live Earth";
 string  BTN_JUMP = "Jump to...";
 string  BTN_START_TALK = "Start talk";
 string  BTN_END_TALK = "End talk";
+string  BTN_TURN = "Turn...";
 string  BTN_WEST = "Turn west";
 string  BTN_EAST = "Turn east";
+string  BTN_NORTH = "North Pole to me";
+string  BTN_SOUTH = "South Pole to me";
+string  BTN_LEVEL = "Upright again";
 string  BTN_CLOSE = "Close";
 string  BTN_PREV = "< Previous";
 string  BTN_NEXT = "Next >";
@@ -117,7 +123,7 @@ string  BTN_MENU = "Main menu";
 string  gDataset;
 string  gTitle;
 integer gPaused;
-integer gTurned;             // a visitor turned the globe from the owner's rotation
+integer gTurned;             // a visitor turned or tilted the globe from the owner's setting
 
 list    gPresenters;         // usernames, lowercase
 list    gMenu;               // name, id, name, id...
@@ -135,6 +141,7 @@ integer gNear;               // avatars at the globe at the last check
 integer gDlg;                // the main menu's channel
 integer gDlgSets;            // the datasets menu's
 integer gDlgJump;            // the jump text box's
+integer gDlgTurn;            // the turn menu's
 list    gCtx;                // who, their datasets page, when: one entry per visitor with a menu open
 
 list    gCards = ["settings", "presenters", "datasets"];
@@ -276,7 +283,7 @@ string showing()
 }
 
 // The main menu, in reading order: About with a presenter's jump and
-// talk, the transport, the datasets and the live Earth, the turns, and the
+// talk, the transport, the datasets and the live Earth, turning, and the
 // way out. Twelve at most, which is all a menu holds.
 mainMenu(key who)
 {
@@ -291,7 +298,7 @@ mainMenu(key who)
     if (can && clip) b += [llList2String([BTN_PAUSE, BTN_PLAY], gPaused), BTN_BACK, BTN_FWD, BTN_RESTART];
     if (can) b += [BTN_DATASETS];
     if (can && clip) b += [BTN_EARTH];
-    if (can) b += [BTN_WEST, BTN_EAST];
+    if (can) b += [BTN_TURN];
     b += [BTN_CLOSE];
 
     string text = showing();
@@ -304,6 +311,19 @@ mainMenu(key who)
     if (at != -1) page = llList2Integer(gCtx, at + 1);
     remember(who, page);
     menu(who, text, b, gDlg);
+}
+
+// The turn menu: the poles on top, turning beneath. It comes back after
+// each press, since a pole takes three to reach the equator.
+turnMenu(key who)
+{
+    integer at = llListFindList(gCtx, [who]);
+    integer page = 0;
+    if (at != -1) page = llList2Integer(gCtx, at + 1);
+    remember(who, page);
+    menu(who, "Turn the globe, for everyone at it. A pole button tips that pole toward you, 30 degrees a press, "
+        + "until it faces you. East turns it the way the Earth turns.",
+        [BTN_NORTH, BTN_SOUTH, BTN_LEVEL, BTN_WEST, BTN_EAST, BTN_MENU], gDlgTurn);
 }
 
 datasetsMenu(key who, integer page)
@@ -454,12 +474,14 @@ default
 {
     state_entry()
     {
-        gDlg = -3 - (integer)llFrand(1000000000.0);
+        gDlg = -4 - (integer)llFrand(1000000000.0);
         gDlgSets = gDlg + 1;
         gDlgJump = gDlg + 2;
+        gDlgTurn = gDlg + 3;
         llListen(gDlg, "", NULL_KEY, "");
         llListen(gDlgSets, "", NULL_KEY, "");
         llListen(gDlgJump, "", NULL_KEY, "");
+        llListen(gDlgTurn, "", NULL_KEY, "");
         llListen(CHAN, "", llGetOwner(), "");
         gLastSeen = unix();
         gMenu = DEFAULT_MENU;   // until the notecards have been read
@@ -585,6 +607,19 @@ default
             }
             return;
         }
+        if (ch == gDlgTurn)
+        {
+            if (msg == BTN_MENU) { mainMenu(who); return; }
+            if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
+            if (msg == BTN_EAST) ask(who, "turn " + (string)TURN);
+            else if (msg == BTN_WEST) ask(who, "turn -" + (string)TURN);
+            else if (msg == BTN_SOUTH) ask(who, "tilt south");
+            else if (msg == BTN_NORTH) ask(who, "tilt north");
+            else if (msg == BTN_LEVEL) ask(who, "level");
+            else return;
+            turnMenu(who);
+            return;
+        }
         if (ch == gDlgJump)
         {
             if (!isPresenter(who)) return;
@@ -609,8 +644,7 @@ default
         if (msg == BTN_FWD) { ask(who, "nudge " + (string)((integer)NUDGE)); return; }
         if (msg == BTN_RESTART) { ask(who, "restart"); return; }
         if (msg == BTN_EARTH) { ask(who, "earth"); return; }
-        if (msg == BTN_EAST) { ask(who, "turn " + (string)TURN); return; }
-        if (msg == BTN_WEST) { ask(who, "turn -" + (string)TURN); return; }
+        if (msg == BTN_TURN) { turnMenu(who); return; }
         if (msg == BTN_JUMP && isPresenter(who))
         {
             remember(who, page);
