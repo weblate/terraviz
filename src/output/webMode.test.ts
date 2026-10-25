@@ -8,10 +8,11 @@ import {
   defaultWebFramebufferWidth,
   mergedParams,
   readWebSettings,
-  rotationOffsetRadFor,
   sameClock,
+  sameView,
 } from './webMode'
-import { IDENTITY_PARAMS, equirectSourceUv } from './equirectRtt'
+import { MAX_CAMERA_OFFSET, equirectSourceUv } from './equirectRtt'
+import { viewParams } from './webCamera'
 
 describe('readWebSettings', () => {
   it('reads nothing from a bare address: the idle Earth, letterboxed, on its own clock', () => {
@@ -19,7 +20,7 @@ describe('readWebSettings', () => {
       datasetId: null,
       fit: 'contain',
       framebufferWidth: null,
-      centreLonDeg: 0,
+      view: { latDeg: 0, lonDeg: 0, zoom: 0 },
       debug: false,
       telemetry: false,
       clock: { positionS: 0, atUnixS: null, rate: 1, paused: false },
@@ -31,7 +32,7 @@ describe('readWebSettings', () => {
     expect(s.datasetId).toBe('01KQG611HF8YXJNRBEHT0757KT')
     expect(s.fit).toBe('fill')
     expect(s.framebufferWidth).toBe(2048)
-    expect(s.centreLonDeg).toBe(270)
+    expect(s.view.lonDeg).toBe(270)
     expect(s.debug).toBe(true)
   })
 
@@ -55,7 +56,7 @@ describe('readWebSettings', () => {
     expect(s.datasetId).toBe('AAA')
     expect(s.framebufferWidth).toBeNull()
     expect(s.fit).toBe('contain')
-    expect(s.centreLonDeg).toBe(0)
+    expect(s.view.lonDeg).toBe(0)
   })
 
   it('takes plain decimals only', () => {
@@ -103,26 +104,86 @@ describe('readWebSettings', () => {
   })
 
   it('wraps a rotation past a full turn rather than refusing it', () => {
-    expect(readWebSettings('?rotation=370', '').centreLonDeg).toBe(10)
+    expect(readWebSettings('?rotation=370', '').view.lonDeg).toBe(10)
   })
 })
 
-describe('rotation', () => {
+/** What the picture shows at output `(u, v)` for this address, through
+ *  the shader's own mirror. */
+function shownAt(hash: string, u: number, v: number): { lat: number; lon: number } {
+  const sampled = equirectSourceUv(u, v, viewParams(readWebSettings('', hash).view))
+  return { lat: (sampled.v - 0.5) * 180, lon: (sampled.u - 0.5) * 360 }
+}
+
+/** Two longitudes apart, round the turn: 180 and -180 are one meridian. */
+function lonApart(a: number, b: number): number {
+  return ((((a - b) % 360) + 540) % 360) - 180
+}
+
+describe('the camera', () => {
   // The grammar says `rotation` is the longitude at the centre of the
-  // picture. Checked through the shader's own mirror, because the
-  // offset it feeds turns the picture east and the obvious mapping is
-  // the wrong way round (found in review).
+  // picture and `lat` its latitude. Checked through the shader's own
+  // mirror, because an offset that turns the picture east makes the
+  // obvious mapping the wrong way round (found in review of `rotation`).
   it('puts the named longitude at the centre of the picture', () => {
     for (const lon of [0, 90, -90, 137.5, 180]) {
-      const centre = readWebSettings(`?rotation=${lon}`, '').centreLonDeg
-      const params = { ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(centre) }
-      const sampled = equirectSourceUv(0.5, 0.5, params)
-      // Source u is lon / 360 + 0.5; compared round the turn, since
-      // 180 and -180 are one meridian.
-      const sampledLon = (sampled.u - 0.5) * 360
-      const apart = ((((sampledLon - lon) % 360) + 540) % 360) - 180
-      expect(apart).toBeCloseTo(0, 9)
+      const shown = shownAt(`#rotation=${lon}`, 0.5, 0.5)
+      expect(shown.lat).toBeCloseTo(0, 9)
+      expect(lonApart(shown.lon, lon)).toBeCloseTo(0, 9)
     }
+  })
+
+  it('puts the named latitude there too, north up', () => {
+    for (const [lat, lon] of [[-60, 30], [45, -120], [10, 180]]) {
+      const shown = shownAt(`#lat=${lat}&rotation=${lon}`, 0.5, 0.5)
+      expect(shown.lat).toBeCloseTo(lat, 9)
+      expect(lonApart(shown.lon, lon)).toBeCloseTo(0, 9)
+      // Up the picture is north, on the same meridian.
+      const above = shownAt(`#lat=${lat}&rotation=${lon}`, 0.5, 0.51)
+      expect(above.lat).toBeGreaterThan(lat)
+      expect(lonApart(above.lon, lon)).toBeCloseTo(0, 6)
+    }
+  })
+
+  it('brings a pole to the centre with the rotation meridian running up from it', () => {
+    // The ozone hole on the equator, in front of whoever faces the centre.
+    for (const lon of [0, 90, 200]) {
+      expect(shownAt(`#lat=-90&rotation=${lon}`, 0.5, 0.5).lat).toBeCloseTo(-90, 9)
+      const above = shownAt(`#lat=-90&rotation=${lon}`, 0.5, 0.52)
+      expect(above.lat).toBeGreaterThan(-90)
+      expect(lonApart(above.lon, lon)).toBeCloseTo(0, 6)
+      // And north at the North Pole, the other way.
+      const north = shownAt(`#lat=90&rotation=${lon}`, 0.5, 0.48)
+      expect(north.lat).toBeLessThan(90)
+      expect(lonApart(north.lon, lon)).toBeCloseTo(0, 6)
+    }
+  })
+
+  it('magnifies the centre for a zoom, and keeps the whole Earth', () => {
+    const span = (hash: string): number => shownAt(hash, 0.5, 0.505).lat - shownAt(hash, 0.5, 0.495).lat
+    expect(span('#lat=-60&zoom=2')).toBeLessThan(span('#lat=-60') / 2)
+    // Still the named place at the centre.
+    expect(shownAt('#lat=-60&rotation=30&zoom=2', 0.5, 0.5).lat).toBeCloseTo(-60, 9)
+    // The far side shrinks rather than going: the frame's edge still
+    // shows the antipode of the centre.
+    const far = shownAt('#lat=0&rotation=0&zoom=2', 0, 0.5)
+    expect(Math.abs(lonApart(far.lon, 180))).toBeLessThan(1e-6)
+  })
+
+  it('magnifies no further than the projection can, and keeps the zoom anyway', () => {
+    const cap = 1 / (1 - MAX_CAMERA_OFFSET) - 1
+    expect(viewParams(readWebSettings('', '#zoom=12').view)).toEqual(viewParams(readWebSettings('', `#zoom=${cap}`).view))
+    expect(readWebSettings('', '#zoom=12').view.zoom).toBe(12)
+  })
+
+  it('fails closed one key at a time', () => {
+    expect(readWebSettings('', '#lat=91&rotation=30&zoom=2').view).toEqual({ latDeg: 0, lonDeg: 30, zoom: 2 })
+    expect(readWebSettings('', '#lat=-30&zoom=-1').view).toEqual({ latDeg: -30, lonDeg: 0, zoom: 0 })
+    expect(readWebSettings('', '#lat=south&zoom=1e1').view).toEqual({ latDeg: 0, lonDeg: 0, zoom: 0 })
+    expect(readWebSettings('', '#lat=-90&zoom=0').view).toEqual({ latDeg: -90, lonDeg: 0, zoom: 0 })
+    // A `-0` is the default, so a bare address and `lat=-0` are one view.
+    expect(sameView(readWebSettings('', '#lat=-0&zoom=-0').view, readWebSettings('', '').view)).toBe(true)
+    expect(Object.is(readWebSettings('', '#lat=-0').view.latDeg, 0)).toBe(true)
   })
 })
 

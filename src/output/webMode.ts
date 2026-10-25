@@ -35,6 +35,7 @@ import {
 } from '../services/multiOutput/protocol'
 import { normalizeRotationOffset } from '../services/multiOutput/outputPersistence'
 import { MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE, SYNC_MAX_RATE_TRIM } from '../utils/time'
+import type { WebView } from './webCamera'
 
 /**
  * Where the clip should be, shared by every copy of the page.
@@ -69,10 +70,11 @@ export interface WebOutputSettings {
   /** A framebuffer rung, or `null` for the page to choose one from its
    *  own displayed size (`defaultWebFramebufferWidth`). */
   framebufferWidth: FramebufferWidth | null
-  /** The longitude at the centre of the picture, in degrees east,
-   *  wrapped into [0, 360). The scene takes it through
-   *  `rotationOffsetRadFor`. */
-  centreLonDeg: number
+  /** What the centre of the picture shows and how magnified it is: `lat`,
+   *  `rotation` as the longitude (wrapped into [0, 360)) and `zoom`. The
+   *  scene takes it through `webCamera.viewParams`, gliding between
+   *  views. */
+  view: WebView
   /** Show the debug HUD. */
   debug: boolean
   /** Report the page's own telemetry (`webTelemetry.ts`). Off unless
@@ -167,16 +169,28 @@ export function sameClock(a: WebClock, b: WebClock): boolean {
   return a.positionS === b.positionS && a.atUnixS === b.atUnixS && a.rate === b.rate && a.paused === b.paused
 }
 
+/** Whether two views are the same instruction. */
+export function sameView(a: WebView, b: WebView): boolean {
+  return a.latDeg === b.latDeg && a.lonDeg === b.lonDeg && a.zoom === b.zoom
+}
+
 /**
- * The scene's rotation offset for a picture centred on `centreLonDeg`.
- *
- * Negated, because the offset turns the picture east: the frame's
- * centre shows longitude `−offset` (`equirectRtt.applyRotationOffset`).
- * The address names the longitude a composer wants to see, which is
- * the convention a composer can check by looking.
+ * The camera keys, each on its own default. `lat` outside ±90 and a
+ * negative `zoom` mean nothing and read as the default; a zoom past the
+ * most the projection can magnify (about 5.7, `MAX_CAMERA_OFFSET`) is
+ * kept and simply magnifies no further, since it is a zoom a globe could
+ * be at.
  */
-export function rotationOffsetRadFor(centreLonDeg: number): number {
-  return (-normalizeRotationOffset(centreLonDeg) * Math.PI) / 180
+function readView(params: URLSearchParams): WebView {
+  const lat = decimal(params, 'lat')
+  const rotation = decimal(params, 'rotation')
+  const zoom = decimal(params, 'zoom')
+  return {
+    // `+ 0` folds a `-0`, so `lat=-0` reads as the default it is.
+    latDeg: lat !== null && lat >= -90 && lat <= 90 ? lat + 0 : 0,
+    lonDeg: normalizeRotationOffset(rotation ?? 0),
+    zoom: zoom !== null && zoom >= 0 ? zoom + 0 : 0,
+  }
 }
 
 /**
@@ -200,14 +214,13 @@ export function readWebSettings(search: string, hash: string): WebOutputSettings
   const params = mergedParams(search, hash)
   const dataset = params.get('dataset')
   const width = decimal(params, 'width')
-  const rotation = decimal(params, 'rotation')
   return {
     datasetId: dataset !== null && DATASET_ID.test(dataset) ? dataset : null,
     fit: params.get('fit') === 'fill' ? 'fill' : 'contain',
     framebufferWidth: (FRAMEBUFFER_WIDTHS as readonly number[]).includes(width ?? NaN)
       ? (width as FramebufferWidth)
       : null,
-    centreLonDeg: normalizeRotationOffset(rotation ?? 0),
+    view: readView(params),
     debug: truthy(params, 'debug'),
     telemetry: telemetryOn(params),
     clock: readClock(params),

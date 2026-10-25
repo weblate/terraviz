@@ -135,7 +135,9 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 | `dataset` | the node's own dataset id, the one `GET /api/v1/datasets/:id` takes | Show that dataset. A video plays and an image holds. | the live Earth |
 | `fit` | `fill` | Stretch the picture to the page instead of letterboxing it. For a page used as a texture, whose shape the host may not keep at 2:1. | letterbox (`contain`) |
 | `width` | `1024`, `2048`, `4096`, `8192` | The picture's width in pixels; its height is half. A video stream is capped at the narrowest rendition at least this wide, and an image takes its narrowest size at least this wide. | the narrowest of these at least as wide as the picture is shown on the page, up to `4096` |
-| `rotation` | degrees | The longitude at the centre of the picture, in degrees east: `rotation=90` puts 90°E at the centre. Wrapped round the turn. | `0` |
+| `rotation` | degrees | The longitude at the centre of the picture, in degrees east: `rotation=90` puts 90°E at the centre. Wrapped round the turn. With `lat` at a pole, where every longitude meets, the meridian that runs up the picture from it. | `0` |
+| `lat` | degrees, −90 to 90 | The latitude at the centre of the picture, in degrees north. The picture turns to bring it there with north up, so `lat=-90` puts the South Pole at the centre of an upright sphere. | `0` |
+| `zoom` | 0 or more | Magnify the centre of the picture, in the main app's zoom levels. The far side shrinks rather than being cut off, so the whole Earth is still on the sphere. Past about `5.7` it magnifies no further. | `0` |
 | `debug` | present | The output's debug readout, drawn on the picture. | off |
 | `t` | seconds into the clip, 0 or more | Where the clip is. A `t` past the clip's end wraps round it, paused or playing. | `0` |
 | `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when this copy read the address: at load, or at the `#` change that last changed the clock |
@@ -180,6 +182,19 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 - **Whoever controls the globe writes a new `t` and `at` on every
   pause, resume and jump.** Resuming at 40 s and resuming at 70 s are
   then different addresses.
+- **The view glides.** A change to `rotation`, `lat` or `zoom` after
+  the `#` moves the picture to the new view in about a second, the
+  short way round, and a new view arriving on the way carries the
+  movement on. So a controller that can change the address only once a
+  second still looks like motion. The first reading of an address is
+  shown at once, so a copy that opens mid-session matches the others,
+  and a viewer who asks their system for reduced motion gets each new
+  view at once too.
+- **The camera is the desktop output's.** `lat`, `rotation` and `zoom`
+  turn and magnify the picture the way a desktop output that follows
+  its control globe does, with north up. Before `lat` and `zoom`
+  existed, `rotation` turned the picture about the poles, and it still
+  draws the same picture.
 - **A `width` change during a session** resizes the picture at once.
   The video cap and the image size follow at the next dataset load.
   With no `width`, the picture's size is read when the address is
@@ -230,6 +245,9 @@ https://terraviz.zyra-project.org/output/output?dataset=<id>&fit=fill&width=2048
 
 # The same dataset playing from 100 s, as of 17:00 UTC on 24 October 2026
 https://terraviz.zyra-project.org/output/output?dataset=<id>&fit=fill&width=2048#t=100&at=1792861200
+
+# The South Pole brought to the centre, magnified, with 0°E running up from it
+https://terraviz.zyra-project.org/output/output?dataset=<id>&fit=fill&width=2048#lat=-90&rotation=0&zoom=1
 ```
 
 ---
@@ -286,6 +304,7 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 |---|---|---|
 | v1 | 2026-07-04 | Initial written contract. Documents the pre-existing `dataset` / `/dataset/:id` / `tour` / `catalog` / `preview` selectors and the `terrain` / `labels` / `borders` / `rotate` / `layout` / `setview` / `orbit` / `prompt` modifiers, and introduces the new `embed` minimal-chrome flag and its `chat` sub-flag. |
 | v1 | 2026-10-24 | Additive. The output page (`/output/output`) gains its parameters: `dataset`, `fit`, `width`, `rotation` (the longitude at the picture's centre), `debug`, and the clock `t` / `at` / `rate` / `paused`, each with its own default, read from the query and the fragment alike. No main-app parameter changes. A bare output-page address draws the live Earth it always did, now sized to the page as displayed and with clouds that refresh. Later the same day, also additive: `telemetry=1`, which turns on the page's own Essential telemetry, off by default. It fails toward off rather than following the truthy convention. |
+| v1 | 2026-10-25 | Additive. The output page gains `lat`, the latitude at the picture's centre, and `zoom`, which magnifies it, through the desktop output's follow turn. `rotation` keeps its meaning and draws the same picture as before; at a pole it names the meridian running up from it. A change to any of the three after the `#` now glides to the new view over about a second instead of jumping, except on the first reading of an address and for a viewer who asks for reduced motion. No main-app parameter changes. |
 
 ---
 
@@ -297,7 +316,7 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 - `src/utils/posterDeepLinks.ts` — `tour` / view-toggle / `orbit` dispatch
 - `src/services/deepLinkService.ts` — `/dataset/:id` path form and native `zyra://` links
 - `src/styles/embed.css` — the chrome-hiding rules `embed=1` switches on
-- `src/output/webMode.ts` — the output page's reader; `webOutput.ts` — how it is applied; `webDataset.ts` — the dataset fetch; `webClock.ts` — the shared clock
+- `src/output/webMode.ts` — the output page's reader; `webOutput.ts` — how it is applied; `webDataset.ts` — the dataset fetch; `webClock.ts` — the shared clock; `webCamera.ts` — the camera and its glide
 - `scripts/second-life-probe/terraviz-globe.lsl` — an in-world composer of output-page addresses, and of a main-app `/?dataset=` link for visitors. Its `globe.test.ts` fails if a key it writes is renamed or removed, or stops accepting a value the script writes; a change in what a value does is not caught there
 - `scripts/second-life-exhibit/terraviz-exhibit.lsl` — the exhibit's globe script, composing the same output-page addresses with a copy of the smoke-test script's code, held to the page by the same `globe.test.ts`, which likewise doesn't catch a change in what a value does. Its `terraviz-exhibit-info.lsl` gives visitors a main-app `/dataset/<slug>` link, or `/dataset/<id>` for a slug `src/utils/datasetUrl.ts` wouldn't emit
 - [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7 — why the output page takes these parameters

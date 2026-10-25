@@ -961,6 +961,18 @@ The work, smallest first:
    It is the same question item 4 turns on, so one test answers both,
    and it comes before either is designed in detail. The kit's
    `/7 hash` runs it.
+
+   **Built on the page (Phase 4's first part, 25 October), not yet seen
+   in-world.** The output page takes `lat` and `zoom`, with `rotation`
+   as the longitude, and hands them to `followCamera`
+   (`src/output/webCamera.ts`). A new `lon` key was the first idea and
+   was dropped: on the equator the follow turn *is* a turn about the
+   poles, so `rotation` and `lon` would be one number under two names,
+   and at a pole that number names the meridian running up from it.
+   The page glides between views over about a second, so a script that
+   changes the address once a second reads as motion. Bearing is left
+   out, north always up, until a controller needs it. The grammar is in
+   [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md).
 8. **Keep the clouds current.** The output page loads its cloud image
    once, at startup (`src/output/outputScene.ts:983`), and never again.
    The image it loads is replaced upstream every ten minutes:
