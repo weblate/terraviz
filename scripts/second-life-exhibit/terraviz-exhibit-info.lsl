@@ -317,7 +317,7 @@ hover()
         }
     }
     string top = "TerraViz globe\n";
-    if (gTelemetry) top += "This globe counts anonymous use: " + gNode + "/privacy\n";
+    if (gTelemetry) top += "Counts anonymous use: " + gNode + "/privacy\n";
     string tail = "";
     if (stamp != "") tail += "\n" + stamp;
     string end = "";

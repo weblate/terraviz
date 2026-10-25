@@ -21,7 +21,8 @@ This folder holds three LSL scripts:
 - **The globe** (`terraviz-globe.lsl`) puts TerraViz datasets on a sphere
   that visitors see, controlled by its owner in chat. It is for smoke
   testing that page in-world. The exhibit version, with a presenter list
-  and controls visitors can touch, is Phase 2 of the plan and not built.
+  and controls visitors can touch, is in
+  [`../second-life-exhibit/`](../second-life-exhibit/README.md).
 - **The probe** (`terraviz-probe.lsl`) and **node check**
   (`node-check.lsl`) test what a viewer can do, and report the answers
   in local chat. They produced that doc's §3–§5, and are mostly useful on
@@ -34,7 +35,7 @@ This folder holds three LSL scripts:
 | `node-check.lsl` | **Optional, beside the probe.** Asks the TerraViz node for data and says what that costs a script's memory. |
 | `probe.html`, `probe.template.lsl` | What `terraviz-probe.lsl` is generated from. Edit these. |
 | `build.ts`, `index.ts`, `harness.ts`, `build.test.ts` | The probe's generator, its command line, a headless-browser check of the page, and the tests that keep the generated script in step. |
-| `globe.test.ts` | Holds the globe script to what the output page reads: each key and value it writes, which half of the address each goes in, its rate limits, the dataset ids it accepts. |
+| `globe.test.ts` | Holds this globe script and the exhibit's to what the output page reads: each key and value they write, which half of the address each goes in, their rate limits, the dataset ids they accept. |
 
 ## The globe
 

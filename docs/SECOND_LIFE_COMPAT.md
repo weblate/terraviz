@@ -839,7 +839,12 @@ The work, smallest first:
      which answers a touch in chat, shows whether it arrived.
    - **The hover text holds 254 bytes**, shared by the title, the date,
      the credit and any telemetry notice. Phase 2 needs a fixed order
-     for them and a rule for shortening.
+     for them and a rule for shortening. *Set in the controller:* the
+     notice comes first, under the globe's name, then the title, the
+     date and the credit, then a talk if one is on and how to touch the
+     globe. Only the title and the credit are ever cut, sharing what the
+     rest leave, with the credit keeping at least 48 bytes, so the notice
+     never is.
 
    **What that means for the design.** The first version of this item
    had each copy work out its position from the time of day. That only
@@ -1494,14 +1499,16 @@ beside it. The manifest gains a clip duration for the date (*built for
 the node's own HLS bundles*), and the slow-link work is two page PRs
 beside it (§7 item 4).
 It is the in-world half of Phase 1.
-*A smoke-test script exists, not the controller.*
-[`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe)
-does the recipe, the media, the spin, pause, jump, rate, rotation and
-dataset switching. It is driven by its owner in chat, with
-non-interactive media. It has no presenter list, no controls visitors
-can touch, and no automatic return to the live Earth after the last
-visitor leaves (`/8 earth` is the owner's, by hand). The questions those
-waited on were decided on 24 October (§7 item 4).
+*Written, and not yet run in-world.* The controller is the three scripts
+in [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md),
+whose README carries the in-world checklist, the left-click test among
+it. LSL compiles only in-world, so what has been checked is its syntax
+(lslint), its date arithmetic against the calendar for every day from
+year 1 to 2100, and, by tests, that its scripts agree with each other,
+with the output page and with the node's records. The smoke-test script,
+[`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
+stays for testing the page by hand: it does the recipe and the media,
+driven by its owner in chat, with none of the visitor controls.
 
 *How the controller is built* (in
 [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md)):
@@ -1522,9 +1529,10 @@ waited on were decided on 24 October (§7 item 4).
     the last visitor has been gone for the idle time.
   - **info** owns what the globe says about itself. It reads the
     record and the manifest for each dataset. From them it keeps the
-    hover text (the title, the date, a short credit and any telemetry
-    notice, in that fixed order, cut to 254 bytes). It also gives the
-    abstract and full credit on request.
+    hover text (any telemetry notice, the title, the date and a short
+    credit, in that fixed order, in 254 bytes: §7 item 4 has the
+    shortening rule). It also gives the abstract and full credit on
+    request.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start

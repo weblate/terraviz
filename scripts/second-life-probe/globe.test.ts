@@ -15,8 +15,6 @@ import { MAX_WEB_RATE, MIN_WEB_RATE, readWebSettings } from '../../src/output/we
 const read = (file: string): string =>
   readFileSync(new URL(file, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
-const globe = read('./terraviz-globe.lsl')
-
 /** A global's initial value, as written. */
 function constant(script: string, type: string, name: string): string {
   const value = script.match(new RegExp(`^${type}\\s+${name}\\s*=\\s*([^;]+);`, 'm'))?.[1]
@@ -41,24 +39,35 @@ const segments = (source: string): Array<{ key: string; value: string }> =>
     .filter((segment) => segment.includes('='))
     .map((segment) => ({ key: segment.slice(0, segment.indexOf('=')), value: segment.slice(segment.indexOf('=') + 1) }))
 
-const address = body(globe, 'string address()')
-/** What address() puts before the #: the lines that build `setup`. */
-const setupSegments = segments(address.split('\n').filter((line) => /\bsetup\b/.test(line)).join('\n'))
-/** What it puts after: the lines that build `live`. */
-const liveSegments = segments(address.split('\n').filter((line) => /\blive\b/.test(line)).join('\n'))
-const setupKeys = setupSegments.map((s) => s.key)
-const liveKeys = liveSegments.map((s) => s.key)
-
 const BARE = readWebSettings('', '')
 const ID = '01KQG611HF8YXJNRBEHT0757KT'
 
-describe('second-life globe script', () => {
-  it('listens on a channel neither probe script uses', () => {
+// Both globe scripts write the page's address, and the exhibit's globe
+// script is the smoke test's core, so every check here holds for both.
+const GLOBES = [
+  { name: 'smoke-test', file: './terraviz-globe.lsl' },
+  { name: 'exhibit', file: '../second-life-exhibit/terraviz-exhibit.lsl' },
+]
+
+describe.each(GLOBES)('second-life $name globe script', ({ file }) => {
+  const globe = read(file)
+  const address = body(globe, 'string address()')
+  /** What address() puts before the #: the lines that build `setup`. */
+  const setupSegments = segments(address.split('\n').filter((line) => /\bsetup\b/.test(line)).join('\n'))
+  /** What it puts after: the lines that build `live`. */
+  const liveSegments = segments(address.split('\n').filter((line) => /\blive\b/.test(line)).join('\n'))
+  const setupKeys = setupSegments.map((s) => s.key)
+  const liveKeys = liveSegments.map((s) => s.key)
+
+  it('listens on a channel no other script of the kit uses', () => {
     // An owner's /7 reaches every object of theirs listening on 7, so a
     // globe on the probe's channel would act on the probe's commands.
     const chan = constant(globe, 'integer', 'CHAN')
     expect(chan).not.toBe(constant(read('./probe.template.lsl'), 'integer', 'CHAN'))
     expect(chan).not.toBe(constant(read('./node-check.lsl'), 'integer', 'CHAN'))
+    for (const other of GLOBES.filter((g) => g.file !== file)) {
+      expect(chan, other.name).not.toBe(constant(read(other.file), 'integer', 'CHAN'))
+    }
   })
 
   it('writes exactly these keys, and the page acts on each one', () => {
