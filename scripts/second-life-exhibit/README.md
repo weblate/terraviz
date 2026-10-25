@@ -81,7 +81,7 @@ menu that opens is theirs alone:
 |---|---|---|
 | About | everyone | The abstract, credit and licence, in their own chat, or a notecard the owner wrote. |
 | Datasets | whoever may act | The menu of datasets, nine to a page. |
-| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. |
+| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, where the info script knows it: not for a dataset with no dates, nor for a video on Vimeo, whose length it isn't given. |
 | Back 10 s, Forward 10 s, Start over | the same | Move through the animation. |
 | Live Earth | the same | Back to today's clouds and the real day and night. |
 | Turn... | whoever may act | A menu for turning the globe, for everyone at it, which comes back after each press: |
@@ -103,11 +103,7 @@ is told a talk is starting. Until it ends, only presenters can change
 the globe, and the floating text says a talk is on. It ends when a
 presenter chooses End talk, or once no presenter has been at the globe
 for `talk minutes`, so a presenter who logs off doesn't lock it. The
-owner counts as a presenter, and can end a talk from chat. A dataset a
-visitor chose just before the talk started, which the globe was still
-checking with the node, is set aside and they're told so, rather than
-landing on the talk. So is one chosen while somebody else paused or
-moved the clip on the globe.
+owner counts as a presenter, and can end a talk from chat.
 
 **The live Earth comes back** once nobody has been within `radius` of
 the globe for `idle minutes`, turned back to the owner's
@@ -118,7 +114,11 @@ does the end of a talk, so a choice made from beyond the radius isn't
 undone at once.
 
 **Turning and tilting are different motions.** A turn spins the picture
-about the globe's poles, in the page's address. A tilt tips the sphere
+about the globe's poles, in the page's address; each visitor's page
+sets it moving and lets it coast to a stop, so a turn is most of the
+way there in about two seconds, and a second press while it still moves
+pushes it on.
+A tilt tips the sphere
 itself, which the region shows every viewer at the same angle, so the
 poles stop being straight up. A tilt ends any spin, and the owner's
 `/9 spin` waits until the globe is upright; the idle return brings the
@@ -127,7 +127,8 @@ upright again.
 
 The tilt is a stopgap. The plan is to turn the picture instead, so the
 sphere stays upright and a pole comes to the front with zoom alongside
-(Phase 4), and to take the tilt out when that lands.
+(Phase 4). The page can already do that (`lat` and `zoom` in the
+address); the tilt comes out when this controller's menu drives them.
 
 **Turning with the mouse doesn't work yet.** A drag on the globe never
 reaches a script, for the same reason a left-click doesn't, so the menu
@@ -271,8 +272,14 @@ command never reaches both kinds of globe:
 
 The probe kit's README describes each, under
 [Commands](../second-life-probe/README.md#commands). Here `/9 rotation`
-also sets where the globe goes back to once visitors leave. The owner
-can always act, and doesn't take the hold. Besides those:
+also sets where the globe goes back to once visitors leave, and
+`/9 show` shows the dataset at once rather than asking the node first:
+the info script reads its record next, and if the node has no such
+dataset, or it is a tour, it tells you, tells whoever chose it from the
+menu that it can't be shown, and puts the globe back on the live Earth,
+unless someone has chosen another since. (The globe script runs too close to its 64 KB to hold the
+node's reply; see Things that will trip you up.) The owner can always
+act, and doesn't take the hold. Besides those:
 
 | Command | What it does |
 |---|---|
@@ -282,7 +289,7 @@ can always act, and doesn't take the hold. Besides those:
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters and datasets, and the four settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
-| `/9 memory` | How much of its 64 KB each script uses. The info script also says the most it has used reading a record. |
+| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a record or answering About. |
 | `/9 help` | The globe script's list. |
 
 ## What leaves the object
@@ -292,12 +299,11 @@ region's avatar list every five seconds and keeps only how many are
 near and when someone last was. It knows the holder by key, and by
 display name to tell others who has the globe, only while the hold
 lasts, and anyone with a menu open by key, for the five minutes the
-menu answers. The globe script knows the key of a visitor whose choice
-of dataset the node is checking, until the node answers, so it can
-tell them if it was refused. The info script keeps the key of the last
+menu answers. The info script keeps the key of the last
 visitor who asked for "About", so a double press is answered once, and
-tells a visitor about a dataset in their own chat, which no one else
-sees. A tilt reads the position of whoever asked, once, to aim at them.
+the key of whoever chose the dataset showing, until the node has said
+whether the globe can show it. It tells a visitor about a dataset in
+their own chat, which no one else sees. A tilt reads the position of whoever asked, once, to aim at them.
 Nothing is kept across a reset.
 
 What each visitor's viewer loads is the output page, from the node, like
@@ -330,8 +336,11 @@ stand at the globe.
    act.) They should get only About, and be told who has the globe and
    for how long. Once the second avatar walks out of range, the globe
    should free up within five seconds.
-5. **Pause.** They pause. The date should stop and match the frame, and
-   both views should show the same frame.
+5. **Pause.** They pause. The reply should give the date the globe now
+   shows, the floating text's date should stop and match the frame, and
+   both views should show the same frame. On a dataset with no dates,
+   such as Air Traffic, or a video on Vimeo, such as `/9 show sst`, the
+   reply just says it paused.
 6. **About.** They choose About. They should get the abstract, the
    credit, the licence and a link, in their own chat, in a few pieces.
    Nobody else should see it. Then add a notecard named
@@ -351,12 +360,15 @@ stand at the globe.
    and tilt it, and have everyone leave the globe. About a minute later
    it should go back to the live Earth, upright and facing as it did
    before. It shouldn't during a talk.
-9. **Memory, and a date with a time.** `/9 show 01KQG61S53Y319P64XSKMXMZT1`,
-   Aurora, which has the longest record on the node and a frame every
-   five minutes. The floating text should show a date and a UTC time,
-   from 30 Sep 2012, 12:00 UTC to 1 Oct 2012, 11:35 UTC across the clip.
-   Then `/9 memory`. Every script should report well under 64 KB. The
-   info script's peak is the number that matters: say what it was.
+9. **Memory, and a date with a time.** `/9 show 01KQG64Y0999GTWAQQ1MZ99HAE`,
+   Hurricane Maria 2017, whose record is longer than the info script
+   reads and which has a frame every 15 minutes. The floating text
+   should show a date and a UTC time, from 17 Sep 2017, 00:00 UTC to
+   25 Sep 2017, 23:45 UTC across the clip. Choose About, then
+   `/9 memory`. Every script should report well under 64 KB. The peaks
+   are the numbers that matter, the globe script's while showing a
+   dataset and the info script's while reading a record or answering
+   About: say what they were.
 
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
@@ -367,6 +379,28 @@ each avatar used, and what steps 2 and 9 showed.
   child prim.** A tilt turns the prim the scripts are in, so as the root
   of a build, with a stand linked to it, the whole build would tip.
 
+- **A script stops for good at 64 KB.** It reports a Stack-Heap
+  Collision and does nothing more until it is reset, and a script with
+  no room left can stop the moment it starts. In-world in October 2026
+  the globe script rested at 62 KB and the other two at about 50, and
+  every web reply goes to every script in the sphere with a handler for
+  one. A copy a script makes counts too, until Second Life collects it.
+  So only the info script asks the node anything, the globe script
+  shows a choice without checking it first, and the info script reads
+  only the first 3 KB of a record and copies as little of it as it can.
+  With those changes, `/9 memory` read in-world: the globe script 54 KB,
+  and at most 57 while showing a dataset; the info script 55, and at
+  most 58 while reading a record or answering About; the visitors script
+  49. That leaves about 6 KB at each script's busiest, so code added to
+  any of them needs measuring again.
+- **The info script checks a choice after it is shown.** For a second or
+  two, a dataset the node doesn't have, or a tour, is in every visitor's
+  page address, and the page shows the live Earth while it fails. With
+  telemetry on, each page still in its first minute reports that
+  failure, and with `/9 steer query` each reloads twice. The info script
+  is also what answers a pause, a play or a move with the date. If it
+  stops, the globe still shows and plays what visitors choose, but those
+  replies don't come, and a dataset the page can't show stays chosen.
 - **A visitor's change takes a second.** Second Life pauses the globe
   script for a second whenever it sets media.
 - **A long dataset name in `datasets` is cut** to a button's 24 bytes.
@@ -377,14 +411,14 @@ each avatar used, and what steps 2 and 9 showed.
   wraps on the length the node reports and each viewer's page on the
   video's own, which can differ slightly (`SECOND_LIFE_COMPAT.md` §7).
 - **A long record is read only in part.** The info script reads its
-  first 9,000 bytes, which today holds every field it needs for every
-  record on the node, the longest needing 8,356. It keeps 2,500
-  characters of an abstract, 600 of a licence statement and 300 of a
-  credit. A value cut short ends `...`, and "About" then says the rest
-  is at the dataset's page, as it does when a link too long to keep is
-  left out. In a record longer than 9,000 bytes, a field past the cut is
-  missing, in the order the node writes them: the credit first, then the
-  licence, then the period and the dates. A lost credit doesn't fall
+  first 3,072 bytes. On the node in October 2026 that holds every field
+  it needs in 78% of records, and the dates in 95%. It keeps the first
+  500 characters of an abstract, which cuts most of them (135 of the 143
+  on the node then), 600 of a licence statement and 300 of a credit. A
+  value cut short ends `...`, and "About" then says the rest is at the
+  dataset's page, as it does when a link too long to keep is left out. In a longer record, a field past the cut is missing, from
+  the end of what the node writes: first the credit, which it writes
+  last, then the licence, then the period and the dates. A lost credit doesn't fall
   back to the organization, which might not be the credit the record
   gives, and a lost period shows a yearly dataset's date to the day.
 - **Display names don't make presenters.** If someone in `presenters`

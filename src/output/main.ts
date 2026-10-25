@@ -155,6 +155,9 @@ async function boot(): Promise<void> {
   /** Per-frame work the link installs, if it attached. Empty on the web
    *  fixture page, where the loop is just the idle Earth. */
   const steerers: (() => void)[] = []
+  /** Whether a web output's camera is on its way to a view, which is
+   *  paced like a playing video. Never, on desktop. */
+  let cameraMoving = (): boolean => false
 
   /** When the next frame is due, carried across callbacks rather than
    *  re-derived from the last draw. That is what keeps the rate right
@@ -560,6 +563,7 @@ async function boot(): Promise<void> {
     steerers.push(() => {
       lastSync = webOutput.steer()
     })
+    cameraMoving = () => webOutput.cameraMoving()
   }
 
   const tick = (now: number): void => {
@@ -579,8 +583,10 @@ async function boot(): Promise<void> {
     // Recomputed every frame rather than latched on a dataset change:
     // whether the element is advancing is what sets the pace, and that
     // changes when the operator pauses without any state key changing
-    // shape. See `contentKindFor`.
-    const kind = contentKindFor(mirror.current())
+    // shape. See `contentKindFor`. A web output's camera on its way to a
+    // view is moving content too, paced by the same carried deadline at
+    // most 30 fps on any display, rather than drawn on every callback.
+    const kind = cameraMoving() ? 'video' : contentKindFor(mirror.current())
     // A lost context draws nothing — Three's renderer returns from
     // `render()` immediately once it has seen `webglcontextlost`. The
     // call is therefore harmless and the *bookkeeping after it* is not:

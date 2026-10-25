@@ -17,7 +17,11 @@ you don't need it. Every claim about TerraViz cites a file and line.
 Every claim about Second Life cites a public source, the viewer's
 source code, or a test result in §4, all collected in §11.
 
-**Last reviewed:** 2026-10-24 (in-world, in Firestorm 7.2.4: the
+**Last reviewed:** 2026-10-25 (in-world: the exhibit controller from
+#500 ran, and its scripts ran out of their 64 KB, first the globe
+script and then the info script; fixed in #501, and §9 Phase 2's status
+note updated. The same day, the page camera of §7 item 7 and §9 Phase 4
+was built.) 2026-10-24 (in-world, in Firestorm 7.2.4: the
 output page's web mode played a TerraViz video on a globe driven by the
 kit's globe script, and pausing and resuming it changed only the part
 of the address after `#`, with no reload — §10 question 10 answered for
@@ -961,6 +965,36 @@ The work, smallest first:
    It is the same question item 4 turns on, so one test answers both,
    and it comes before either is designed in detail. The kit's
    `/7 hash` runs it.
+
+   **Built on the page (Phase 4's first part, 25 October), and its coast
+   seen in-world the same day.** The maintainer turned the exhibit's
+   globe, its page served from the PR's preview deploy, with Turn east
+   and west, which change `rotation`, and judged the coast "pretty
+   nice". `lat` and `zoom` have not been seen in-world, since no script
+   sends them until Phase 4b. The output page takes `lat` and `zoom`,
+   with `rotation` as the longitude, and hands them to `followCamera`
+   (`src/output/webCamera.ts`). A new `lon` key was the first idea and
+   was dropped: on the equator the follow turn *is* a turn about the
+   poles, so `rotation` and `lon` would be one number under two names,
+   and at a pole that number names the meridian the centre sits on (up
+   the picture from the South Pole, down it from the North). The keys
+   name the view the picture comes to rest on, and the page moves there
+   like a heavy globe: pushed off at once, then coasting to a stop like a
+   spun globe on its bearing (0.7 s, the VR flick's constant), so a
+   press made while it still turns pushes it on and a script that
+   changes the address once a second reads as one movement. That changes
+   what a composer writing faster than once a second sees, which the
+   maintainer kept in the grammar's v1 as a behaviour change on 25
+   October, with a migration note. Every copy turns the same way round,
+   chosen from the addresses rather than from its own picture. This is the
+   first of three layers proposed for a natural feel. The other two
+   need the address to carry a speed: a spin that keeps going, shared
+   by every copy through a start time as the clock is, which would also
+   line visitors up where today's prim spin is drawn by each viewer at
+   its own phase; and a speed with each of a remote's updates, so copies
+   carry a drag on between them. Bearing is left out, north always up,
+   until a controller needs it. The grammar is in
+   [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md).
 8. **Keep the clouds current.** The output page loads its cloud image
    once, at startup (`src/output/outputScene.ts:983`), and never again.
    The image it loads is replaced upstream every ten minutes:
@@ -1514,15 +1548,24 @@ beside it. The manifest gains a clip duration for the date (*built for
 the node's own HLS bundles*), and the slow-link work is two page PRs
 beside it (§7 item 4).
 It is the in-world half of Phase 1.
-*Written, and not yet run in-world.* The controller is the three scripts
-in [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md),
+*Run in-world in part, 25 October 2026.* The controller is the three
+scripts in [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md),
 whose README carries the in-world checklist, the left-click test among
-it. LSL compiles only in-world, so what has been checked is its syntax
-(lslint), its date arithmetic against the calendar for every day from
-year 1 to 2100, and, by tests, that its scripts agree with each other,
-with the output page and with the node's serializer. How much of a
-record it can read rests on one measurement of the node's records, in
-October. The smoke-test script,
+it. Its first in-world run found the scripts running out of their 64 KB:
+the globe script stopped after showing a dataset, at 62 KB at rest, and
+once that was fixed the info script stopped in its turn, at about 50.
+Both are fixed (#501): the globe script asks the node nothing, and the
+info script copies as little as it can while it reads. The maintainer
+then used the exhibit for a while with no further stop, and `/9 memory`
+read the globe script at 54 KB (57 at most, showing a dataset), the info
+script at 55 (58 at most, reading a record or answering About) and the
+visitors script at 49: about 6 KB of room at each script's busiest. The
+checklist has not been run in full. Beyond that run, what has been checked is the
+scripts' syntax (lslint), their date arithmetic against the calendar for
+every day from year 1 to 2100, and, by tests, that the scripts agree with
+each other, with the output page and with the node's serializer. How much
+of a record the info script can read rests on one measurement of the
+node's records, in October. The smoke-test script,
 [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
 stays for testing the page by hand: it does the recipe and the media,
 driven by its owner in chat, with none of the visitor controls.
@@ -1538,8 +1581,11 @@ driven by its owner in chat, with none of the visitor controls.
     smoke-test script's core, unchanged in what it writes, and it is
     the only script that changes what visitors see. It takes the
     owner's chat commands, as before, and control requests from the
-    visitors script. After every change it tells the other two what
-    the globe now shows.
+    visitors script, and from the info script to put back a dataset the
+    page can't show. After every change it tells the other two what
+    the globe now shows. It asks the node nothing: a web reply goes to
+    every script in the prim with a handler for one, and this one has
+    the least room.
   - **visitors** owns people. It turns touches into menus, keeps the
     presenter list, runs talks and the short hold, watches who is at
     the globe, and asks the globe to go back to the live Earth once
@@ -1549,7 +1595,10 @@ driven by its owner in chat, with none of the visitor controls.
     hover text (any telemetry notice, the title, the date and a short
     credit, in that fixed order, in 254 bytes: §7 item 4 has the
     shortening rule). It also gives the abstract and full credit on
-    request.
+    request, and tells whoever paused, played or moved the clip the
+    date the globe now shows. When the node has no such dataset, or
+    it is a tour, it puts the globe back on the live Earth and says
+    so.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start
@@ -1562,9 +1611,10 @@ driven by its owner in chat, with none of the visitor controls.
   ozone hole on the equator in front of their audience; Upright again
   undoes it. A tilt is the prim's rotation, which the region sends
   every viewer, so all see one angle. **The tilt is a stopgap**, kept
-  on 25 October because it works now: it is to come out when Phase 4's
-  page camera lands (§7 item 7), which turns the picture to bring a
-  pole to the front with the sphere upright and zoom alongside, since a
+  on 25 October because it works now: it is to come out when the
+  controller drives Phase 4's page camera (§7 item 7; the camera itself
+  landed the same day), which turns the picture to bring a pole to the
+  front with the sphere upright and zoom alongside, since a
   tipped sphere under a turned picture would compound into angles
   nobody chose. Whether walk-up visitors come to prefer a globe that
   aims at them is the one thing worth weighing then. The controls are
@@ -1634,18 +1684,30 @@ designed on whatever the `#` test found. Firestorm applies a change
 after the `#` without a reload, so the view can change live. The shape
 proposed on 25 October, after the Phase 2 controller's menu turned out
 clunky for presenting:
-- **The camera on the page.** The output page takes `lat`, `lon` and
-  `zoom` after the `#`, through the follow turn and camera offset the
-  2:1 desktop output already uses (`followCamera` in
+- **The camera on the page. Built on 25 October; its coast seen
+  in-world the same day,** through `rotation` on the exhibit's Turn
+  buttons, which the maintainer judged "pretty nice" (§7 item 7). `lat`
+  and `zoom` wait on the buttons below. The output page takes `lat` and
+  `zoom` after the `#`,
+  with `rotation` as the longitude, through the follow turn and camera
+  offset the 2:1 desktop output already uses (`followCamera` in
   `src/output/equirectRtt.ts`), so the sphere stays upright and any
-  place, a pole included, comes to the front. The page eases from one
-  view to the next, so the globe script's once-a-second address changes
-  look like motion. This is a change to the URL grammar, so it is its
-  own pull request, with the Federation review and a check of the
-  WordPress plugin.
+  place, a pole included, comes to the centre. The `lon` key first
+  proposed here was dropped, since on the equator it would be
+  `rotation` under a second name (§7 item 7). The keys name the view
+  the picture comes to rest on, and the page moves there like a heavy
+  globe, coasting to a stop, so the globe script's once-a-second
+  address changes look like one motion; for a composer writing faster
+  than that it is a change in what the keys show, which the maintainer
+  kept in the grammar's v1 as a behaviour change, with a migration
+  note. AI-assisted review only (the Federation reviewer and the Code
+  Reviewer, a partial measure); no human outside the session that
+  wrote it has reviewed it yet. The WordPress plugin was checked: it
+  composes only main-app addresses.
 - **Menu buttons on it.** "Pole to front" and zoom in and out, beside
   Turn east and Turn west, all moving that one camera. The Phase 2
-  tilt comes out then.
+  tilt comes out then. The globe script should keep `lat` within ±90
+  itself, since the page reads a latitude past a pole as 0.
 - **A presenter remote.** A TerraViz globe the presenter drags and
   zooms like the app, opened from a private link the globe gives them,
   in their own browser, the viewer's built-in one or a HUD. It sends its

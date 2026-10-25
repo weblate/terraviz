@@ -123,7 +123,7 @@ describe.each(GLOBES)('second-life $name globe script', ({ file }) => {
       datasetId: ID,
       fit: 'fill',
       framebufferWidth: 2048,
-      centreLonDeg: 90,
+      view: { latDeg: 0, lonDeg: 90, zoom: 0 },
       debug: true,
       telemetry: true,
       clock: { positionS: 61.2, atUnixS: 1792865189.482, rate: 2, paused: false },

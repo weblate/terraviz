@@ -7,8 +7,9 @@
  * Off desktop there is no control window. In Second Life every
  * visitor's viewer runs its own copy, so the page's address says what
  * to show (`webMode.ts`). This module turns each reading of the address
- * into the scene, the mirror and the clock. `main.ts` calls `apply` at
- * load and on every `hashchange`, and `steer` every frame.
+ * into the scene, the camera (`webCamera.ts`), the mirror and the clock.
+ * `main.ts` calls `apply` at load and on every `hashchange`, and `steer`
+ * every frame.
  *
  * Its own module, not inline in `main.ts`, because the ordering here
  * has wrong answers and `main.ts` exports nothing to test them through.
@@ -44,17 +45,17 @@
  */
 
 import type { DatasetMirror } from './datasetMirror'
-import { IDENTITY_PARAMS } from './equirectRtt'
 import type { OutputScene } from './outputScene'
 import type { SyncOutcome } from './outputSync'
+import { createViewGlide, viewParams } from './webCamera'
 import { createWebClockSteer } from './webClock'
 import { WebDatasetError, fetchWebDataset, type WebDataset } from './webDataset'
 import type { WebTelemetry } from './webTelemetry'
 import {
   defaultWebFramebufferWidth,
   readWebSettings,
-  rotationOffsetRadFor,
   sameClock,
+  sameView,
   type WebOutputSettings,
 } from './webMode'
 import type { FramebufferWidth, MirroredDataset } from '../services/multiOutput/protocol'
@@ -147,8 +148,12 @@ export interface WebOutputDeps {
   loadTelemetry?: () => Promise<WebTelemetry | null>
   /** Wall-clock milliseconds, for the clock's anchor. */
   nowMs?: () => number
-  /** Monotonic milliseconds, for how long a dataset took to show. */
+  /** Monotonic milliseconds, for how long a dataset took to show and
+   *  for the camera's motion. */
   monotonicMs?: () => number
+  /** Whether the viewer asked for reduced motion, read at each change
+   *  of view: the view is then set rather than moved to. */
+  reducedMotion?: () => boolean
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
 }
@@ -156,8 +161,13 @@ export interface WebOutputDeps {
 export interface WebOutput {
   /** Apply a reading of the address: at load, and on every `hashchange`. */
   apply(settings: WebOutputSettings): void
-  /** Steer the video to the clock. Every frame. */
+  /** Every frame: move the camera on, and steer the video to the clock,
+   *  whose outcome this returns. */
   steer(): SyncOutcome
+  /** Whether the camera is on its way to a view. The loop then paces the
+   *  picture as it paces a playing video, at most 30 fps on any display,
+   *  rather than drawing on every callback. */
+  cameraMoving(): boolean
   /** A fatal error from the stream, reported if the address has
    *  telemetry on. */
   reportStreamError(err: Error): void
@@ -173,7 +183,11 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
   const monotonicMs = deps.monotonicMs ?? (() => performance.now())
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
+  const reducedMotion =
+    deps.reducedMotion ??
+    (() => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches)
   const clockSteer = createWebClockSteer()
+  const camera = createViewGlide()
 
   let current: WebOutputSettings | null = null
   let disposed = false
@@ -284,7 +298,13 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       // only moved the clock reallocates nothing.
       scene.setFramebufferWidth(framebufferFor(next, deps.displaySizePx()))
       deps.setFill(next.fit === 'fill')
-      scene.setParams({ ...IDENTITY_PARAMS, rotationOffsetRad: rotationOffsetRadFor(next.centreLonDeg) })
+      // Set at once on the first reading, so a copy opening mid-session
+      // shows what the others show; moved to after that, by `steer`.
+      if (!previous || !sameView(next.view, previous.view)) {
+        const snap = !previous || reducedMotion()
+        camera.aim(next.view, snap, monotonicMs())
+        if (snap) scene.setParams(viewParams(camera.view()))
+      }
       deps.setDebug(next.debug)
       // Before the dataset, so a dataset this address shows is reported.
       // Loaded once; turning it off later gates it in `report`.
@@ -302,7 +322,18 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       report(t => t.streamError(err))
     },
 
+    cameraMoving: () => !disposed && camera.moving(),
+
     steer() {
+      // Drawn at the moving-content pace while on its way (`cameraMoving`),
+      // not on every callback: at the display rate a 30° turn drew 824
+      // frames on a 144 Hz display where this draws about 170 (found in
+      // review). The resting view is asked for at once, since the pace
+      // drops to the static floor once nothing moves.
+      if (!disposed && camera.advance(monotonicMs())) {
+        scene.setParams(viewParams(camera.view()))
+        if (!camera.moving()) deps.markDirty()
+      }
       const video = mirror.current()?.video ?? null
       if (!video || !current) {
         wasSeeking = false

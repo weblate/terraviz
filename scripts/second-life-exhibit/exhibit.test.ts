@@ -169,31 +169,144 @@ describe('second-life exhibit scripts', () => {
     expect(visitors).toContain('else if (msg == BTN_LEVEL) ask(who, "level");')
   })
 
-  it('set aside a dataset choice the globe has moved on from', () => {
-    // A choice waits on the node. A talk starting in that time takes the
-    // globe from whoever chose, so their choice must not land on the talk;
-    // nor may it undo someone else acting on the clip meanwhile (both
-    // found in review).
-    const drop = body(globe, 'drop(string why)')
-    expect(drop).toContain('gReq = NULL_KEY;')
-    expect(drop).toContain('gReqWho = NULL_KEY;')
-    // The presenter who starts a talk is named with it, and keeps a choice
-    // of their own; a talk said again after a reset is not a start.
-    for (const call of all(visitors, /\bstartTalk\(([^)]*)\);/g)) expect(call).toBe('who')
-    expect(body(visitors, 'startTalk(key who)')).toContain('llMessageLinked(LINK_THIS, MSG_TALK, "1", who);')
-    expect(globe).toContain('if (talk && !gTalk && id != gReqWho) drop(')
+  it('hold no web reply in the globe script, and leave checking a choice to the info script', () => {
+    // Second Life hands every web reply to every script in the prim with
+    // an http_response, and the globe script rests close to its 64 KB
+    // (62 KB, measured in-world in October 2026). It ran out of memory
+    // there after showing a dataset, with replies in hand: its own check's,
+    // and the info script's records, up to 9,000 bytes then, which every
+    // show set off. So it makes no request and has no handler, and shows a
+    // choice at once.
+    expect(globe).not.toContain('http_response')
+    expect(globe).not.toContain('llHTTPRequest')
     const act = body(globe, 'act(key who, integer owner, string msg)')
-    const playback = act.slice(act.indexOf('if (cmd == "pause" || cmd == "play"'), act.indexOf('if (cmd == "pause")\n'))
-    expect(playback).toContain('if (who != gReqWho) drop(')
-    // Past the live Earth's refusal, which changes nothing.
-    expect(playback.indexOf('if (who != gReqWho) drop(')).toBeGreaterThan(playback.indexOf('return;'))
+    const show = act.slice(act.indexOf('if (cmd == "show")'), act.indexOf('if (cmd == "earth"'))
+    expect(show).toMatch(/\n\s+show\(who, dataset, described\);/)
+    // The info script, which reads the record anyway, puts the globe back
+    // on the live Earth when the node has no such dataset or it is a tour,
+    // as a script's own request, and tells the owner and whoever chose it.
+    const unshowable = body(info, 'unshowable(string why)')
+    expect(unshowable).toContain('llMessageLinked(LINK_THIS, MSG_CONTROL, "earth " + gDataset, NULL_KEY);')
+    expect(unshowable).toContain('llOwnerSay(')
+    expect(unshowable).toMatch(/if \(gChose\)\n\s+if \(gChose != llGetOwner\(\)\)\n\s+llRegionSayTo\(gChose, 0, /)
+    // Only for the record it asked for, and only once it has read it.
+    const reply = info.slice(info.indexOf('if (req == gRecReq)'), info.indexOf('else if (req == gManReq)'))
+    expect(reply).toContain('if (status == 404) { unshowable(')
+    // The chooser is kept only until the node has answered about their
+    // choice, and the README's account of what the scripts keep says so.
+    expect(reply).toMatch(/gChose = NULL_KEY;[^\n]*\n\s+fetch\(\);/)
+    expect(unshowable).toContain('gChose = NULL_KEY;')
+    expect(readme).toContain('the key of whoever chose the dataset showing, until the node has said')
+    expect(reply.indexOf('record();')).toBeGreaterThan(-1)
+    expect(reply.indexOf('record();')).toBeLessThan(reply.indexOf('if (gUnshowable) { unshowable('))
+    // The globe names the chooser of a new dataset in the broadcast that
+    // shows it, and the info script keeps it with the dataset. A request
+    // naming a dataset the globe has since gone on from is set aside, so
+    // a slow record can't undo someone else's choice.
+    expect(body(globe, 'show(key who, string id, string title)')).toMatch(
+      /if \(llList2String\(saved, 0\) != id\) gBy = who;\n\s+if \(!commit\(saved\)\)/,
+    )
+    expect(info).toMatch(/forget\(\);\n\s+gChose = id;\n\s+fetch\(\);\n\s+\}\n\s+else if \(id\) moved\(id\);/)
+    const stale = 'if (cmd == "earth" && who == NULL_KEY && arg != "" && arg != gDataset) return;'
+    expect(act).toContain(stale)
+    expect(act.indexOf(stale)).toBeLessThan(act.indexOf('if (cmd == "earth" || (cmd == "rest"'))
+    expect(body(info, 'record()')).toContain(
+      'gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;',
+    )
+    expect(body(info, 'forget()')).toContain('gUnshowable = FALSE;')
+    // "earth" is a control any script may send: it sits before the owner's
+    // gate in the globe script.
+    expect(act.indexOf('if (cmd == "earth"')).toBeLessThan(act.indexOf("// Everything below is the owner's."))
+    // The info script reads only as much of a record as fits beside what
+    // it holds at rest (50 KB of 64, measured in-world), and a little of
+    // an abstract.
+    expect(Number(constant(info, 'integer', 'BODY_MAX'))).toBeLessThanOrEqual(3072)
+    expect(Number(constant(info, 'integer', 'ABSTRACT_MAX'))).toBeLessThanOrEqual(500)
+    expect(Number(constant(info, 'integer', 'MANIFEST_MAX'))).toBeLessThanOrEqual(1024)
+    // And the globe says how full showing a dataset left it.
+    const shown = body(globe, 'show(key who, string id, string title)')
+    const statements = shown.slice(shown.indexOf('{') + 1).split('\n').filter((line) => line.trim() !== '' && !/^\s*\/\//.test(line))
+    expect(statements[0].trim()).toBe('llScriptProfiler(PROFILE_SCRIPT_MEMORY);')
+    expect(shown).toMatch(/llScriptProfiler\(PROFILE_NONE\);\n\s+if \(llGetSPMaxMemory\(\) > gPeak\) gPeak = llGetSPMaxMemory\(\);$/)
+    expect(shown).not.toContain('return;')
+    expect(act).toContain('KB while showing a dataset')
+  })
+
+  it('copy a record, and what it tells a visitor, as few times as they can be', () => {
+    // A copy counts against a script's 64 KB until Second Life collects
+    // it, and the info script ran out in-world (October 2026). So the
+    // record is held once and let go before its text is tidied, and no
+    // function is handed it to copy.
+    const reply = info.slice(info.indexOf('if (req == gRecReq)'), info.indexOf('else if (req == gManReq)'))
+    expect(reply).toMatch(/gBody = body;\n\s+body = "";\n\s+record\(\);\n\s+gBody = "";\n\s+tidy\(\);\n\s+peak\(\);/)
+    const field = body(info, 'string field(string name, integer max)')
+    expect(field).toContain('llGetSubString(gBody, i, i + max + 16)')
+    // A value with no escape is returned as read, which most are, and
+    // only a backslash before the value's first quote is one of its own.
+    expect(field).toContain('if (!esc) return raw;')
+    expect(field).toContain('integer esc = bs != -1 && (at == -1 || bs < at);')
+    // HTML is taken out in one split rather than a copy per tag, and each
+    // step runs only when there is something for it to do.
+    const plain = body(info, 'string plain(string s)')
+    expect(plain).toContain('llParseStringKeepNulls(s, ["<"], [])')
+    expect(plain).not.toContain('out += llGetSubString')
+    // A tag runs on to the next >, past any < inside it, as it did before.
+    expect(plain).toMatch(/while \(b == -1 && i \+ 1 < n\)\n\s+\{\n\s+\+\+i;\n\s+p \+= "<" \+ llList2String\(parts, i\);/)
+    for (const gate of ['"<"', '"&"', '"\\t"']) expect(plain, gate).toContain(`if (llSubStringIndex(s, ${gate}) != -1)`)
+    // "About" is joined once and measured a character at a time, not
+    // copied for each line added and each piece counted.
+    const about = body(info, 'about(key av)')
+    expect(about).not.toMatch(/text \+=/)
+    expect(about).toContain('say(av, llDumpList2String(lines, "\\n"));')
+    // The licence on one line, its own line breaks folded, as before.
+    expect(about).toContain(
+      'string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\\n"), ["\\n"], []), " ");',
+    )
+    const say = body(info, 'say(key av, string text)')
+    expect(say).toContain('llOrd(text, n)')
+    expect(say).not.toContain('bytes(')
+    expect(info).not.toContain('llToLower(body)')
+    // And "/9 memory" says the most either took.
+    expect(info).toMatch(/MSG_ABOUT\)\n\s+\{\n\s+llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);\n\s+about\(id\);\n\s+peak\(\);/)
+    expect(info).toContain('KB while reading a record or answering About')
+  })
+
+  it('answer a pause, a play or a move with the date the globe shows, not the clip\'s seconds', () => {
+    // A clip's seconds mean nothing to a visitor, and only the info
+    // script knows the dataset's dates. So the globe script names who
+    // asked in the broadcast that follows, and the info script answers
+    // them: the date where there is one, the plain word where there isn't.
+    const act = body(globe, 'act(key who, integer owner, string msg)')
+    const playback = act.slice(act.indexOf('if (cmd == "pause")\n'), act.indexOf('if (cmd == "tilt")'))
+    expect(playback.match(/gBy = who;\n\s+commit\(saved\);/g)).toHaveLength(3)
+    // Every key the globe names goes out in the very next broadcast: one
+    // left set by a change that returned first would name its asker in
+    // someone else's. The key starts as a real NULL_KEY, since a key
+    // never given a value is "", which the info script would answer.
+    const named = [...globe.matchAll(/gBy = who;\n([^\n]*)/g)].map((m) => m[1].trim())
+    expect(named).toHaveLength(4)
+    for (const next of named) expect(next).toMatch(/^(if \(!)?commit\(saved\)/)
+    expect(globe).toMatch(/^key\s+gBy = NULL_KEY;/m)
+    expect(playback).not.toMatch(/" s[.,]/)
+    expect(body(globe, 'broadcast()')).toMatch(/"node", NODE\]\), gBy\);\n\s+gBy = NULL_KEY;/)
+    // A refused change names nobody, so no one is told it happened.
+    expect(body(globe, 'integer commit(list saved)')).toContain('if (!setMedia()) { restore(saved); gBy = NULL_KEY; return FALSE; }')
+    expect(info).toContain('else if (id) moved(id);')
+    const moved = body(info, 'moved(key who)')
+    // The date at the position broadcast, not a second later: the globe
+    // takes it before setting the media, which takes a second.
+    expect(moved).toMatch(
+      /integer paused = gPaused;\n\s+gPaused = TRUE;\n\s+if \(gFor == gDataset && gDuration > 0\.0\) d = date\(\);\n\s+gPaused = paused;/,
+    )
+    expect(moved).toContain('if (d != "") s = "Paused at " + d + ".";')
+    expect(moved).toContain('if (d != "") s = "Playing from " + d + ".";')
   })
 
   it("trust a clip's length only from a manifest the node built itself", () => {
     // A Vimeo manifest carries Vimeo's own id and whole-second length,
     // which the page's loop drifts from; the node writes the dataset's id
     // into every manifest it builds (functions/api/v1/datasets/[id]/manifest.ts).
-    expect(info).toContain('if (mid != gDataset || llSubStringIndex(llToLower(body), "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }')
+    expect(info).toContain('if (mid != gDataset || llSubStringIndex(body, "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }')
     // A failed request carries no id, so it is retried before that check
     // can read it as someone else's manifest and give up (found in review).
     const answered = info.slice(info.indexOf('else if (req == gManReq)'))
@@ -277,7 +390,7 @@ describe('second-life exhibit scripts', () => {
     // record has. A serializer that moved one after it would cut that
     // field from long records. The order isn't the protocol's promise
     // (docs/protocol/README.md); it is this node's, and this pins it.
-    const fields = all(info, /field\(body, stop, "(\w+)"/g)
+    const fields = all(info, /field\("(\w+)"/g)
     expect(fields.length).toBeGreaterThan(0)
     const wire = serializeDataset(
       fullRow(),
@@ -310,7 +423,7 @@ describe('second-life exhibit scripts', () => {
       expect(flat, key).toBe(true)
     }
     // And the script stops looking there.
-    expect(body(info, 'record(string body)')).toContain('llSubStringIndex(body, ",\\"createdAt\\":")')
+    expect(body(info, 'record()')).toContain('gStop = llSubStringIndex(gBody, ",\\"createdAt\\":");')
   })
 
   it("leave the title room in the hover text, whatever else it says", () => {

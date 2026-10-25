@@ -10,7 +10,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { RETRY_DELAYS_MS, createWebOutput, followAddress, framebufferFor, isRetryable } from './webOutput'
 import { createDatasetMirror, type MediaLoader, type MediaSource } from './datasetMirror'
 import { WebDatasetError, type WebDataset } from './webDataset'
-import { readWebSettings, rotationOffsetRadFor } from './webMode'
+import { readWebSettings } from './webMode'
+import { viewParams } from './webCamera'
 import type { SyncTarget } from './outputSync'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 import { until } from '../test-utils'
@@ -61,7 +62,9 @@ function deferredLoader() {
   return { loader, pending, disposed, elements, videos, resolve, reject }
 }
 
-function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = {}) {
+function harness(
+  opts: { fetchDataset?: (id: string) => Promise<WebDataset>; motion?: { reduced: boolean } } = {},
+) {
   const media = deferredLoader()
   const mirror = createDatasetMirror({ loader: media.loader })
   const layers: unknown[][] = []
@@ -93,6 +96,7 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset> } = 
     loadTelemetry,
     nowMs: () => now,
     monotonicMs: () => mono,
+    reducedMotion: () => opts.motion?.reduced ?? false,
     setTimer: (fn, ms) => {
       timers.push({ fn, ms, cleared: false })
       return timers.length
@@ -334,10 +338,77 @@ describe('applying the address', () => {
     expect(framebufferFor(readWebSettings('', ''), { width: 1024, height: 1024 })).toBe(1024)
   })
 
-  it('puts the address rotation on the scene', () => {
+  it('shows the first reading of the address at once', () => {
+    // A copy opening mid-session shows what the others show, not a fly-in.
     const h = harness()
-    h.show('#rotation=90')
-    expect(h.params.at(-1)).toMatchObject({ rotationOffsetRad: rotationOffsetRadFor(90) })
+    h.show('#rotation=90&lat=-60&zoom=2')
+    expect(h.params).toEqual([viewParams({ latDeg: -60, lonDeg: 90, zoom: 2 })])
+  })
+})
+
+describe('moving the camera', () => {
+  /** Steer `ms` of 60 Hz frames. */
+  function frames(h: ReturnType<typeof harness>, ms: number) {
+    for (let t = 0; t < ms; t += 16) {
+      h.advance(16)
+      h.out.steer()
+    }
+  }
+
+  it('moves to a later view at the moving-content pace, then stops asking for frames', () => {
+    const h = harness()
+    h.show('#rotation=0')
+    h.show('#rotation=30&lat=-30')
+    // Nothing jumps on the change itself.
+    expect(h.params).toHaveLength(1)
+    expect(h.out.cameraMoving()).toBe(true)
+    // On its way, the view moves every frame and the loop paces the
+    // drawing like a playing video, so no frame is demanded on top.
+    h.markDirty.mockClear()
+    h.advance(16)
+    h.out.steer()
+    const first = h.params.at(-1)
+    expect(first).not.toEqual(viewParams({ latDeg: -30, lonDeg: 30, zoom: 0 }))
+    expect(first).not.toEqual(viewParams({ latDeg: 0, lonDeg: 0, zoom: 0 }))
+    frames(h, 1000)
+    expect(h.markDirty).not.toHaveBeenCalled()
+    frames(h, 10_000)
+    // Arrived: the resting view is asked for at once, then a still
+    // picture goes back to the 1 Hz floor.
+    expect(h.params.at(-1)).toEqual(viewParams({ latDeg: -30, lonDeg: 30, zoom: 0 }))
+    expect(h.out.cameraMoving()).toBe(false)
+    expect(h.markDirty).toHaveBeenCalledTimes(1)
+    const count = h.params.length
+    h.markDirty.mockClear()
+    frames(h, 500)
+    expect(h.params).toHaveLength(count)
+    expect(h.markDirty).not.toHaveBeenCalled()
+  })
+
+  it('sets the view at once for a viewer who asked for reduced motion', () => {
+    const h = harness({ motion: { reduced: true } })
+    h.show('#rotation=0')
+    h.show('#lat=-90')
+    expect(h.params.at(-1)).toEqual(viewParams({ latDeg: -90, lonDeg: 0, zoom: 0 }))
+    h.markDirty.mockClear()
+    frames(h, 100)
+    expect(h.markDirty).not.toHaveBeenCalled()
+  })
+
+  it('leaves the camera alone when a # change moved something else', () => {
+    // Mid-motion, with reduced motion turned on since: aiming again at the
+    // same view would set it at once and show here (found in review: the
+    // first version of this test passed without the check it names).
+    const motion = { reduced: false }
+    const h = harness({ motion })
+    h.show('#rotation=0')
+    h.show('#rotation=30')
+    frames(h, 200)
+    const count = h.params.length
+    motion.reduced = true
+    h.show('#rotation=30&t=12&debug=1')
+    expect(h.params).toHaveLength(count)
+    expect(h.params.at(-1)).not.toEqual(viewParams({ latDeg: 0, lonDeg: 30, zoom: 0 }))
   })
 })
 
