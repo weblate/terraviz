@@ -11,7 +11,7 @@ import {
   sameClock,
   sameView,
 } from './webMode'
-import { MAX_CAMERA_OFFSET, equirectSourceUv } from './equirectRtt'
+import { MAX_CAMERA_OFFSET, MAX_CAMERA_ZOOM, equirectSourceUv } from './equirectRtt'
 import { viewParams } from './webCamera'
 
 describe('readWebSettings', () => {
@@ -145,17 +145,20 @@ describe('the camera', () => {
     }
   })
 
-  it('brings a pole to the centre with the rotation meridian running up from it', () => {
+  it('brings a pole to the centre on the rotation meridian: up from the South Pole, down from the North', () => {
     // The ozone hole on the equator, in front of whoever faces the centre.
     for (const lon of [0, 90, 200]) {
       expect(shownAt(`#lat=-90&rotation=${lon}`, 0.5, 0.5).lat).toBeCloseTo(-90, 9)
       const above = shownAt(`#lat=-90&rotation=${lon}`, 0.5, 0.52)
       expect(above.lat).toBeGreaterThan(-90)
       expect(lonApart(above.lon, lon)).toBeCloseTo(0, 6)
-      // And north at the North Pole, the other way.
-      const north = shownAt(`#lat=90&rotation=${lon}`, 0.5, 0.48)
-      expect(north.lat).toBeLessThan(90)
-      expect(lonApart(north.lon, lon)).toBeCloseTo(0, 6)
+      // At the North Pole the named meridian runs down the picture, and
+      // the one opposite it up, as on the app's globe at a bearing of 0.
+      const below = shownAt(`#lat=90&rotation=${lon}`, 0.5, 0.48)
+      expect(below.lat).toBeLessThan(90)
+      expect(lonApart(below.lon, lon)).toBeCloseTo(0, 6)
+      const northAbove = shownAt(`#lat=90&rotation=${lon}`, 0.5, 0.52)
+      expect(lonApart(northAbove.lon, lon + 180)).toBeCloseTo(0, 6)
     }
   })
 
@@ -170,10 +173,16 @@ describe('the camera', () => {
     expect(Math.abs(lonApart(far.lon, 180))).toBeLessThan(1e-6)
   })
 
-  it('magnifies no further than the projection can, and keeps the zoom anyway', () => {
-    const cap = 1 / (1 - MAX_CAMERA_OFFSET) - 1
-    expect(viewParams(readWebSettings('', '#zoom=12').view)).toEqual(viewParams(readWebSettings('', `#zoom=${cap}`).view))
-    expect(readWebSettings('', '#zoom=12').view.zoom).toBe(12)
+  it('reads a zoom past what the projection can magnify as that most', () => {
+    // So a move between two zooms past it is no motion at all, and a
+    // number too big to move toward cannot reach the motion.
+    expect(MAX_CAMERA_ZOOM).toBeCloseTo(1 / (1 - MAX_CAMERA_OFFSET) - 1, 12)
+    expect(viewParams({ latDeg: 0, lonDeg: 0, zoom: MAX_CAMERA_ZOOM }).cameraOffset.x).toBeCloseTo(MAX_CAMERA_OFFSET, 12)
+    expect(readWebSettings('', '#zoom=12').view.zoom).toBe(MAX_CAMERA_ZOOM)
+    // Finite, so a plain decimal, and big enough to overflow the motion.
+    expect(readWebSettings('', `#zoom=${'9'.repeat(308)}`).view.zoom).toBe(MAX_CAMERA_ZOOM)
+    expect(sameView(readWebSettings('', '#zoom=12').view, readWebSettings('', '#zoom=20').view)).toBe(true)
+    expect(readWebSettings('', '#zoom=2.5').view.zoom).toBe(2.5)
   })
 
   it('fails closed one key at a time', () => {

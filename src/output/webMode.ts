@@ -35,6 +35,7 @@ import {
 } from '../services/multiOutput/protocol'
 import { normalizeRotationOffset } from '../services/multiOutput/outputPersistence'
 import { MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE, SYNC_MAX_RATE_TRIM } from '../utils/time'
+import { MAX_CAMERA_ZOOM } from './equirectRtt'
 import type { WebView } from './webCamera'
 
 /**
@@ -176,10 +177,12 @@ export function sameView(a: WebView, b: WebView): boolean {
 
 /**
  * The camera keys, each on its own default. `lat` outside ±90 and a
- * negative `zoom` mean nothing and read as the default; a zoom past the
- * most the projection can magnify (about 5.7, `MAX_CAMERA_OFFSET`) is
- * kept and simply magnifies no further, since it is a zoom a globe could
- * be at.
+ * negative `zoom` mean nothing and read as the default. A zoom past the
+ * most the projection can magnify is a zoom a globe could be at, so it
+ * reads as that most, `MAX_CAMERA_ZOOM` (about 5.7). Kept as written, it
+ * made a move between two zooms past it a second of drawing with nothing
+ * changing, and a 308-digit one overflowed the motion to `NaN` for good
+ * (found in review).
  */
 function readView(params: URLSearchParams): WebView {
   const lat = decimal(params, 'lat')
@@ -189,7 +192,7 @@ function readView(params: URLSearchParams): WebView {
     // `+ 0` folds a `-0`, so `lat=-0` reads as the default it is.
     latDeg: lat !== null && lat >= -90 && lat <= 90 ? lat + 0 : 0,
     lonDeg: normalizeRotationOffset(rotation ?? 0),
-    zoom: zoom !== null && zoom >= 0 ? zoom + 0 : 0,
+    zoom: zoom !== null && zoom >= 0 ? Math.min(zoom, MAX_CAMERA_ZOOM) + 0 : 0,
   }
 }
 

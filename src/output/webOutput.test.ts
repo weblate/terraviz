@@ -62,7 +62,9 @@ function deferredLoader() {
   return { loader, pending, disposed, elements, videos, resolve, reject }
 }
 
-function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset>; reducedMotion?: boolean } = {}) {
+function harness(
+  opts: { fetchDataset?: (id: string) => Promise<WebDataset>; motion?: { reduced: boolean } } = {},
+) {
   const media = deferredLoader()
   const mirror = createDatasetMirror({ loader: media.loader })
   const layers: unknown[][] = []
@@ -94,7 +96,7 @@ function harness(opts: { fetchDataset?: (id: string) => Promise<WebDataset>; red
     loadTelemetry,
     nowMs: () => now,
     monotonicMs: () => mono,
-    reducedMotion: () => opts.reducedMotion ?? false,
+    reducedMotion: () => opts.motion?.reduced ?? false,
     setTimer: (fn, ms) => {
       timers.push({ fn, ms, cleared: false })
       return timers.length
@@ -366,7 +368,7 @@ describe('moving the camera', () => {
     const first = h.params.at(-1)
     expect(first).not.toEqual(viewParams({ latDeg: -30, lonDeg: 30, zoom: 0 }))
     expect(first).not.toEqual(viewParams({ latDeg: 0, lonDeg: 0, zoom: 0 }))
-    frames(h, 3000)
+    frames(h, 10_000)
     expect(h.params.at(-1)).toEqual(viewParams({ latDeg: -30, lonDeg: 30, zoom: 0 }))
     // Arrived: a still picture goes back to the 1 Hz floor.
     const count = h.params.length
@@ -377,7 +379,7 @@ describe('moving the camera', () => {
   })
 
   it('sets the view at once for a viewer who asked for reduced motion', () => {
-    const h = harness({ reducedMotion: true })
+    const h = harness({ motion: { reduced: true } })
     h.show('#rotation=0')
     h.show('#lat=-90')
     expect(h.params.at(-1)).toEqual(viewParams({ latDeg: -90, lonDeg: 0, zoom: 0 }))
@@ -387,12 +389,19 @@ describe('moving the camera', () => {
   })
 
   it('leaves the camera alone when a # change moved something else', () => {
-    const h = harness()
+    // Mid-motion, with reduced motion turned on since: aiming again at the
+    // same view would set it at once and show here (found in review: the
+    // first version of this test passed without the check it names).
+    const motion = { reduced: false }
+    const h = harness({ motion })
+    h.show('#rotation=0')
     h.show('#rotation=30')
-    h.show('#rotation=30&t=12&debug=1')
-    expect(h.params).toHaveLength(1)
     frames(h, 200)
-    expect(h.params).toHaveLength(1)
+    const count = h.params.length
+    motion.reduced = true
+    h.show('#rotation=30&t=12&debug=1')
+    expect(h.params).toHaveLength(count)
+    expect(h.params.at(-1)).not.toEqual(viewParams({ latDeg: 0, lonDeg: 30, zoom: 0 }))
   })
 })
 

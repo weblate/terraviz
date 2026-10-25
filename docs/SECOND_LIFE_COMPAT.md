@@ -968,10 +968,21 @@ The work, smallest first:
    (`src/output/webCamera.ts`). A new `lon` key was the first idea and
    was dropped: on the equator the follow turn *is* a turn about the
    poles, so `rotation` and `lon` would be one number under two names,
-   and at a pole that number names the meridian running up from it.
-   The page glides between views over about a second, so a script that
-   changes the address once a second reads as motion. Bearing is left
-   out, north always up, until a controller needs it. The grammar is in
+   and at a pole that number names the meridian the centre sits on (up
+   the picture from the South Pole, down it from the North). The page
+   moves between views like a heavy globe: pushed off at once, then
+   coasting to a stop the way the app's globes slow after a flick
+   (0.7 s, the VR globe's tuning), so a press made while it still turns
+   pushes it on and a script that changes the address once a second
+   reads as one movement. Every copy turns the same way round, chosen
+   from the addresses rather than from its own picture. This is the
+   first of three layers proposed for a natural feel. The other two
+   need the address to carry a speed: a spin that keeps going, shared
+   by every copy through a start time as the clock is, which would also
+   line visitors up where today's prim spin is drawn by each viewer at
+   its own phase; and a speed with each of a remote's updates, so copies
+   carry a drag on between them. Bearing is left out, north always up,
+   until a controller needs it. The grammar is in
    [`EMBED_URL_GRAMMAR.md`](EMBED_URL_GRAMMAR.md).
 8. **Keep the clouds current.** The output page loads its cloud image
    once, at startup (`src/output/outputScene.ts:983`), and never again.

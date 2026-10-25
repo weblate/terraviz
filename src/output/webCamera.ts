@@ -20,22 +20,36 @@
  * equator the follow turn is a turn about the poles, exactly what
  * `rotation` has always done, so the two would be one quantity under two
  * names. At a pole every longitude meets, and the same number then names
- * the meridian that runs up from it, so stepping it turns the picture
- * about the pole: what turning a tipped globe on its axis does.
+ * the meridian the centre sits on: it runs up the picture from the South
+ * Pole and down it from the North Pole, as it does on the app's globe at
+ * a bearing of 0. Stepping it turns the picture about the pole, which is
+ * what turning a tipped globe on its axis does.
  *
- * **The view glides.** A Second Life globe script can change its media
- * address at most once a second, and a picture that jumped 30° each time
- * would read as a fault. So a new view is approached on a critically
- * damped spring per component (`stepView`): it starts at once, settles
- * in about a second with no swing past the target, and a new target
- * arriving mid-glide carries the motion on rather than stopping it, so a
- * controller sending a view every second looks like one movement. Copies
- * glide on their own frame clocks and so differ for that second, then
- * agree, as they do after a seek. Longitude goes the short way round.
+ * **The view moves like a heavy globe.** A Second Life globe script can
+ * change its media address at most once a second, and a picture that
+ * jumped 30° each time would read as a fault; one that eased in and out
+ * reads as an animation. So each part of the view is a mass on a bearing,
+ * given a short push toward its new place and left to coast there
+ * (`stepView`): it starts within a tenth of a second, then slows the way
+ * the app's own globes do after a flick (`VIEW_COAST_S`). The motion is
+ * the exact solution, so a copy drawing at 30 Hz and one at 144 Hz are in
+ * the same place at the same moment; it never swings past a target it set
+ * out for from rest; and a new target arriving mid-coast adds to the
+ * motion rather than stopping it, so a press made while the globe still
+ * turns pushes it on, and a view sent every second reads as one movement.
+ * Copies differ while they move, as they do after a seek, then agree.
  *
- * A glide is skipped, and the view simply set, on the first reading of
- * an address (a copy opening mid-session shows what the others show, not
- * a fly-in) and when the viewer asks for reduced motion.
+ * **Every copy turns the same way.** Which way is the short way round is
+ * decided between one address and the next, which every copy shares, and
+ * not from where each copy's picture happens to be, which differs while
+ * they move: decided from the picture, two copies near the antipode of a
+ * new view turned opposite ways (found in review). Exactly half a turn
+ * goes the way that counts the longitude up, as `shortTurn` reads 180.
+ *
+ * The view is set at once, with no motion, on the first reading of an
+ * address (a copy opening mid-session shows what the others show, not a
+ * fly-in) and for a viewer whose browser says they asked for reduced
+ * motion.
  */
 
 import { IDENTITY_PARAMS, followCamera, type EquirectParams } from './equirectRtt'
@@ -44,9 +58,9 @@ import { IDENTITY_PARAMS, followCamera, type EquirectParams } from './equirectRt
 export interface WebView {
   /** Degrees north, −90 to 90. */
   latDeg: number
-  /** Degrees east. At a pole, the meridian that runs up from it. */
+  /** Degrees east. At a pole, the meridian the centre sits on. */
   lonDeg: number
-  /** MapLibre's zoom levels, 0 or more. */
+  /** MapLibre's zoom levels, 0 to `MAX_CAMERA_ZOOM`. */
   zoom: number
 }
 
@@ -64,18 +78,30 @@ export function viewParams(view: WebView): EquirectParams {
 }
 
 /**
- * The spring's smoothing time, in seconds. Critically damped, a step is
- * within 1% of its target after about 3.3 of these, so a view sent once
- * a second has arrived before the next one; and the spring trails a
- * steady movement by about one of them.
+ * How long the push lasts, in seconds: the time the globe takes to get
+ * going. Short, so a press visibly answers at once.
  */
-export const VIEW_SMOOTH_S = 0.3
+export const VIEW_PUSH_S = 0.1
 
-/** Close enough to stop: well under a pixel on a 8192-wide picture. */
-const SETTLED_DEG = 1e-3
-const SETTLED_ZOOM = 1e-4
+/**
+ * How the globe slows, in seconds: its speed falls to 37% in this time,
+ * then to 37% of that, and so on, as a spun globe's does on its bearing.
+ * The value `vrInteraction`'s flick-to-spin uses (`INERTIA_TIME_CONSTANT`),
+ * tuned there on a headset to match the 2D globe's flick, so a web
+ * output's sphere coasts like the app's globes. Copied rather than
+ * imported, which would pull Three into this page; a test holds the two
+ * equal.
+ */
+export const VIEW_COAST_S = 0.7
 
-/** A glide in progress: where it is, and how fast each part moves. */
+/** Close enough to stop: under a quarter of a pixel on the widest picture
+ *  the page draws (8192 across 360°), and under a tenth on a Second Life
+ *  face. Tighter only lengthens the tail spent drawing at the display
+ *  rate for motion nobody can see. */
+const SETTLED_DEG = 0.01
+const SETTLED_ZOOM = 1e-3
+
+/** A motion in progress: where it is, and how fast each part moves. */
 export interface ViewMotion {
   view: WebView
   /** Per second, in each component's own units. */
@@ -88,48 +114,68 @@ function shortTurn(deg: number): number {
   return wrapped === -180 ? 180 : wrapped
 }
 
+const PUSH = 1 / VIEW_PUSH_S
+const COAST = 1 / VIEW_COAST_S
+
 /**
- * One component, `dtS` seconds on: the exact critically damped spring
- * toward a fixed target. `offset` is the distance from the target, so a
- * longitude can pass its short-way-round difference in.
+ * One component, `dtS` seconds on. `offset` is the distance from the
+ * target. The exact solution of `x″ + (p + c)x′ + pc·x = 0`, with the
+ * push's rate `p` and the coast's `c`: overdamped, so from rest it closes
+ * on the target without passing it, getting up to speed over about
+ * `VIEW_PUSH_S` and slowing over `VIEW_COAST_S`.
  */
-function dampTowards(
+function coastTowards(
   offset: number,
   velocity: number,
   dtS: number,
   settled: number,
 ): { offset: number; velocity: number } {
-  const omega = 2 / VIEW_SMOOTH_S
-  const decay = Math.exp(-omega * dtS)
-  const carry = (velocity + omega * offset) * dtS
-  let next = (offset + carry) * decay
-  let nextVelocity = (velocity - omega * carry) * decay
+  const fast = -(velocity + COAST * offset) / (PUSH - COAST)
+  const slow = (velocity + PUSH * offset) / (PUSH - COAST)
+  const fastDecay = Math.exp(-PUSH * dtS)
+  const slowDecay = Math.exp(-COAST * dtS)
+  let next = fast * fastDecay + slow * slowDecay
+  let nextVelocity = -PUSH * fast * fastDecay - COAST * slow * slowDecay
   // A target that moved against the motion can be passed once. Stop on
   // it instead of swinging back.
   if (next * offset < 0) {
     next = 0
     nextVelocity = 0
   }
-  if (Math.abs(next) < settled && Math.abs(nextVelocity) * VIEW_SMOOTH_S < settled) {
+  if (Math.abs(next) < settled && Math.abs(nextVelocity) * VIEW_COAST_S < settled) {
     next = 0
     nextVelocity = 0
   }
   return { offset: next, velocity: nextVelocity }
 }
 
-/** `motion`, `dtS` seconds closer to `target`. Pure. */
+/**
+ * `motion`, `dtS` seconds closer to `target`. Pure. Longitudes are taken
+ * as they are, not round the turn: the way round is `createViewGlide`'s
+ * to choose, once for every copy.
+ */
 export function stepView(motion: ViewMotion, target: WebView, dtS: number): ViewMotion {
   if (!(dtS > 0)) return motion
-  const lat = dampTowards(motion.view.latDeg - target.latDeg, motion.velocity.latDeg, dtS, SETTLED_DEG)
-  const lon = dampTowards(shortTurn(motion.view.lonDeg - target.lonDeg), motion.velocity.lonDeg, dtS, SETTLED_DEG)
-  const zoom = dampTowards(motion.view.zoom - target.zoom, motion.velocity.zoom, dtS, SETTLED_ZOOM)
+  const lat = coastTowards(motion.view.latDeg - target.latDeg, motion.velocity.latDeg, dtS, SETTLED_DEG)
+  const lon = coastTowards(motion.view.lonDeg - target.lonDeg, motion.velocity.lonDeg, dtS, SETTLED_DEG)
+  const zoom = coastTowards(motion.view.zoom - target.zoom, motion.velocity.zoom, dtS, SETTLED_ZOOM)
+  let latDeg = target.latDeg + lat.offset
+  let latVelocity = lat.velocity
+  // Carried past a pole by a change of mind, the camera would turn upside
+  // down; it stops on the pole instead.
+  if (Math.abs(latDeg) > 90) {
+    latDeg = Math.sign(latDeg) * 90
+    latVelocity = 0
+  }
+  let zoomTo = target.zoom + zoom.offset
+  let zoomVelocity = zoom.velocity
+  if (zoomTo < 0) {
+    zoomTo = 0
+    zoomVelocity = 0
+  }
   return {
-    view: {
-      latDeg: target.latDeg + lat.offset,
-      lonDeg: target.lonDeg + lon.offset,
-      zoom: target.zoom + zoom.offset,
-    },
-    velocity: { latDeg: lat.velocity, lonDeg: lon.velocity, zoom: zoom.velocity },
+    view: { latDeg, lonDeg: target.lonDeg + lon.offset, zoom: zoomTo },
+    velocity: { latDeg: latVelocity, lonDeg: lon.velocity, zoom: zoomVelocity },
   }
 }
 
@@ -140,7 +186,7 @@ export function isSettled(motion: ViewMotion, target: WebView): boolean {
   const v = motion.velocity
   return (
     motion.view.latDeg === target.latDeg &&
-    shortTurn(motion.view.lonDeg - target.lonDeg) === 0 &&
+    motion.view.lonDeg === target.lonDeg &&
     motion.view.zoom === target.zoom &&
     v.latDeg === 0 &&
     v.lonDeg === 0 &&
@@ -149,11 +195,11 @@ export function isSettled(motion: ViewMotion, target: WebView): boolean {
 }
 
 export interface ViewGlide {
-  /** Where the picture is now. */
+  /** Where the picture is now. Its longitude may lie outside [0, 360). */
   view(): WebView
   /**
    * Head for `target`. `snap` sets the view there at once and stops any
-   * glide, for a first reading or a viewer who asked for reduced motion.
+   * motion, for a first reading or a viewer who asked for reduced motion.
    */
   aim(target: WebView, snap: boolean, nowMs: number): void
   /** Move on to `nowMs`. Whether the view changed, so the caller draws
@@ -166,25 +212,33 @@ export function createViewGlide(initial: WebView = DEFAULT_VIEW): ViewGlide {
   let target: WebView = { ...initial }
   let lastMs: number | null = null
 
+  /** The motion carried on to `nowMs` toward the target it had. One that
+   *  has arrived is left as it is, so `advance` can tell it is still. */
+  const catchUp = (nowMs: number): void => {
+    if (lastMs !== null && !isSettled(motion, target)) motion = stepView(motion, target, (nowMs - lastMs) / 1000)
+    lastMs = nowMs
+  }
+
   return {
     view: () => motion.view,
 
     aim(next, snap, nowMs) {
-      target = { ...next }
-      if (snap) motion = { view: { ...next }, velocity: STILL }
-      // Timed from here, not from the last frame drawn: a glide that
-      // starts after a still minute must not be a minute along already.
-      lastMs = nowMs
+      // Up to now toward the old target first, so a change of target
+      // costs no motion, whatever the frame phase it lands on.
+      catchUp(nowMs)
+      // The short way round from the last address, which every copy
+      // shares, then both moved by whole turns to keep the numbers small.
+      const lon = target.lonDeg + shortTurn(next.lonDeg - target.lonDeg)
+      const turns = 360 * Math.floor(lon / 360)
+      target = { ...next, lonDeg: lon - turns }
+      motion = snap
+        ? { view: { ...target }, velocity: STILL }
+        : { view: { ...motion.view, lonDeg: motion.view.lonDeg - turns }, velocity: motion.velocity }
     },
 
     advance(nowMs) {
-      const dtS = lastMs === null ? 0 : (nowMs - lastMs) / 1000
-      lastMs = nowMs
-      if (isSettled(motion, target)) return false
       const before = motion
-      // A part that stops lands exactly on its target (`dampTowards`
-      // zeroes the offset), so arriving is `isSettled` holding.
-      motion = stepView(motion, target, dtS)
+      catchUp(nowMs)
       return motion !== before
     },
   }
