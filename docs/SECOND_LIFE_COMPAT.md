@@ -966,9 +966,13 @@ The work, smallest first:
    and it comes before either is designed in detail. The kit's
    `/7 hash` runs it.
 
-   **Built on the page (Phase 4's first part, 25 October), not yet seen
-   in-world.** The output page takes `lat` and `zoom`, with `rotation`
-   as the longitude, and hands them to `followCamera`
+   **Built on the page (Phase 4's first part, 25 October), and its coast
+   seen in-world the same day.** The maintainer turned the exhibit's
+   globe, its page served from the PR's preview deploy, with Turn east
+   and west, which change `rotation`, and judged the coast "pretty
+   nice". `lat` and `zoom` have not been seen in-world, since no script
+   sends them until Phase 4b. The output page takes `lat` and `zoom`,
+   with `rotation` as the longitude, and hands them to `followCamera`
    (`src/output/webCamera.ts`). A new `lon` key was the first idea and
    was dropped: on the equator the follow turn *is* a turn about the
    poles, so `rotation` and `lon` would be one number under two names,
@@ -1680,8 +1684,11 @@ designed on whatever the `#` test found. Firestorm applies a change
 after the `#` without a reload, so the view can change live. The shape
 proposed on 25 October, after the Phase 2 controller's menu turned out
 clunky for presenting:
-- **The camera on the page. Built on 25 October, not yet seen
-  in-world.** The output page takes `lat` and `zoom` after the `#`,
+- **The camera on the page. Built on 25 October; its coast seen
+  in-world the same day,** through `rotation` on the exhibit's Turn
+  buttons, which the maintainer judged "pretty nice" (§7 item 7). `lat`
+  and `zoom` wait on the buttons below. The output page takes `lat` and
+  `zoom` after the `#`,
   with `rotation` as the longitude, through the follow turn and camera
   offset the 2:1 desktop output already uses (`followCamera` in
   `src/output/equirectRtt.ts`), so the sphere stays upright and any
