@@ -299,4 +299,5 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 - `src/styles/embed.css` — the chrome-hiding rules `embed=1` switches on
 - `src/output/webMode.ts` — the output page's reader; `webOutput.ts` — how it is applied; `webDataset.ts` — the dataset fetch; `webClock.ts` — the shared clock
 - `scripts/second-life-probe/terraviz-globe.lsl` — an in-world composer of output-page addresses, and of a main-app `/?dataset=` link for visitors. Its `globe.test.ts` fails if a key it writes is renamed or removed, or stops accepting a value the script writes; a change in what a value does is not caught there
+- `scripts/second-life-exhibit/terraviz-exhibit.lsl` — the exhibit's globe script, composing the same output-page addresses with a copy of the smoke-test script's code, held to the page by the same `globe.test.ts`, which likewise doesn't catch a change in what a value does. Its `terraviz-exhibit-info.lsl` gives visitors a main-app `/dataset/<slug>` link, or `/dataset/<id>` for a slug `src/utils/datasetUrl.ts` wouldn't emit
 - [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7 — why the output page takes these parameters

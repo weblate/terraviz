@@ -820,7 +820,21 @@ The work, smallest first:
        (`functions/api/v1/_lib/hls-duration.ts`), and 0 still means
        unknown (`CATALOG_BACKEND_PLAN.md` beside the manifest's shape).
        Hurricane Season 2024 reads 183 s, the same on all three
-       renditions. `vimeo:` already carried Vimeo's figure. `stream:`
+       renditions. `vimeo:` already carried Vimeo's figure, which is
+       whole seconds and so not quite the stream's: 12 for the
+       real-time sea surface temperature's 12.1 s
+       (`CATALOG_BACKEND_PLAN.md` says so beside the manifest). Every
+       copy of the page plays the `hls` stream and loops on its length,
+       so a date worked out from Vimeo's drifts from the picture with
+       every loop, months on a year-long clip after a few minutes. The
+       controller therefore shows those datasets' range. Only the node
+       knows a row is `vimeo:`, so the controller trusts a length only
+       from a manifest carrying the dataset's own id, which the node
+       writes into every manifest it builds and passes Vimeo's own id
+       through on the rest. The fix belongs on the node: report 0
+       for `vimeo:`, or sum the Vimeo playlist as `hls-duration.ts`
+       sums the node's own, which would give those datasets a moving
+       date. `stream:`
        and single files still report 0, and any reading can be 0 for
        a moment when the bucket is slow, which the manifest caches for
        15 s rather than five minutes;
@@ -839,7 +853,13 @@ The work, smallest first:
      which answers a touch in chat, shows whether it arrived.
    - **The hover text holds 254 bytes**, shared by the title, the date,
      the credit and any telemetry notice. Phase 2 needs a fixed order
-     for them and a rule for shortening.
+     for them and a rule for shortening. *Set in the controller:* the
+     notice comes first, under the globe's name, then the title, the
+     date and the credit, then a talk if one is on and how to touch the
+     globe. Only the title and the credit are ever cut, sharing what the
+     rest leave, so the notice never is: the title keeps at least 32
+     bytes and the credit 48 where both fit, and the title's come first
+     where they don't, as behind a preview node's longer address.
 
    **What that means for the design.** The first version of this item
    had each copy work out its position from the time of day. That only
@@ -1494,20 +1514,147 @@ beside it. The manifest gains a clip duration for the date (*built for
 the node's own HLS bundles*), and the slow-link work is two page PRs
 beside it (§7 item 4).
 It is the in-world half of Phase 1.
-*A smoke-test script exists, not the controller.*
-[`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe)
-does the recipe, the media, the spin, pause, jump, rate, rotation and
-dataset switching. It is driven by its owner in chat, with
-non-interactive media. It has no presenter list, no controls visitors
-can touch, and no automatic return to the live Earth after the last
-visitor leaves (`/8 earth` is the owner's, by hand). The questions those
-waited on were decided on 24 October (§7 item 4).
+*Written, and not yet run in-world.* The controller is the three scripts
+in [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md),
+whose README carries the in-world checklist, the left-click test among
+it. LSL compiles only in-world, so what has been checked is its syntax
+(lslint), its date arithmetic against the calendar for every day from
+year 1 to 2100, and, by tests, that its scripts agree with each other,
+with the output page and with the node's serializer. How much of a
+record it can read rests on one measurement of the node's records, in
+October. The smoke-test script,
+[`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
+stays for testing the page by hand: it does the recipe and the media,
+driven by its owner in chat, with none of the visitor controls.
+
+*How the controller is built* (in
+[`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md)):
+- **Three scripts in the globe prim, talking by link messages.** A
+  script gets 64 KB in all, and a dataset record costs about 1.8 bytes
+  of it per character while held (§4.1). One script doing everything
+  would hold a record while it also holds menus, notecards and visitor
+  lists, so the work is split three ways:
+  - **globe** owns the address, the clock and the media. It is the
+    smoke-test script's core, unchanged in what it writes, and it is
+    the only script that changes what visitors see. It takes the
+    owner's chat commands, as before, and control requests from the
+    visitors script. After every change it tells the other two what
+    the globe now shows.
+  - **visitors** owns people. It turns touches into menus, keeps the
+    presenter list, runs talks and the short hold, watches who is at
+    the globe, and asks the globe to go back to the live Earth once
+    the last visitor has been gone for the idle time.
+  - **info** owns what the globe says about itself. It reads the
+    record and the manifest for each dataset. From them it keeps the
+    hover text (any telemetry notice, the title, the date and a short
+    credit, in that fixed order, in 254 bytes: §7 item 4 has the
+    shortening rule). It also gives the abstract and full credit on
+    request.
+- **What visitors can do.** A touch opens a menu for whoever touched.
+  "About" is always there, since reading changes nothing. The
+  controls are pause or play, back and forward ten seconds, start
+  over, a dataset, the live Earth, and a Turn menu (added on 25
+  October). Turn east and Turn west turn the picture 30° about the
+  poles: east is the way the Earth turns, so the places facing a
+  visitor move to their right. South Pole to me and North Pole to me
+  tip the sphere itself 30° a press so that pole comes round toward
+  whoever pressed, until it faces them, so a presenter can put the
+  ozone hole on the equator in front of their audience; Upright again
+  undoes it. A tilt is the prim's rotation, which the region sends
+  every viewer, so all see one angle. **The tilt is a stopgap**, kept
+  on 25 October because it works now: it is to come out when Phase 4's
+  page camera lands (§7 item 7), which turns the picture to bring a
+  pole to the front with the sphere upright and zoom alongside, since a
+  tipped sphere under a turned picture would compound into angles
+  nobody chose. Whether walk-up visitors come to prefer a globe that
+  aims at them is the one thing worth weighing then. The controls are
+  offered when that
+  visitor may act: outside a talk, nobody else holds the globe;
+  during one, they are a presenter. A hold ends when it runs out or
+  when its holder leaves the globe. Presenters also get "Start talk"
+  and "End talk", and "Jump to", which takes a time. A presenter can
+  start a talk whoever holds the globe. A visitor
+  doesn't change the rate, the width or the telemetry, which stay the
+  owner's, in chat. Nor does a turn change the owner's rotation: that
+  is where the globe goes back to, upright and with the live Earth,
+  once the last visitor has gone.
+- **Notecards in the globe, all optional, re-read when they change:**
+  - `presenters`: one username a line. A legacy name such as "Eric
+    Hackathorn" is read as its username. A display name never is.
+  - `datasets`: the menu, one `Name = id` a line. Without it the menu
+    offers the smoke-test script's five.
+  - `settings`: the four numbers, as `name = value` lines:
+    - `radius`: the distance that counts as at the globe, in metres
+      (15);
+    - `idle minutes`: how long after the last visitor leaves before
+      the live Earth comes back (5);
+    - `hold seconds`: how long the short hold lasts after a visitor's
+      last action (60);
+    - `talk minutes`: how long with no presenter at the globe before a
+      talk ends (2).
+  - a notecard named by a dataset's id, given to a visitor who asks
+    about that dataset in place of the chat abstract.
+- **Who is at the globe** comes from the region's avatar list and each
+  avatar's distance from the globe's surface, every five seconds. That costs less than a sensor
+  and isn't capped at 16 avatars. Nothing about a visitor leaves the
+  object: no name or key reaches the node.
+- **Left out for now:** a stand beside the globe for left-clicks. It
+  waits on the left-click test, and until then visitors right-click
+  and choose Touch, which the viewer's source says always reaches the
+  script. Rate control for visitors is also left out.
+- **For later: a drag handle, to turn the globe with the mouse.** A
+  drag on the globe itself can't reach a script: a left-click on a
+  face showing media goes to the media, and Touch from the right-click
+  menu is a single touch. A ring or stand linked to the globe, showing
+  no media, can feel a drag, since `touch` repeats while the button is
+  held and `llDetectedTouchST` says where the pointer is on the
+  surface. There are two ways to turn from it:
+  - **The sphere prim itself**, through its local rotation
+    (`llSetLinkPrimitiveParamsFast` with `PRIM_ROT_LOCAL`) so the
+    handle doesn't turn with it. The region sends the rotation to
+    every viewer, so all see one angle. The menu's pole buttons already
+    tip the sphere this way, ending any `/9 spin` first, since
+    `llTargetOmega` is drawn by each viewer for itself; a handle would
+    drag the same rotation smoothly instead of in 30° steps.
+  - **The address's `rotation`**, as the turn buttons use. Every viewer
+    applies it after the `#` with no reload, but the globe script
+    sleeps a second after each media change, so a drag would move in
+    one-second steps.
+
+  The first follows the hand more closely, and the second keeps the
+  picture's own longitude as the one thing turned. Either way, a
+  drag goes through the visitors script's hold and talk rules like
+  any other control. Until then, the Turn menu does the job in steps.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.
 
 **Phase 4 — live zoom, and bringing a place to the front** (§7 item 7),
-designed on whatever the `#` test found.
+designed on whatever the `#` test found. Firestorm applies a change
+after the `#` without a reload, so the view can change live. The shape
+proposed on 25 October, after the Phase 2 controller's menu turned out
+clunky for presenting:
+- **The camera on the page.** The output page takes `lat`, `lon` and
+  `zoom` after the `#`, through the follow turn and camera offset the
+  2:1 desktop output already uses (`followCamera` in
+  `src/output/equirectRtt.ts`), so the sphere stays upright and any
+  place, a pole included, comes to the front. The page eases from one
+  view to the next, so the globe script's once-a-second address changes
+  look like motion. This is a change to the URL grammar, so it is its
+  own pull request, with the Federation review and a check of the
+  WordPress plugin.
+- **Menu buttons on it.** "Pole to front" and zoom in and out, beside
+  Turn east and Turn west, all moving that one camera. The Phase 2
+  tilt comes out then.
+- **A presenter remote.** A TerraViz globe the presenter drags and
+  zooms like the app, opened from a private link the globe gives them,
+  in their own browser, the viewer's built-in one or a HUD. It sends its
+  view straight to the globe's own HTTP-in address, with a one-time
+  code from the link, and the globe script applies the hold and talk
+  rules and writes the address at most once a second. Before building
+  it, a probe settles whether a page in the viewer's browser can reach
+  that address and whether the viewer's browser runs the full app; if
+  not, the remote goes through the node instead.
 
 Options B and D only if a host needs what they uniquely offer: phones
 or no-browser exhibits for B, a self-hosted world for D.

@@ -79,6 +79,25 @@ SCHEMA_BASE_URL=https://terraviz.example.org/schema/v1 npm run gen:protocol-sche
   of the JSON keeps the artifact small and stable (a comment edit
   doesn't churn the contract).
 - **Deterministic output (`sortProps`)** so the drift diff is stable.
+  That orders the *schema's* properties, not the wire's.
+- **Key order, whitespace and byte offsets on the wire are not part of
+  the contract.** A consumer parses the JSON; a producer that orders
+  keys differently is conformant. Promising an order would make every
+  new field a contract decision for every producer. Three LSL scripts
+  in Second Life are **not conformant readers**, and are supported only
+  against a node running this codebase's serializer: they can afford
+  only the start of a record, so they read by position. The two globe
+  scripts read `id`, `slug`, `title` and `format` from the first 2,048
+  bytes, and the exhibit's info script reads its text and time fields
+  from before `createdAt`, within the first 9,000, and a video
+  manifest's `duration` and `hls` from before its `files`, within the
+  first 4,096. Pointed at a node that orders keys differently, they
+  can miss fields.
+  [`dataset-serializer.test.ts`](../../functions/api/v1/_lib/dataset-serializer.test.ts)
+  and
+  [`exhibit.test.ts`](../../scripts/second-life-exhibit/exhibit.test.ts)
+  pin the record's order, so a reorder fails a test rather than a
+  globe; the manifest's is not pinned.
 
 ## Versioning
 
