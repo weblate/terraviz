@@ -151,8 +151,8 @@ period: the year for a yearly dataset, the month for a monthly one, the
 time in UTC for one updated more often than daily, and the day
 otherwise. A dataset with a frame a day, a month or a year (a period of
 `P1D`, `P1M` or `P1Y`) is counted in frames: one per period from the
-start to the end, evenly through the clip, as the app's own frame
-arithmetic places them, so the label changes with the frame. Any other
+start to the end, evenly through the clip, the first at the start and
+the last at the end, so the label changes with the frame. Any other
 is the start plus the share of its span played, the arithmetic of the
 app's own label. Until the node has said how long the clip is, and for
 an image, it shows the dataset's range instead. So does a video hosted

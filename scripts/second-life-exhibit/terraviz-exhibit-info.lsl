@@ -42,8 +42,8 @@
 // app shows the day, or for a period under a day the time, in the
 // viewer's time zone. A day,
 // month or year a frame (P1D, P1M, P1Y) is counted in frames: the clip
-// holds one per period, evenly, as the app's calculateFrameDatetime places
-// them, so the label is the frame's own.
+// holds one per period, the first at the start and the last at the end,
+// so the label is the frame's own.
 // A video on Vimeo shows its range: Vimeo gives its length in whole
 // seconds, the page loops on the stream's own, and a date worked out
 // from the first drifts from the picture with every loop. Only the node
@@ -80,6 +80,9 @@ float   TICK = 2.0;            // how often a playing clip's date is worked out 
 integer MIN_CREDIT = 48;       // bytes the credit keeps when the hover text is full
 integer MIN_TITLE = 32;        // bytes the title keeps, first, when there isn't room for both
 string  TAG_START = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/!";
+// Tags a browser runs into the words beside them, as in "CO<sub>2</sub>"
+// or "Center</a>, USGS"; any other tag stands for a break.
+list    INLINE = ["a", "abbr", "b", "big", "code", "em", "font", "i", "small", "span", "strong", "sub", "sup", "u"];
 
 string  LIVE_LINE = "The live Earth: today's clouds and the real day and night";
 string  LIVE_CREDIT = "Credit: NASA Blue Marble, Black Marble";
@@ -304,9 +307,8 @@ string date()
         if (gFrames)
         {
             // A day, month or year a frame: the clip holds one per whole
-            // period from the start to the end, evenly, as the app's
-            // calculateFrameDatetime places them, so the label is the
-            // frame's own and changes with it.
+            // period, evenly, the first at the start and the last at the
+            // end, so the label is the frame's own and changes with it.
             integer sd = llList2Integer(a, 2);
             integer ed = llList2Integer(e, 2);
             integer ad = sd;
@@ -522,7 +524,9 @@ string plain(string s)
             if (b == -1) s = "";
             else
             {
-                out += " ";
+                string name = llToLower(llList2String(llParseString2List(llGetSubString(s, a + 1, a + b - 1),
+                    [" ", "\n", "/"], []), 0));
+                if (llListFindList(INLINE, [name]) == -1) out += " ";
                 s = llDeleteSubString(s, 0, a + b);
             }
         }
@@ -539,8 +543,6 @@ string plain(string s)
     s = llReplaceSubString(s, "&amp;", "&", 0);
     s = llReplaceSubString(s, "\t", " ", 0);
     while (llSubStringIndex(s, "  ") != -1) s = llReplaceSubString(s, "  ", " ", 0);
-    // A tag turned to a space can leave one before a comma or full stop.
-    s = llReplaceSubString(llReplaceSubString(s, " ,", ",", 0), " .", ".", 0);
     return llStringTrim(s, STRING_TRIM);
 }
 

@@ -526,6 +526,7 @@ integer check(key who, string id, string described)
         // Any earlier show still waiting is dropped too, or it would land
         // after whoever asked was told to try again.
         gReq = NULL_KEY;
+        gReqWho = NULL_KEY;
         tell(who, "The globe is busy. Try again in a minute.");
         if (who != llGetOwner()) llOwnerSay("[exhibit] Second Life is limiting this object's web requests.");
         return FALSE;
