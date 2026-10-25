@@ -603,8 +603,8 @@ act(key who, integer owner, string msg)
     }
     // "rest" is the visitors script's own return, once nobody has been at
     // the globe for a while: the live Earth, turned back to the owner's
-    // rotation.
-    if (cmd == "earth" || cmd == "rest")
+    // rotation. Only the scripts send it, with no key.
+    if (cmd == "earth" || (cmd == "rest" && who == NULL_KEY))
     {
         gDataset = "";
         gTitle = "";
@@ -612,6 +612,7 @@ act(key who, integer owner, string msg)
         if (cmd == "rest") { gRotation = gHome; if (gTilted) level(); }
         if (!commit(saved)) { tell(who, "The globe couldn't change just now."); return; }
         gReq = NULL_KEY;   // a show still waiting on the node is overtaken
+        gReqWho = NULL_KEY;
         tell(who, "Back to the live Earth.");
         return;
     }
@@ -728,9 +729,12 @@ act(key who, integer owner, string msg)
             tell(who, "Rotation in degrees east, from -3600 to 3600, like 90 or -75.");
             return;
         }
+        // Home first, since commit() tells the other scripts whether the
+        // globe is turned from it.
+        float home = gHome;
         gRotation = degrees((float)arg);
-        if (!commit(saved)) return;
         gHome = gRotation;
+        if (!commit(saved)) { gHome = home; return; }
         tell(who, num(gRotation) + " degrees east is at the centre of the picture.");
         return;
     }
@@ -882,9 +886,12 @@ default
     {
         if (id != gReq) return;   // overtaken by a later show, or by earth
         gReq = NULL_KEY;
+        // Who asked is kept only until the node answers.
+        key who = gReqWho;
+        gReqWho = NULL_KEY;
         if (status == 404)
         {
-            refused(gReqWho, gReqId, "The node has no dataset " + gReqId + ".");
+            refused(who, gReqId, "The node has no dataset " + gReqId + ".");
             return;
         }
         string title = "";
@@ -913,7 +920,7 @@ default
                     string kind = "is in the format \"" + format + "\"";
                     if (format == "") kind = "has no format";
                     if (llSubStringIndex(format, "tour/") == 0) kind = "is a tour, which drives the full app";
-                    refused(gReqWho, gReqId, gReqId + " " + kind + ". A globe shows only images and videos.");
+                    refused(who, gReqId, gReqId + " " + kind + ". A globe shows only images and videos.");
                     return;
                 }
             }
@@ -925,6 +932,6 @@ default
             llOwnerSay("[exhibit] Couldn't check " + gReqId + " with the node (HTTP " + (string)status + "). "
                 + "Showing it anyway. If it won't load, every visitor's globe shows the live Earth.");
         if (title == "") title = gReqTitle;
-        show(gReqWho, gReqId, title);
+        show(who, gReqId, title);
     }
 }

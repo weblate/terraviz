@@ -827,10 +827,11 @@ The work, smallest first:
        copy of the page plays the `hls` stream and loops on its length,
        so a date worked out from Vimeo's drifts from the picture with
        every loop, months on a year-long clip after a few minutes. The
-       controller therefore shows those datasets' range. It knows one
-       by a `player.vimeo.com` address in the manifest, since only the
-       node knows a row is `vimeo:`, so a proxy that rewrote that
-       address would defeat it. The fix belongs on the node: report 0
+       controller therefore shows those datasets' range. Only the node
+       knows a row is `vimeo:`, so the controller trusts a length only
+       from a manifest carrying the dataset's own id, which the node
+       writes into every manifest it builds and passes Vimeo's own id
+       through on the rest. The fix belongs on the node: report 0
        for `vimeo:`, or sum the Vimeo playlist as `hls-duration.ts`
        sums the node's own, which would give those datasets a moving
        date. `stream:`

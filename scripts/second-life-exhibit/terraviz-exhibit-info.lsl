@@ -21,7 +21,7 @@
 //     the date: exact when paused, every couple of seconds while playing,
 //       and the dataset's range when the clip's length isn't known
 //     a short credit, such as "Credit: NOAA · CC-BY-4.0"
-//     "A talk is in progress", during one
+//     "Talk in progress", during one
 //     how to touch the globe
 //   Hover text holds 254 bytes. The title and the credit share what the
 //   other lines leave, the title keeping at least 32 bytes and the credit
@@ -41,15 +41,15 @@
 // with a period under a day, and the day for the rest, all in UTC. The
 // app shows the day, or for a period under a day the time, in the
 // viewer's time zone. A day,
-// month or year is counted from the start's own, so on data stamped at
-// noon the day changes with the frame rather than at midnight between.
+// month or year a frame (P1D, P1M, P1Y) is counted in frames: the clip
+// holds one per period, evenly, as the app's calculateFrameDatetime places
+// them, so the label is the frame's own.
 // A video on Vimeo shows its range: Vimeo gives its length in whole
 // seconds, the page loops on the stream's own, and a date worked out
 // from the first drifts from the picture with every loop. Only the node
-// knows a dataset is on Vimeo; this script recognises one by a
-// player.vimeo.com address anywhere in its manifest. A node whose proxy
-// rewrote that address would be missed, and its Vimeo datasets' dates
-// would drift.
+// knows a dataset is on Vimeo, so this script trusts a length only from a
+// manifest carrying the dataset's own id, which the node writes into
+// every manifest it builds and Vimeo's don't carry.
 //
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
@@ -85,7 +85,7 @@ string  LIVE_LINE = "The live Earth: today's clouds and the real day and night";
 string  LIVE_CREDIT = "Credit: NASA Blue Marble, Black Marble";
 string  LIVE_ABOUT = "The live Earth: NASA's Blue Marble by day and its Black Marble city lights at night, under today's clouds, lit by the Sun as it stands right now. The globe rests on it when nobody has chosen a dataset.";
 string  TOUCH_LINE = "Right-click, Touch for more";
-string  TALK_LINE = "A talk is in progress";
+string  TALK_LINE = "Talk in progress";
 
 list    MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 integer RES_DAY = 0;
@@ -117,6 +117,7 @@ integer gEndDay;
 integer gEndSec;
 integer gRes;
 integer gSnapS;        // a sub-daily period in seconds, or 0
+integer gFrames;       // the period is a single day, month or year (P1D, P1M, P1Y)
 float   gDuration;     // the clip's length in seconds, 0 while unknown
 string  gWho;
 string  gSpdx;
@@ -135,6 +136,7 @@ integer gRetryAt;
 
 string  gShown;        // the hover text as last set
 integer gPeak;         // the most memory used reading a record
+string  gWarned;       // the dataset whose notecard the owner was last warned about
 key     gLastAbout;
 integer gLastAboutAt;
 
@@ -274,6 +276,15 @@ float position()
 
 // The date on the globe now, or the dataset's range when the clip's
 // length isn't known, as for an image.
+// The days in a month, for a month's anniversary that it lacks: the 31st
+// of a monthly series falls on the 28th, 29th or 30th where there is no
+// 31st.
+integer monthDays(integer y, integer m)
+{
+    if (m == 12) return days(y + 1, 1, 1) - days(y, 12, 1);
+    return days(y, m + 1, 1) - days(y, m, 1);
+}
+
 string date()
 {
     if (!gDated) return "";
@@ -282,20 +293,46 @@ string date()
     if (f < 0.0) f = 0.0;
     if (f > 1.0) f = 1.0;
     float into = f * ((float)(gEndDay - gStartDay) * 86400.0 + (float)(gEndSec - gStartSec));
-    // Days, months and years count from the start's own, with a hair of
-    // slack so a frame landed on exactly isn't read as the one before.
-    if (gRes == RES_DAY) return when(gStartDay + llFloor(into / 86400.0 + 0.0001), 0);
-    list a = civil(gStartDay);
-    list b = civil(gEndDay);
-    integer sy = llList2Integer(a, 0);
-    if (gRes == RES_YEAR)
-        return (string)(sy + llFloor(f * (float)(llList2Integer(b, 0) - sy) + 0.0001));
-    if (gRes == RES_MONTH)
+    if (gRes != RES_TIME)
     {
-        integer m0 = sy * 12 + llList2Integer(a, 1) - 1;
-        integer months = llList2Integer(b, 0) * 12 + llList2Integer(b, 1) - 1 - m0;
-        m0 += llFloor(f * (float)months + 0.0001);
-        return llList2String(MONTHS, m0 % 12) + " " + (string)(m0 / 12);
+        list a = civil(gStartDay);
+        list e = civil(gEndDay);
+        integer sy = llList2Integer(a, 0);
+        integer sm = llList2Integer(a, 1);
+        integer ey = llList2Integer(e, 0);
+        integer em = llList2Integer(e, 1);
+        if (gFrames)
+        {
+            // A day, month or year a frame: the clip holds one per whole
+            // period from the start to the end, evenly, as the app's
+            // calculateFrameDatetime places them, so the label is the
+            // frame's own and changes with it.
+            integer sd = llList2Integer(a, 2);
+            integer ed = llList2Integer(e, 2);
+            integer ad = sd;
+            integer n;
+            if (gRes == RES_DAY) n = gEndDay - gStartDay - (gEndSec < gStartSec);
+            else
+            {
+                if (ad > monthDays(ey, em)) ad = monthDays(ey, em);
+                integer short = ed < ad || (ed == ad && gEndSec < gStartSec);
+                if (gRes == RES_MONTH) n = ey * 12 + em - sy * 12 - sm - short;
+                else n = ey - sy - (em < sm || (em == sm && short));
+            }
+            if (n < 0) n = 0;
+            integer k = llFloor(f * (float)(n + 1));
+            if (k > n) k = n;
+            if (gRes == RES_DAY) return when(gStartDay + k, gStartSec);
+            if (gRes == RES_YEAR) return (string)(sy + k);
+            integer m = sy * 12 + sm - 1 + k;
+            return llList2String(MONTHS, m % 12) + " " + (string)(m / 12);
+        }
+        // Otherwise the app's arithmetic: the moment that share of the span
+        // in, shown to the day, month or year it falls in.
+        float at = (float)gStartSec + into;
+        integer d = gStartDay + llFloor(at / 86400.0);
+        if (d > gEndDay) d = gEndDay;
+        return when(d, 0);
     }
     float off = (float)gStartSec + into;
     integer dd = llFloor(off / 86400.0);
@@ -372,6 +409,7 @@ hover()
         if (keepC > MIN_CREDIT) keepC = MIN_CREDIT;
         integer keepT = avail - keepC;
         if (keepT < MIN_TITLE) keepT = MIN_TITLE;
+        if (keepT > avail) keepT = avail;
         if (keepT > t) keepT = t;
         title = fit(title, keepT);
         credit = fit(credit, avail - bytes(title));
@@ -501,6 +539,8 @@ string plain(string s)
     s = llReplaceSubString(s, "&amp;", "&", 0);
     s = llReplaceSubString(s, "\t", " ", 0);
     while (llSubStringIndex(s, "  ") != -1) s = llReplaceSubString(s, "  ", " ", 0);
+    // A tag turned to a space can leave one before a comma or full stop.
+    s = llReplaceSubString(llReplaceSubString(s, " ,", ",", 0), " .", ".", 0);
     return llStringTrim(s, STRING_TRIM);
 }
 
@@ -549,7 +589,9 @@ record(string body)
         gEndDay = llList2Integer(b, 0); gEndSec = llList2Integer(b, 1);
         if (gEndDay < gStartDay || (gEndDay == gStartDay && gEndSec < gStartSec)) gDated = FALSE;
     }
-    period(field(body, stop, "period", 40));
+    string p = field(body, stop, "period", 40);
+    period(p);
+    gFrames = p == "P1D" || p == "P1M" || p == "P1Y";
     gHaveRec = TRUE;
 }
 
@@ -597,15 +639,19 @@ about(key av)
     {
         // Without copy it would move to the first visitor, and without
         // transfer it can't be given at all.
+        // The owner needs no transfer permission to be given their own.
         integer perms = llGetInventoryPermMask(gDataset, MASK_OWNER);
-        if ((perms & PERM_COPY) && (perms & PERM_TRANSFER))
+        if ((perms & PERM_COPY) && ((perms & PERM_TRANSFER) || av == llGetOwner()))
         {
             llRegionSayTo(av, 0, "Here is a notecard about " + gTitle + ".");
             llGiveInventory(av, gDataset);
             return;
         }
-        llOwnerSay("[exhibit] The notecard " + gDataset + " needs copy and transfer permission to be given. "
-            + "The visitor got the chat version instead.");
+        // Once a dataset, or a busy exhibit would fill the owner's chat.
+        if (gWarned != gDataset)
+            llOwnerSay("[exhibit] The notecard " + gDataset + " needs copy and transfer permission to be given. "
+                + "Visitors get the chat version instead.");
+        gWarned = gDataset;
     }
     string link = gNode + "/dataset/" + gDataset;
     if (gFor != gDataset || !gHaveRec)
@@ -633,6 +679,7 @@ forget()
     gVideo = FALSE;
     gDated = FALSE;
     gDuration = 0.0;
+    gFrames = FALSE;
     gRef = gDataset;
     gWho = ""; gSpdx = ""; gLicUrl = ""; gStatement = ""; gAbstract = "";
     gCut = FALSE;
@@ -705,11 +752,22 @@ default
             integer i = llSubStringIndex(body, "\"duration\":");
             if (status == 200 && i != -1) gDuration = (float)llGetSubString(body, i + 11, i + 40);
             if (gDuration < 0.0) gDuration = 0.0;
-            // Vimeo's length is whole seconds and the file's isn't (12 for
-            // a clip of 12.1 s), so a date from it drifts with every loop
-            // the page plays: unknown, and the range shows, which the
-            // plan's fallback for an unknown length is.
-            if (llSubStringIndex(body, "player.vimeo.com/") != -1) { gDuration = 0.0; gManTries = 4; }
+            // Only a length the node read from its own bundle is exact. A
+            // manifest it passes on from Vimeo carries Vimeo's own id, and
+            // Vimeo's length in whole seconds (12 for a clip of 12.1 s),
+            // from which a date drifts with every loop the page plays: so
+            // unknown, and the range shows. Any mention of Vimeo counts
+            // too, as a second guard; a false alarm only shows the range.
+            string mid = "";
+            integer j = llSubStringIndex(body, "\"id\":\"");
+            if (j != -1)
+            {
+                mid = llGetSubString(body, j + 6, j + 140);
+                integer q = llSubStringIndex(mid, "\"");
+                if (q > 0) mid = llGetSubString(mid, 0, q - 1);
+                else mid = "";
+            }
+            if (mid != gDataset || llSubStringIndex(llToLower(body), "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }
             // A length of 0 is unknown, and can be the node's for a moment
             // while its bucket is slow, which it keeps for 15 s: so ask again,
             // then show the range.

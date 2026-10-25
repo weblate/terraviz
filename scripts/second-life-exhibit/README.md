@@ -132,7 +132,7 @@ Counts anonymous use: https://terraviz.zyra-project.org/privacy   (only with tel
 Earthquakes - 2001-2015
 14 Sep 2004
 Credit: NOAA Pacific Tsunami Warning Center, USGS National Earthquake Information Cent...
-A talk is in progress                                              (only during one)
+Talk in progress                                                   (only during one)
 Right-click, Touch for more
 ```
 
@@ -144,20 +144,24 @@ it must be: above, with both optional lines showing, the credit loses
 its end. Nothing else is ever cut, so the telemetry notice can't be
 lost.
 
-The date is the dataset's start time plus the share of its span the
-animation has played, the same arithmetic as the app's. It is exact when paused
-and updated every couple of seconds while playing. It shows to the
-dataset's period: the year for a yearly dataset, the month for a monthly
-one, the time in UTC for one updated more often than daily, and the day
-otherwise. Each is counted from the dataset's own start, so on data
-stamped at noon the day changes with the frame rather than at midnight
-in between. Until the node has said how long the clip is, and for an
-image, it shows the dataset's range instead. So does a video hosted on
-Vimeo, such as Sea temperature: the node gives its length in whole
+The date is worked out from the dataset's start and end times and the
+point the animation has reached. It is exact when paused and updated
+every couple of seconds while playing. It shows to the dataset's
+period: the year for a yearly dataset, the month for a monthly one, the
+time in UTC for one updated more often than daily, and the day
+otherwise. A dataset with a frame a day, a month or a year (a period of
+`P1D`, `P1M` or `P1Y`) is counted in frames: one per period from the
+start to the end, evenly through the clip, as the app's own frame
+arithmetic places them, so the label changes with the frame. Any other
+is the start plus the share of its span played, the arithmetic of the
+app's own label. Until the node has said how long the clip is, and for
+an image, it shows the dataset's range instead. So does a video hosted
+on Vimeo, such as Sea temperature: the node gives its length in whole
 seconds, which isn't quite the stream's, and a date worked out from it
-would drift from the picture with every loop. The script knows one by
-a `player.vimeo.com` address in its manifest; a node whose video proxy
-rewrites that address would get a drifting date instead.
+would drift from the picture with every loop. Only the node knows a
+dataset is on Vimeo; the script trusts a length only from a manifest
+carrying the dataset's own id, which the node writes into every
+manifest it builds and Vimeo's don't carry.
 
 The credit is the record's attribution, or else its rights holder, or
 else its organization, with the licence after it. A record that names
@@ -275,9 +279,12 @@ region's avatar list every five seconds and keeps only how many are
 near and when someone last was. It knows the holder by key, and by
 display name to tell others who has the globe, only while the hold
 lasts, and anyone with a menu open by key, for the five minutes the
-menu answers. The info script keeps the key of the last visitor who
-asked for "About", so a double press is answered once, and tells a
-visitor about a dataset in their own chat, which no one else sees.
+menu answers. The globe script knows the key of a visitor whose choice
+of dataset the node is checking, until the node answers, so it can
+tell them if it was refused. The info script keeps the key of the last
+visitor who asked for "About", so a double press is answered once, and
+tells a visitor about a dataset in their own chat, which no one else
+sees. A tilt reads the position of whoever asked, once, to aim at them.
 Nothing is kept across a reset.
 
 What each visitor's viewer loads is the output page, from the node, like

@@ -123,7 +123,11 @@ describe('second-life exhibit scripts', () => {
     expect(visitors).toContain('else if (msg == BTN_WEST) ask(who, "turn -" + (string)TURN);')
     // The owner's rotation is home, and the scripts' own return goes back
     // to it, even on a live Earth a visitor only turned.
-    expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(/gHome = gRotation;/)
+    // Home is set before commit(), which tells the other scripts whether
+    // the globe is turned from it.
+    const rotation = act.slice(act.indexOf('if (cmd == "rotation")'))
+    expect(rotation.indexOf('gHome = gRotation;')).toBeGreaterThan(-1)
+    expect(rotation.indexOf('gHome = gRotation;')).toBeLessThan(rotation.indexOf('commit(saved)'))
     expect(act).toContain('if (cmd == "rest") { gRotation = gHome; if (gTilted) level(); }')
     expect(body(visitors, 'check()')).toContain('(gDataset != "" || gTurned)')
   })
@@ -149,6 +153,17 @@ describe('second-life exhibit scripts', () => {
     expect(visitors).toContain('else if (msg == BTN_SOUTH) ask(who, "tilt south");')
     expect(visitors).toContain('else if (msg == BTN_NORTH) ask(who, "tilt north");')
     expect(visitors).toContain('else if (msg == BTN_LEVEL) ask(who, "level");')
+  })
+
+  it("trust a clip's length only from a manifest the node built itself", () => {
+    // A Vimeo manifest carries Vimeo's own id and whole-second length,
+    // which the page's loop drifts from; the node writes the dataset's id
+    // into every manifest it builds (functions/api/v1/datasets/[id]/manifest.ts).
+    expect(info).toContain('if (mid != gDataset || llSubStringIndex(llToLower(body), "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }')
+    const manifest = read('../../functions/api/v1/datasets/[id]/manifest.ts')
+    expect(manifest.match(/^\s+id: row\.id,$/gm)?.length).toBeGreaterThanOrEqual(2)
+    expect(manifest).toMatch(/externalVideoManifest\(row\.id,/)
+    expect(manifest).toMatch(/^\s+id: data\.id,$/m)
   })
 
   it('label every button within the 24 bytes a menu allows', () => {
@@ -269,7 +284,8 @@ describe('second-life exhibit scripts', () => {
     const preview = `https://${'a'.repeat(28)}.terraviz.pages.dev`
     const production = JSON.parse(constant(globe, 'string', 'NODE')) as string
     const end = `\n${string('TALK_LINE')}\n${string('TOUCH_LINE')}`
-    const range = '\n30 Sep 2012, 12:00 to 1 Oct 2012, 11:35 UTC'
+    // Two-digit days on both sides, the widest when() writes.
+    const range = '\n30 Sep 2012, 12:00 to 30 Oct 2012, 11:35 UTC'
     expect(body(info, 'string range()')).toContain('if (gRes == RES_TIME) a = llGetSubString(a, 0, -5);')
     const minTitle = Number(constant(info, 'integer', 'MIN_TITLE'))
     const minCredit = Number(constant(info, 'integer', 'MIN_CREDIT'))

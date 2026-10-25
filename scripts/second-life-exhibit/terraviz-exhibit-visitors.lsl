@@ -221,6 +221,10 @@ hold(key who)
 ask(key who, string cmd)
 {
     hold(who);
+    // The idle clock starts again now, not only when the globe answers: a
+    // check landing in between would otherwise undo the choice.
+    gLastSeen = unix();
+    gIdleSent = FALSE;
     llMessageLinked(LINK_THIS, MSG_CONTROL, cmd, who);
 }
 
@@ -246,7 +250,9 @@ string fit(string s, integer max)
     return s;
 }
 
-string label(string name) { return fit(name, 24); }
+// Trimmed after the cut, so a name cut at a space matches what a viewer
+// that trims its buttons sends back.
+string label(string name) { return llStringTrim(fit(name, 24), STRING_TRIM); }
 
 // A menu draws its buttons from the bottom row up. These are in reading
 // order, so the rows go in reversed, with the odd ones out on top.
