@@ -388,6 +388,11 @@ each avatar used, and what steps 2 and 9 showed.
   So only the info script asks the node anything, the globe script
   shows a choice without checking it first, and the info script reads
   only the first 3 KB of a record and copies as little of it as it can.
+  With those changes, `/9 memory` read in-world: the globe script 54 KB,
+  and at most 57 while showing a dataset; the info script 55, and at
+  most 58 while reading a record or answering About; the visitors script
+  49. That leaves about 6 KB at each script's busiest, so code added to
+  any of them needs measuring again.
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or a tour, is in every visitor's
   page address, and the page shows the live Earth while it fails. With

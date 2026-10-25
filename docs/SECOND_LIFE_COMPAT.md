@@ -1552,9 +1552,11 @@ the globe script stopped after showing a dataset, at 62 KB at rest, and
 once that was fixed the info script stopped in its turn, at about 50.
 Both are fixed (#501): the globe script asks the node nothing, and the
 info script copies as little as it can while it reads. The maintainer
-then used the exhibit for a while with no further stop, but the
-checklist has not been run in full, and the scripts' peak memory has not
-yet been measured. Beyond that run, what has been checked is the
+then used the exhibit for a while with no further stop, and `/9 memory`
+read the globe script at 54 KB (57 at most, showing a dataset), the info
+script at 55 (58 at most, reading a record or answering About) and the
+visitors script at 49: about 6 KB of room at each script's busiest. The
+checklist has not been run in full. Beyond that run, what has been checked is the
 scripts' syntax (lslint), their date arithmetic against the calendar for
 every day from year 1 to 2100, and, by tests, that the scripts agree with
 each other, with the output page and with the node's serializer. How much
