@@ -153,6 +153,7 @@ integer gHash = TRUE;   // changes go after the #
 
 float   gSpin;          // degrees a second, 0 for still
 integer gPeak;          // the most memory used while showing a dataset
+key     gBy;            // who paused, played or moved the clip, for the next broadcast
 
 help()
 {
@@ -355,16 +356,20 @@ restore(list s)
 
 // Tells the other two scripts what the globe shows. The info script times
 // the date from the clip's anchor, so it gets the anchor itself rather
-// than a position that would be stale on arrival. "turned" is anything
-// the idle return puts back: the owner's rotation, an upright sphere, and
-// the owner's spin, which a tilt ends and Upright again doesn't restart.
+// than a position that would be stale on arrival. After a pause, a play or
+// a move, the key is whoever asked, and the info script answers them with
+// the date the globe now shows, which this script doesn't know. "turned"
+// is anything the idle return puts back: the owner's rotation, an upright
+// sphere, and the owner's spin, which a tilt ends and Upright again
+// doesn't restart.
 broadcast()
 {
     llMessageLinked(LINK_THIS, MSG_STATE, llList2Json(JSON_OBJECT, [
         "dataset", gDataset, "title", gTitle,
         "pos", gPos, "atS", gAtS, "atMs", gAtMs, "rate", gRate, "paused", gPaused,
         "telemetry", gTelemetry, "turned", gRotation != gHome || gTilted || gSpin != gOwnerSpin,
-        "node", NODE]), NULL_KEY);
+        "node", NODE]), gBy);
+    gBy = NULL_KEY;
 }
 
 // Puts the current state on the face, every setting every time: a face
@@ -424,7 +429,7 @@ describe()
 // agreeing.
 integer commit(list saved)
 {
-    if (!setMedia()) { restore(saved); return FALSE; }
+    if (!setMedia()) { restore(saved); gBy = NULL_KEY; return FALSE; }
     describe();
     broadcast();
     return TRUE;
@@ -630,7 +635,8 @@ act(key who, integer owner, string msg)
         if (gPaused) { tell(who, "Already paused."); return; }
         reanchor();
         gPaused = TRUE;
-        if (commit(saved)) tell(who, "Paused at " + num(gPos) + " s. Everyone at the globe holds this frame.");
+        gBy = who;
+        commit(saved);
         return;
     }
     if (cmd == "play")
@@ -638,7 +644,8 @@ act(key who, integer owner, string msg)
         if (!gPaused) { tell(who, "Already playing."); return; }
         gPaused = FALSE;
         anchor();
-        if (commit(saved)) tell(who, "Playing from " + num(gPos) + " s.");
+        gBy = who;
+        commit(saved);
         return;
     }
     if (cmd == "jump" || cmd == "restart" || cmd == "nudge")
@@ -663,7 +670,8 @@ act(key who, integer owner, string msg)
         }
         gPos = to;
         anchor();
-        if (commit(saved)) tell(who, "At " + num(gPos) + " s, " + llList2String(["playing.", "paused."], gPaused));
+        gBy = who;
+        commit(saved);
         return;
     }
     if (cmd == "tilt")

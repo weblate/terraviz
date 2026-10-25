@@ -81,7 +81,7 @@ menu that opens is theirs alone:
 |---|---|---|
 | About | everyone | The abstract, credit and licence, in their own chat, or a notecard the owner wrote. |
 | Datasets | whoever may act | The menu of datasets, nine to a page. |
-| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. |
+| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, for a dataset with dates. |
 | Back 10 s, Forward 10 s, Start over | the same | Move through the animation. |
 | Live Earth | the same | Back to today's clouds and the real day and night. |
 | Turn... | whoever may act | A menu for turning the globe, for everyone at it, which comes back after each press: |
@@ -288,7 +288,7 @@ act, and doesn't take the hold. Besides those:
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters and datasets, and the four settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
-| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a record. |
+| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a record or answering About. |
 | `/9 help` | The globe script's list. |
 
 ## What leaves the object
@@ -334,8 +334,10 @@ stand at the globe.
    act.) They should get only About, and be told who has the globe and
    for how long. Once the second avatar walks out of range, the globe
    should free up within five seconds.
-5. **Pause.** They pause. The date should stop and match the frame, and
-   both views should show the same frame.
+5. **Pause.** They pause. The reply should give the date the globe now
+   shows, the floating text's date should stop and match the frame, and
+   both views should show the same frame. On a dataset with no dates,
+   such as Air Traffic, the reply just says it paused.
 6. **About.** They choose About. They should get the abstract, the
    credit, the licence and a link, in their own chat, in a few pieces.
    Nobody else should see it. Then add a notecard named
@@ -355,14 +357,15 @@ stand at the globe.
    and tilt it, and have everyone leave the globe. About a minute later
    it should go back to the live Earth, upright and facing as it did
    before. It shouldn't during a talk.
-9. **Memory, and a date with a time.** `/9 show 01KQG61S53Y319P64XSKMXMZT1`,
-   Aurora, which has the longest record on the node and a frame every
-   five minutes. The floating text should show a date and a UTC time,
-   from 30 Sep 2012, 12:00 UTC to 1 Oct 2012, 11:35 UTC across the clip.
-   Then `/9 memory`. Every script should report well under 64 KB. The
-   peaks are the numbers that matter, the globe script's while showing a
-   dataset and the info script's while reading a record: say what they
-   were.
+9. **Memory, and a date with a time.** `/9 show 01KQG64Y0999GTWAQQ1MZ99HAE`,
+   Hurricane Maria 2017, whose record is longer than the info script
+   reads and which has a frame every 15 minutes. The floating text
+   should show a date and a UTC time, from 17 Sep 2017, 00:00 UTC to
+   25 Sep 2017, 23:45 UTC across the clip. Choose About, then
+   `/9 memory`. Every script should report well under 64 KB. The peaks
+   are the numbers that matter, the globe script's while showing a
+   dataset and the info script's while reading a record or answering
+   About: say what they were.
 
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
@@ -378,10 +381,10 @@ each avatar used, and what steps 2 and 9 showed.
   no room left can stop the moment it starts. In-world in October 2026
   the globe script rested at 62 KB and the other two at about 50, and
   every web reply goes to every script in the sphere with a handler for
-  one. So only the info script asks the node anything, the globe
-  script shows a choice without checking it first, and the info script
-  reads only the first 3 KB of a record: a long one loses the end of its
-  abstract, and a few datasets their dates or licence.
+  one. A copy a script makes counts too, until Second Life collects it.
+  So only the info script asks the node anything, the globe script
+  shows a choice without checking it first, and the info script reads
+  only the first 3 KB of a record and copies as little of it as it can.
 - **A visitor's change takes a second.** Second Life pauses the globe
   script for a second whenever it sets media.
 - **A long dataset name in `datasets` is cut** to a button's 24 bytes.
@@ -392,14 +395,14 @@ each avatar used, and what steps 2 and 9 showed.
   wraps on the length the node reports and each viewer's page on the
   video's own, which can differ slightly (`SECOND_LIFE_COMPAT.md` §7).
 - **A long record is read only in part.** The info script reads its
-  first 9,000 bytes, which today holds every field it needs for every
-  record on the node, the longest needing 8,356. It keeps 2,500
+  first 3,072 bytes. On the node in October 2026 that holds every field
+  it needs in 78% of records, and the dates in 95%. It keeps 500
   characters of an abstract, 600 of a licence statement and 300 of a
   credit. A value cut short ends `...`, and "About" then says the rest
   is at the dataset's page, as it does when a link too long to keep is
-  left out. In a record longer than 9,000 bytes, a field past the cut is
-  missing, in the order the node writes them: the credit first, then the
-  licence, then the period and the dates. A lost credit doesn't fall
+  left out. In a longer record, a field past the cut is missing, in the
+  order the node writes them: the credit first, then the licence, then
+  the period and the dates. A lost credit doesn't fall
   back to the organization, which might not be the credit the record
   gives, and a lost period shows a yearly dataset's date to the day.
 - **Display names don't make presenters.** If someone in `presenters`

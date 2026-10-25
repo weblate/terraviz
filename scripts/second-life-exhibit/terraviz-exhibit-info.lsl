@@ -53,7 +53,7 @@
 //
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
-// reading a record, which is when it needs the most.
+// reading a record or answering "About", which are when it needs the most.
 
 integer CHAN = 9;
 
@@ -72,14 +72,17 @@ integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the 
 // missing, and "About" says the rest is at the dataset's page.
 // Held at two bytes a character, a read is the largest thing this script
 // holds, and it rests at about 50 KB of its 64 (measured in-world, October
-// 2026). 9000 couldn't fit; 3072 holds every field this script reads in 78%
-// of the node's records, the dates in 95% and the credit in all of them.
+// 2026). Every copy made while reading counts too, until Second Life
+// collects it, so the read is held once (gBody) and each value is copied
+// as few times as it can be. 3072 holds every field this script reads in
+// 78% of the node's records, and gives the dates a whole record would in
+// 95% and the credit in 81%.
 integer BODY_MAX = 3072;
-// How much of a manifest: its length and stream address come before its
-// list of files, which for a Vimeo video is long, and this leaves room for
-// a long title and address before them.
-integer MANIFEST_MAX = 4096;
-integer ABSTRACT_MAX = 1000;   // characters of an abstract kept for "About", each held several times while read
+// How much of a manifest: its id, length and stream address come first
+// (by byte 80, and Vimeo's name by 120, on the node in October 2026), and
+// this leaves room for a long title before them.
+integer MANIFEST_MAX = 1024;
+integer ABSTRACT_MAX = 500;    // characters of an abstract kept for "About"; the link has the rest
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
 float   TICK = 2.0;            // how often a playing clip's date is worked out again
 integer MIN_CREDIT = 48;       // bytes the credit keeps when the hover text is full
@@ -142,8 +145,11 @@ integer gRecTries;
 integer gManTries;
 integer gRetryAt;
 
+string  gBody;         // the record being read, only while record() runs
+integer gStop;         // where in it the fields this script reads end, or -1
+
 string  gShown;        // the hover text as last set
-integer gPeak;         // the most memory used reading a record
+integer gPeak;         // the most memory used reading a record or answering About
 integer gUnshowable;   // the record names a format the page can't show
 string  gWarned;       // the dataset whose notecard the owner was last warned about
 key     gLastAbout;
@@ -467,24 +473,31 @@ fetch()
     if (gRecReq == NULL_KEY && gManReq == NULL_KEY) later(30);
 }
 
-// A field's string value from a record that may have been cut short, up
-// to `max` characters of it. Only matches before `stop` count: every field
-// read comes before `createdAt`, and nothing before it is an object, so no
-// key inside one (probingInfo's, enriched's) can be taken for a field.
-string field(string body, integer stop, string name, integer max)
+// A field's string value from the record in gBody, which may have been
+// cut short, up to `max` characters of it. Only matches before gStop
+// count: every field read comes before `createdAt`, and nothing before it
+// is an object, so no key inside one (probingInfo's, enriched's) can be
+// taken for a field.
+string field(string name, integer max)
 {
     gLastCut = FALSE;
-    string tag = "\"" + name + "\":\"";
-    integer i = llSubStringIndex(body, tag);
-    if (i == -1 || (stop != -1 && i > stop)) return "";
-    i += llStringLength(tag);
-    string raw = llGetSubString(body, i, i + max + 16);
-    // The closing quote is the first one not escaped. JSON can't hold a raw
-    // tab, so two tabs stand in for each escaped backslash and then each
-    // escaped quote, which keeps every index, and the first quote left is
-    // the one that closes the value.
-    integer at = llSubStringIndex(llReplaceSubString(llReplaceSubString(raw, "\\\\", "\t\t", 0),
-        "\\\"", "\t\t", 0), "\"");
+    integer i = llSubStringIndex(gBody, "\"" + name + "\":\"");
+    if (i == -1 || (gStop != -1 && i > gStop)) return "";
+    i += llStringLength(name) + 4;
+    string raw = llGetSubString(gBody, i, i + max + 16);
+    // The closing quote is the first one not escaped. Most values hold no
+    // escape at all. In one that does, JSON can't hold a raw tab, so two
+    // tabs stand in for each escaped quote (after each escaped backslash,
+    // where there is one), which keeps every index, and the first quote
+    // left is the one that closes the value.
+    integer esc = llSubStringIndex(raw, "\\") != -1;
+    integer at = llSubStringIndex(raw, "\"");
+    if (esc)
+    {
+        if (llSubStringIndex(raw, "\\\\") == -1) at = llSubStringIndex(llReplaceSubString(raw, "\\\"", "\t\t", 0), "\"");
+        else at = llSubStringIndex(llReplaceSubString(llReplaceSubString(raw, "\\\\", "\t\t", 0),
+            "\\\"", "\t\t", 0), "\"");
+    }
     if (at == 0) return "";
     if (at > 0 && at <= max) raw = llGetSubString(raw, 0, at - 1);
     else
@@ -501,53 +514,59 @@ string field(string body, integer stop, string name, integer max)
         gLastCut = TRUE;
         gCut = TRUE;
     }
-    string v = llJsonGetValue("[\"" + raw + "\"]", [0]);
-    if (v == JSON_INVALID) return "";
-    return v;
+    // A value with no escape is its own text. One with an escape is read
+    // by the JSON reader, one copy at a time.
+    if (!esc) return raw;
+    raw = "[\"" + raw + "\"]";
+    raw = llJsonGetValue(raw, [0]);
+    if (raw == JSON_INVALID) return "";
+    return raw;
 }
 
 // Text from HTML, as some records' organizations and abstracts are:
 // tags go, the common entities are read, and runs of spaces fold.
+// Each step is taken only when there is something for it to do, since
+// every one copies the text.
 string plain(string s)
 {
     // A tag is a < before a letter, / or !, up to its >, or to the end
     // when a cut left it open. Any other <, as in "size < 2.5", is text.
-    string out = "";
-    integer a = llSubStringIndex(s, "<");
-    while (a != -1)
+    // The text is split at each < once, rather than copied once a tag.
+    if (llSubStringIndex(s, "<") != -1)
     {
-        string next = "";
-        if (a + 1 < llStringLength(s)) next = llGetSubString(s, a + 1, a + 1);
-        if (a > 0) out += llGetSubString(s, 0, a - 1);
-        if (next == "" || llSubStringIndex(TAG_START, next) == -1)
+        list parts = llParseStringKeepNulls(s, ["<"], []);
+        s = "";
+        list out = [llList2String(parts, 0)];
+        integer n = llGetListLength(parts);
+        integer i;
+        for (i = 1; i < n; ++i)
         {
-            out += "<";
-            s = llDeleteSubString(s, 0, a);
-        }
-        else
-        {
-            integer b = llSubStringIndex(llGetSubString(s, a, -1), ">");
-            if (b == -1) s = "";
+            string p = llList2String(parts, i);
+            integer b = llSubStringIndex(p, ">");
+            if (p == "" || llSubStringIndex(TAG_START, llGetSubString(p, 0, 0)) == -1) out += ["<" + p];
+            else if (b == -1) i = n;
             else
             {
-                string name = llToLower(llList2String(llParseString2List(llGetSubString(s, a + 1, a + b - 1),
+                string name = llToLower(llList2String(llParseString2List(llGetSubString(p, 0, b - 1),
                     [" ", "\n", "/"], []), 0));
-                if (llListFindList(INLINE, [name]) == -1) out += " ";
-                s = llDeleteSubString(s, 0, a + b);
+                if (llListFindList(INLINE, [name]) == -1) out += [" "];
+                out += [llDeleteSubString(p, 0, b)];
             }
         }
-        a = llSubStringIndex(s, "<");
+        parts = [];
+        s = llDumpList2String(out, "");
     }
-    s = out + s;
-    out = "";
-    s = llReplaceSubString(s, "&nbsp;", " ", 0);
-    s = llReplaceSubString(s, "&nbsp", " ", 0);
-    s = llReplaceSubString(s, "&quot;", "\"", 0);
-    s = llReplaceSubString(s, "&#39;", "'", 0);
-    s = llReplaceSubString(s, "&lt;", "<", 0);
-    s = llReplaceSubString(s, "&gt;", ">", 0);
-    s = llReplaceSubString(s, "&amp;", "&", 0);
-    s = llReplaceSubString(s, "\t", " ", 0);
+    if (llSubStringIndex(s, "&") != -1)
+    {
+        s = llReplaceSubString(s, "&nbsp;", " ", 0);
+        s = llReplaceSubString(s, "&nbsp", " ", 0);
+        s = llReplaceSubString(s, "&quot;", "\"", 0);
+        s = llReplaceSubString(s, "&#39;", "'", 0);
+        s = llReplaceSubString(s, "&lt;", "<", 0);
+        s = llReplaceSubString(s, "&gt;", ">", 0);
+        s = llReplaceSubString(s, "&amp;", "&", 0);
+    }
+    if (llSubStringIndex(s, "\t") != -1) s = llReplaceSubString(s, "\t", " ", 0);
     while (llSubStringIndex(s, "  ") != -1) s = llReplaceSubString(s, "  ", " ", 0);
     return llStringTrim(s, STRING_TRIM);
 }
@@ -564,6 +583,25 @@ string ref(string slug)
     return slug;
 }
 
+// Answers whoever paused, played or moved the clip, with the date the
+// globe now shows: the clip's seconds mean nothing to a visitor. A dataset
+// with no dates, or whose clip length isn't known yet, gets the plain word.
+moved(key who)
+{
+    string d = "";
+    if (gFor == gDataset && gDuration > 0.0) d = date();
+    string s = "Playing.";
+    if (d != "") s = "Playing from " + d + ".";
+    if (gPaused)
+    {
+        s = "Paused.";
+        if (d != "") s = "Paused at " + d + ".";
+        s += " Everyone at the globe holds this frame.";
+    }
+    if (who == llGetOwner()) llOwnerSay("[exhibit] " + s);
+    else llRegionSayTo(who, 0, s);
+}
+
 // The globe shows a choice without asking the node first, since holding
 // the node's reply ran it out of memory (in-world, October 2026). So this
 // script, which reads the record anyway, puts it back on the live Earth
@@ -575,36 +613,36 @@ unshowable(string why)
     llMessageLinked(LINK_THIS, MSG_CONTROL, "earth", NULL_KEY);
 }
 
-record(string body)
+record()
 {
     // Where the fields this script reads end. A record without it was cut
     // before it by BODY_MAX, so a field not found may be one not read.
-    integer stop = llSubStringIndex(body, ",\"createdAt\":");
-    integer whole = stop != -1;
+    gStop = llSubStringIndex(gBody, ",\"createdAt\":");
+    integer whole = gStop != -1;
     if (!whole) gCut = TRUE;
-    gRef = ref(field(body, stop, "slug", 70));
-    string format = field(body, stop, "format", 40);
+    gRef = ref(field("slug", 70));
+    string format = field("format", 40);
     gVideo = llSubStringIndex(format, "video/") == 0;
     // Named, and neither a video nor an image: a tour, which the page
     // refuses. A format not read says nothing.
     gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;
     gCuts = 0;
-    gAbstract = field(body, stop, "abstractTxt", ABSTRACT_MAX);
+    gAbstract = field("abstractTxt", ABSTRACT_MAX);
     if (gLastCut) gCuts = gCuts | 1;
-    gWho = field(body, stop, "attributionText", 300);
-    if (gWho == "") gWho = field(body, stop, "rightsHolder", 300);
+    gWho = field("attributionText", 300);
+    if (gWho == "") gWho = field("rightsHolder", 300);
     // The organization, which comes first, is the credit only when the
     // record says nothing later: it may not be the credit a record cut
     // short would have given.
-    if (gWho == "" && whole) gWho = field(body, stop, "organization", 400);
+    if (gWho == "" && whole) gWho = field("organization", 400);
     if (gLastCut) gCuts = gCuts | 2;
-    gSpdx = field(body, stop, "licenseSpdx", 120);
+    gSpdx = field("licenseSpdx", 120);
     if (gLastCut) gCuts = gCuts | 4;
-    gLicUrl = field(body, stop, "licenseUrl", 300);
-    gStatement = field(body, stop, "licenseStatement", 600);
+    gLicUrl = field("licenseUrl", 300);
+    gStatement = field("licenseStatement", 600);
     if (gLastCut) gCuts = gCuts | 8;
-    list a = instant(field(body, stop, "startTime", 40));
-    list b = instant(field(body, stop, "endTime", 40));
+    list a = instant(field("startTime", 40));
+    list b = instant(field("endTime", 40));
     gDated = a != [] && b != [];
     if (gDated)
     {
@@ -612,7 +650,7 @@ record(string body)
         gEndDay = llList2Integer(b, 0); gEndSec = llList2Integer(b, 1);
         if (gEndDay < gStartDay || (gEndDay == gStartDay && gEndSec < gStartSec)) gDated = FALSE;
     }
-    string p = field(body, stop, "period", 40);
+    string p = field("period", 40);
     period(p);
     gFrames = p == "P1D" || p == "P1M" || p == "P1Y";
     gHaveRec = TRUE;
@@ -631,19 +669,26 @@ tidy()
 }
 
 // Chat to one visitor, in pieces that fit a chat line, cut between words.
+// A piece is measured a character at a time, which copies nothing, since
+// the text is the most this script holds while answering.
 say(key av, string text)
 {
     while (text != "")
     {
-        integer n = llStringLength(text);
-        if (n > 900) n = 900;
-        while (n > 1 && bytes(llGetSubString(text, 0, n - 1)) > PIECE) n = n * 3 / 4;
-        if (n < llStringLength(text))
+        integer len = llStringLength(text);
+        integer n = 0;
+        integer b = 0;
+        while (n < len && b <= PIECE)
         {
-            integer sp = n - 1;
-            while (sp > n / 2 && llSubStringIndex(" \n", llGetSubString(text, sp, sp)) == -1) --sp;
-            if (sp > n / 2) n = sp + 1;
+            integer c = llOrd(text, n);
+            b += 1 + (c >= 128) + (c >= 2048) + (c >= 65536);
+            ++n;
         }
+        if (b <= PIECE) { llRegionSayTo(av, 0, llStringTrim(text, STRING_TRIM)); return; }
+        --n;
+        integer sp = n - 1;
+        while (sp > n / 2 && llOrd(text, sp) != 32 && llOrd(text, sp) != 10) --sp;
+        if (sp > n / 2) n = sp + 1;
         llRegionSayTo(av, 0, llStringTrim(llGetSubString(text, 0, n - 1), STRING_TRIM));
         text = llStringTrim(llDeleteSubString(text, 0, n - 1), STRING_TRIM_HEAD);
     }
@@ -683,16 +728,31 @@ about(key av)
         return;
     }
     link = gNode + "/dataset/" + gRef;
-    string text = gTitle;
+    // Lines in a list, joined once, rather than a string copied whole for
+    // each line added.
+    list lines = [gTitle];
     string r = range();
-    if (r != "") text += " (" + r + ")";
-    if (gAbstract != "") text += "\n" + gAbstract;
-    if (gWho != "") text += "\nCredit: " + gWho;
-    string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\n"), ["\n"], []), " ");
-    if (lic != "") text += "\nLicence: " + lic;
-    if (gCut) text += "\nSome of this was too long to give here. All of it is at " + link;
-    else text += "\nMore about it: " + link;
-    say(av, text);
+    if (r != "") lines = [gTitle + " (" + r + ")"];
+    if (gAbstract != "") lines += [gAbstract];
+    if (gWho != "") lines += ["Credit: " + gWho];
+    list lic = [];
+    if (gSpdx != "") lic += [gSpdx];
+    if (gStatement != "") lic += [gStatement];
+    if (gLicUrl != "") lic += [gLicUrl];
+    if (llGetListLength(lic)) lines += ["Licence: " + llDumpList2String(lic, " ")];
+    lic = [];
+    if (gCut) lines += ["Some of this was too long to give here. All of it is at " + link];
+    else lines += ["More about it: " + link];
+    say(av, llDumpList2String(lines, "\n"));
+}
+
+// The most memory used since the profiler was started, kept for "/9
+// memory": reading a record and answering "About" are when this script
+// needs the most.
+peak()
+{
+    llScriptProfiler(PROFILE_NONE);
+    if (llGetSPMaxMemory() > gPeak) gPeak = llGetSPMaxMemory();
 }
 
 forget()
@@ -734,7 +794,13 @@ default
     link_message(integer sender, integer n, string str, key id)
     {
         if (n == MSG_TALK) { gTalk = str == "1"; hover(); return; }
-        if (n == MSG_ABOUT) { about(id); return; }
+        if (n == MSG_ABOUT)
+        {
+            llScriptProfiler(PROFILE_SCRIPT_MEMORY);
+            about(id);
+            peak();
+            return;
+        }
         if (n != MSG_STATE) return;
         string dataset = llJsonGetValue(str, ["dataset"]);
         if (dataset == JSON_INVALID) return;
@@ -752,6 +818,8 @@ default
             forget();
             fetch();
         }
+        // Someone paused, played or moved the clip: the globe names them.
+        if (id != NULL_KEY) moved(id);
         hover();
         pace();
     }
@@ -764,11 +832,12 @@ default
             if (status == 404) { unshowable("isn't a dataset on the node"); pace(); return; }
             if (status != 200) { later(30); pace(); return; }
             llScriptProfiler(PROFILE_SCRIPT_MEMORY);
-            record(body);
+            gBody = body;
             body = "";
+            record();
+            gBody = "";
             tidy();
-            llScriptProfiler(PROFILE_NONE);
-            if (llGetSPMaxMemory() > gPeak) gPeak = llGetSPMaxMemory();
+            peak();
             if (gUnshowable) { unshowable("is a tour, which drives the full app rather than a globe"); pace(); return; }
             fetch();
         }
@@ -792,8 +861,9 @@ default
             // manifest it passes on from Vimeo carries Vimeo's own id, and
             // Vimeo's length in whole seconds (12 for a clip of 12.1 s),
             // from which a date drifts with every loop the page plays: so
-            // unknown, and the range shows. Any mention of Vimeo counts
-            // too, as a second guard; a false alarm only shows the range.
+            // unknown, and the range shows. A mention of Vimeo, as in its
+            // stream's address, counts too, as a second guard; a false
+            // alarm only shows the range.
             string mid = "";
             integer j = llSubStringIndex(body, "\"id\":\"");
             if (j != -1)
@@ -803,7 +873,7 @@ default
                 if (q > 0) mid = llGetSubString(mid, 0, q - 1);
                 else mid = "";
             }
-            if (mid != gDataset || llSubStringIndex(llToLower(body), "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }
+            if (mid != gDataset || llSubStringIndex(body, "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }
             // A length of 0 is unknown, and can be the node's for a moment
             // while its bucket is slow, which it keeps for 15 s: so ask again,
             // then show the range.
@@ -828,8 +898,8 @@ default
     listen(integer ch, string name, key who, string msg)
     {
         if (llToLower(llStringTrim(msg, STRING_TRIM)) != "memory") return;
-        string peak = "";
-        if (gPeak) peak = ", and at most " + (string)(gPeak / 1024) + " KB while reading a record";
-        llOwnerSay("[exhibit] Info script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64" + peak + ".");
+        string most = "";
+        if (gPeak) most = ", and at most " + (string)(gPeak / 1024) + " KB while reading a record or answering About";
+        llOwnerSay("[exhibit] Info script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64" + most + ".");
     }
 }
