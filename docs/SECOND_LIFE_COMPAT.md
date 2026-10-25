@@ -1530,8 +1530,10 @@ waited on were decided on 24 October (§7 item 4).
   controls are pause or play, back and forward ten seconds, start
   over, a dataset, and the live Earth. They are offered when that
   visitor may act: outside a talk, nobody else holds the globe;
-  during one, they are a presenter. Presenters also get "Start talk"
-  and "End talk", and "Jump to", which takes a time. A visitor
+  during one, they are a presenter. A hold ends when it runs out or
+  when its holder leaves the globe. Presenters also get "Start talk"
+  and "End talk", and "Jump to", which takes a time. A presenter can
+  start a talk whoever holds the globe. A visitor
   doesn't change the rate, the rotation, the width or the telemetry,
   which stay the owner's, in chat.
 - **Notecards in the globe, all optional, re-read when they change:**
