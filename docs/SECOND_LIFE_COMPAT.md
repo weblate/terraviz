@@ -1649,6 +1649,193 @@ driven by its owner in chat, with none of the visitor controls.
       talk ends (2).
   - a notecard named by a dataset's id, given to a visitor who asks
     about that dataset in place of the chat abstract.
+- **The exhibit's own reads from the node** (designed 25 October and
+  revised after the API review the same day; not yet built). The
+  scripts have about 6 KB to spare at their busiest (§9 Phase 2's
+  status note), and every web reply lands in every script in the prim
+  with a handler for one. Two of the node's replies don't fit that:
+  - **A dataset's record** is 1 to 16 KB (4 KB median, 180 records in
+    October), held at two bytes a character. The abstract comes before
+    the dates, so a read long enough for the dates holds most of an
+    abstract (1,323 bytes median) the floating text never shows. And
+    the info script carries code for JSON escapes and HTML that costs
+    it memory at rest.
+  - **A menu** needs a list. The catalog was 822 KB, and a menu page in
+    the shape first built for it, about 10 KB, about 20 KB held, would
+    have reached two scripts.
+
+  So the node gains three small reads under `/api/v1/exhibit/`. What
+  defines them is their contract: small replies that arrive whole, each
+  within a byte budget it states, for callers that can't afford more,
+  of which the Second Life globe is the first. The name is the
+  exhibit's because the budgets are: nine to a page for a dialog, 48
+  bytes a title for a dialog's text. The API review set aside
+  `/api/v1/datasets`, which a general reader would take for every
+  public dataset, and then `/api/v1/output/`: "output" already names
+  the multi-monitor windows, their telemetry and Zyra's workflow
+  outputs, and the card answers for tours, which the output page can't
+  show. They are the node's own convenience reads, as `featured` and
+  `search` are: not part of the federation protocol and not in
+  `public/schema/v1/`.
+  - **`GET /api/v1/exhibit/datasets/{id}`, a dataset's card:**
+    `{ id, page, kind, title, startTime, endTime, period,
+    exactDuration, retry, credit, license, licenseText, abstract,
+    truncated }`.
+    - `page` is the dataset's page in the main app, `/dataset/<slug>`
+      or `/dataset/<id>`, which the script appends to its own node
+      address. The app's link grammar can then change on the node
+      without reaching scripts already rezzed.
+    - `kind` is `video` for a `video/*` format, `image` for `image/*`,
+      and a word of its own for anything else, `tour` today. The set
+      is open: a script shows `video` and `image` and treats any other
+      kind as one it can't show, which a test pins. A tour is a 200,
+      since the dataset exists, so the script can say why it isn't
+      shown.
+    - `startTime` and `endTime` are the record's, as
+      `YYYY-MM-DDTHH:MM:SS[.fff]Z`, or `""`. `period` is an ISO 8601
+      duration the node could parse, or `""`.
+    - `exactDuration` is the clip's exact length in seconds, from the
+      node's own reading of an HLS bundle's playlist, or 0 when the
+      node has no exact length. That is always so for a video on
+      Vimeo: only the node knows a row is on Vimeo, and the script now
+      guesses it from the manifest's text. `retry` is 15 when the
+      length read didn't settle (an R2 error, or the read's time
+      limit), and 0 otherwise. It means ask again after that many
+      seconds. A single 0 couldn't tell "never" from "not yet". The
+      manifest's own `duration`, which is Vimeo's whole seconds for a
+      Vimeo row, keeps its meaning; this field has a name of its own.
+    - `credit` is the attribution text, else the rights holder, else
+      the organization. `license` is the SPDX id, as the record's
+      `licenseSpdx` and STAC's `license` are. `licenseText` is the
+      statement, then the licence's address, which is dropped whole
+      rather than cut.
+    - `abstract` is cut at a word. A value cut on the node ends `...`,
+      and `truncated` is true when any was, so "About" can say the
+      dataset's page has the rest. A script compares it with
+      `JSON_TRUE`, since `(integer)` of a JSON `true` reads 0.
+    - **Only prose is ever cut**: the title, the credit, the licence
+      statement and the abstract. Machine values (the id, `page`,
+      `kind`, the dates, `period`, the licence's address) are sent
+      whole or left out, since cutting `PT1H30M` to `PT1H` changes
+      what it says.
+    - **One text pipeline for every prose value**, tested against the
+      cases the script's own `plain()` handles today: Markdown to HTML
+      (portal abstracts are Markdown, SOS ones HTML; `marked` is
+      already a dependency), HTML to text, every entity decoded,
+      numeric ones included, tabs and line breaks to a space, control
+      characters and lone surrogates dropped, and U+FDD0 to U+FDEF
+      dropped too, since LSL's `JSON_*` constants live there and a
+      title of U+FDD0 would read back as `JSON_INVALID`. Then runs of
+      spaces fold and the ends are trimmed.
+    - A dataset that isn't public is a 404 with the node's envelope,
+      `error: "not_found"`, the only 404 a script acts on. A public
+      dataset the in-memory list hasn't caught up with is read on its
+      own first, so one published a moment ago isn't refused.
+  - **`GET /api/v1/exhibit/datasets?tag=&offset=&limit=`, a page of
+    the menu:** `{ total, offset, limit, tag, datasets: [{ id, title
+    }] }`.
+    - The datasets the output page can show: an image or video format
+      whose data reference the manifest can resolve. So no tours, no
+      `peer:` rows, and no row whose reference and format disagree.
+    - Ordered as the app's browse orders the catalog: by weight, then
+      by title as `localeCompare` sorts it, then by id.
+    - `tag` matches a tag exactly in its canonical form (below), as the
+      app's category filter matches, and the reply echoes the tag it
+      matched. An empty parameter is the same as a missing one, a
+      malformed one is a 400 `invalid_request`, an offset past `total`
+      gives no datasets, and an unknown tag gives `total: 0`.
+    - `limit` runs from 1 to 9, defaulting to 9, frozen. A row whose id
+      is longer than a ULID's 26 characters is left out rather than
+      cut.
+    - Titles are cut to 48 bytes as sent. A dialog's text holds under
+      512 bytes: nine titles with "1. " and line breaks come to 467,
+      leaving 44 for a heading such as "Water, 10-18 of 71".
+  - **`GET /api/v1/exhibit/tags`, the categories:** `{ tags: [{ tag,
+    count }], more }`.
+    - A tag is never cut, since it is the key a script sends back. Its
+      canonical form is NFC, trimmed, with control characters dropped.
+      Tags are grouped and matched by it, and one whose canonical form
+      is empty or longer than 40 bytes is left out.
+    - The most common come first, ties by tag. Whole tags are dropped
+      from the least common end until the reply fits, and `more: true`
+      says so.
+    - A tag's `count` equals the page's `total` for that tag, which a
+      test holds.
+    - It is a resource of its own, not a parameter of the page, so
+      each path keeps one budget.
+  - **Budgets, proved by arithmetic:** every field has a cap counted
+    as the body's UTF-8 bytes as the script receives them, escapes
+    included, and a reply's budget is their sum: a card at most 2,048
+    bytes, a page 1,024, the tags 2,048.
+    - The page holds by construction: nine 26-byte ids, nine 48-byte
+      titles and the envelope come to about 910 bytes.
+    - The card's fixed fields take about 200 bytes, and the abstract
+      what's left.
+    - Tests sum the caps, and hold each reply with worst-case data:
+      CJK, quotes, control characters, padded titles. The first menu
+      read's review found two ways past its budget, a title padded
+      past validation that gave an 83 KB page, and tags of control
+      characters.
+    - A field added later must fit inside the same budget.
+    - A script sets `HTTP_BODY_MAXLENGTH` to the budget of what it
+      asks for. A node that breaks its promise, an older fork, or an
+      error page then costs no script more than that, and
+      `HTTP_BODY_TRUNCATED` tells the info script to tell the owner.
+  - **JSON, not plain lines.** A small reply that arrives whole reads
+    with one `llJsonGetValue` a field, and Second Life decodes the
+    escapes. A field can be added without moving the others. What sank
+    the record read was its size, not its format.
+  - **What it costs the node:**
+    - One in-memory list of every public dataset with its kind, built
+      with the catalog's own `listPublicDatasets` and `getDecorations`
+      so that "public" means what the catalog means by it, rebuilt at
+      most once a minute per isolate. Pages and tags filter it.
+    - So a retracted dataset's card can still be served for up to a
+      minute, and pages from different isolates can come from lists a
+      minute apart, so a page can skip or repeat a row.
+    - Cloudflare doesn't store a Function's reply at its edge, so
+      `Cache-Control` saves the node nothing; it is for browsers:
+      `public, max-age=60`, the manifest's 15 s for a card with a
+      `retry`, and `no-store` for errors.
+    - The first menu read walked every public row on every request. On
+      D1's free plan that spends the day's reads at about one request
+      every 17 seconds. A list per isolate is enough at exhibit
+      traffic; if it ever shows, it moves to one fixed KV key, cleared
+      when a publish clears the catalog's snapshot.
+  - **A contract with the copies already rezzed.** Every later node
+    keeps serving these shapes to scripts nobody can update remotely.
+    Under this path, changes are additive only and within the budgets.
+    No field changes meaning, as `exactDuration`'s 0 and `kind`'s open
+    set must not. A breaking change gets a new path, and the old one
+    stays. A contract test pins the names and types as well as the
+    budgets. The node never logs the owner name and key headers every
+    `llHTTPRequest` carries. A path under `/api/v1/exhibit/` that
+    matches nothing answers a JSON 404, `no_such_route`, as
+    `stac/[[path]].ts` does for its own, so a later script asking a
+    read this node lacks gets an answer rather than the app's page.
+  - **The record read doesn't retire with the card.** Copies of
+    today's info script read the record and the manifest by position.
+    The record's key order stays pinned while they may exist, the
+    manifest's leading keys get pinned too, and `docs/protocol/README.md`
+    says so when the card ships.
+  - **In the scripts, in three steps:**
+    1. The info script reads the card in place of the record and the
+       manifest: one request, or a second after a `retry`, about 4 KB
+       held where the record took 6, and no JSON or HTML code of its
+       own.
+    2. The menu. The info script stays the only script with an
+       `http_response`. It reads pages for the visitors script and
+       relays their ids and titles. A link message reaches every
+       script in the prim with a handler for one, the globe script
+       included, so the relay is as compact as it can be, or the
+       visitors script moves to a child prim of its own.
+    3. Phase 4b's buttons, with the owner's chat commands moved to a
+       fourth script to give the globe script room.
+  - **The node and the scripts go together.** A TerraViz node without
+    these reads answers them with the app's page and a 200, not JSON.
+    The info script then shows the title alone and tells the owner once
+    that the node needs updating. There is no fallback to the record
+    read, since its code is what the info script sheds.
 - **Who is at the globe** comes from the region's avatar list and each
   avatar's distance from the globe's surface, every five seconds. That costs less than a sensor
   and isn't capped at 16 avatars. Nothing about a visitor leaves the
