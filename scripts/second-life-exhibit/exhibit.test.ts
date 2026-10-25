@@ -128,7 +128,7 @@ describe('second-life exhibit scripts', () => {
     const rotation = act.slice(act.indexOf('if (cmd == "rotation")'))
     expect(rotation.indexOf('gHome = gRotation;')).toBeGreaterThan(-1)
     expect(rotation.indexOf('gHome = gRotation;')).toBeLessThan(rotation.indexOf('commit(saved)'))
-    expect(act).toContain('if (cmd == "rest") { gRotation = gHome; if (gTilted) level(); }')
+    expect(act).toMatch(/if \(cmd == "rest"\)\n\s+\{\n\s+gRotation = gHome;\n\s+if \(gTilted\) level\(\);/)
     expect(body(visitors, 'check()')).toContain('(gDataset != "" || gTurned)')
   })
 
@@ -139,11 +139,23 @@ describe('second-life exhibit scripts', () => {
     const tilt = body(globe, 'integer tilt(key who, integer south)')
     expect(tilt).toContain('llGetObjectDetails(who, [OBJECT_POS])')
     expect(tilt).toContain('if (step > angle) step = angle;')
-    expect(tilt).toContain('llSetRot(r * llAxisAngle2Rot(llVecNorm(axis), step));')
+    expect(tilt).toContain('setRot(r * llAxisAngle2Rot(llVecNorm(axis), step));')
+    expect(tilt).toContain('if (angle < 0.01) return 2;')
     expect(Number(constant(globe, 'float', 'TILT'))).toBe(30)
-    // The north pole is whichever of the sphere's own axes is up at rest.
-    expect(body(globe, 'home()')).toContain('gNorth = <0.0, 0.0, 1.0> / gHomeRot;')
-    expect(globe).toMatch(/upright\(\);\n {8}else stopSpin\(\);\n {8}home\(\);/)
+    // Set so it lands right on a child prim of a build too.
+    expect(body(globe, 'setRot(rotation global)')).toContain('if (llGetLinkNumber() > 1) llSetLocalRot(global / llGetRootRotation());')
+    expect(body(globe, 'upright()')).toContain('setRot(llEuler2Rot(')
+    // The north pole is whichever of the sphere's own axes is up at rest,
+    // and the rest is written into the object, so a mesh globe reset while
+    // tilted stands back at its rest rather than keeping the tilt.
+    const home = body(globe, 'home()')
+    expect(home).toContain('gNorth = <0.0, 0.0, 1.0> / llGetRot();')
+    expect(home).toContain('llLinksetDataWrite(HOME_KEY, (string)gHomeRot);')
+    expect(body(globe, 'level()')).toContain('llSetLocalRot(gHomeRot);')
+    expect(globe).toMatch(/if \(UPRIGHT_ON_START\) \{ upright\(\); home\(\); \}/)
+    expect(globe).toContain('string stored = llLinksetDataRead(HOME_KEY);')
+    // The owner's spin, ended by a visitor's tilt, comes back with the rest.
+    expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(/if \(gOwnerSpin != 0\.0 && gSpin == 0\.0 && !gTilted\)/)
     // A tilted sphere counts as turned, so the idle return comes for it,
     // and a spin, about the region's vertical, waits until it is level.
     expect(body(globe, 'broadcast()')).toContain('"turned", gRotation != gHome || gTilted,')

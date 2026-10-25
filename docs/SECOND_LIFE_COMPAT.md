@@ -1561,8 +1561,13 @@ driven by its owner in chat, with none of the visitor controls.
   whoever pressed, until it faces them, so a presenter can put the
   ozone hole on the equator in front of their audience; Upright again
   undoes it. A tilt is the prim's rotation, which the region sends
-  every viewer, so all see one angle; turning the picture to put a pole
-  at the front instead is Phase 4's (§7 item 7). The controls are
+  every viewer, so all see one angle. **The tilt is a stopgap**, kept
+  on 25 October because it works now: it is to come out when Phase 4's
+  page camera lands (§7 item 7), which turns the picture to bring a
+  pole to the front with the sphere upright and zoom alongside, since a
+  tipped sphere under a turned picture would compound into angles
+  nobody chose. Whether walk-up visitors come to prefer a globe that
+  aims at them is the one thing worth weighing then. The controls are
   offered when that
   visitor may act: outside a talk, nobody else holds the globe;
   during one, they are a presenter. A hold ends when it runs out or
@@ -1625,7 +1630,31 @@ driven by its owner in chat, with none of the visitor controls.
 a "Right now" kiosk.
 
 **Phase 4 — live zoom, and bringing a place to the front** (§7 item 7),
-designed on whatever the `#` test found.
+designed on whatever the `#` test found. Firestorm applies a change
+after the `#` without a reload, so the view can change live. The shape
+proposed on 25 October, after the Phase 2 controller's menu turned out
+clunky for presenting:
+- **The camera on the page.** The output page takes `lat`, `lon` and
+  `zoom` after the `#`, through the follow turn and camera offset the
+  2:1 desktop output already uses (`followCamera` in
+  `src/output/equirectRtt.ts`), so the sphere stays upright and any
+  place, a pole included, comes to the front. The page eases from one
+  view to the next, so the globe script's once-a-second address changes
+  look like motion. This is a change to the URL grammar, so it is its
+  own pull request, with the Federation review and a check of the
+  WordPress plugin.
+- **Menu buttons on it.** "Pole to front" and zoom in and out, beside
+  Turn east and Turn west, all moving that one camera. The Phase 2
+  tilt comes out then.
+- **A presenter remote.** A TerraViz globe the presenter drags and
+  zooms like the app, opened from a private link the globe gives them,
+  in their own browser, the viewer's built-in one or a HUD. It sends its
+  view straight to the globe's own HTTP-in address, with a one-time
+  code from the link, and the globe script applies the hold and talk
+  rules and writes the address at most once a second. Before building
+  it, a probe settles whether a page in the viewer's browser can reach
+  that address and whether the viewer's browser runs the full app; if
+  not, the remote goes through the node instead.
 
 Options B and D only if a host needs what they uniquely offer: phones
 or no-browser exhibits for B, a self-hosted world for D.

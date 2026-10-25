@@ -117,7 +117,12 @@ undone at once.
 about the globe's poles, in the page's address. A tilt tips the sphere
 itself, which the region shows every viewer at the same angle, so the
 poles stop being straight up. A tilt ends any spin, and the owner's
-`/9 spin` waits until the globe is upright.
+`/9 spin` waits until the globe is upright; the idle return brings the
+owner's spin back.
+
+The tilt is a stopgap. The plan is to turn the picture instead, so the
+sphere stays upright and a pole comes to the front with zoom alongside
+(Phase 4), and to take the tilt out when that lands.
 
 **Turning with the mouse doesn't work yet.** A drag on the globe never
 reaches a script, for the same reason a left-click doesn't, so the menu
@@ -266,7 +271,8 @@ can always act, and doesn't take the hold. Besides those:
 |---|---|
 | `/9 turn <degrees>` | Turns the globe that far east, the way the Earth turns, or west for a negative number, as the menu's turn buttons do. Unlike `/9 rotation`, it doesn't move where the globe goes back to. |
 | `/9 tilt south`, `/9 tilt north` | Tips that pole 30° toward you, as the menu's pole buttons do for a visitor. |
-| `/9 level` | Stands a tipped globe back up, as it was at rest. `/9 upright` also does, and makes the result the new rest. |
+| `/9 level` | Stands a tipped globe back up, as it was at rest. |
+| `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters and datasets, and the four settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
 | `/9 memory` | How much of its 64 KB each script uses. The info script also says the most it has used reading a record. |
@@ -349,6 +355,10 @@ When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
 
 ## Things that will trip you up
+
+- **Put the scripts in the sphere, and in a build make the sphere a
+  child prim.** A tilt turns the prim the scripts are in, so as the root
+  of a build, with a stand linked to it, the whole build would tip.
 
 - **A visitor's change takes a second.** Second Life pauses the globe
   script for a second whenever it sets media.

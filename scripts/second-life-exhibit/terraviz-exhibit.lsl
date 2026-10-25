@@ -70,6 +70,7 @@
 //                          you, until it faces you. Visitors' "South Pole to me" and
 //                          "North Pole to me" buttons do this.
 //   /9 level               stand a tilted sphere back as it was
+//   /9 home                make the sphere's rotation now its rest, which a reset keeps
 //   /9 upright             stand the poles upright again
 //   /9 memory              each of the three scripts says how much of its 64 KB it uses
 // The visitors script answers /9 talk and /9 presenters too.
@@ -139,10 +140,12 @@ float   gRate = 1.0;
 integer gPaused;
 float   gRotation;      // degrees east at the picture's centre, [0, 360)
 float   gHome;          // the owner's rotation, which a visitor's turn doesn't outlast
-rotation gHomeRot;      // the sphere's own rotation at rest, upright
+rotation gHomeRot;      // the sphere's own rotation at rest, upright, in its build
 vector  gNorth;         // its north pole, in its own axes: the one up at rest
 integer gTilted;        // a tilt has tipped it from gHomeRot
 float   TILT = 30.0;    // degrees a tilt tips it
+float   gOwnerSpin;     // the owner's /9 spin, which the idle return brings back
+string  HOME_KEY = "terraviz:home";   // where the rest is kept, in the object, across resets
 integer gDebug;
 integer gTelemetry;
 integer gWidth = 2048;
@@ -157,7 +160,7 @@ key     gReqWho;        // who asked: the owner, a visitor, or NULL_KEY
 help()
 {
     llOwnerSay("[exhibit] Commands on /" + (string)CHAN + ": show <name or id>, list, earth, pause, play, "
-        + "jump <s or m:ss>, rate <speed>, rotation <degrees>, turn <degrees east>, tilt south|north, level, spin <degrees/s or off>, debug on|off, "
+        + "jump <s or m:ss>, rate <speed>, rotation <degrees>, turn <degrees east>, tilt south|north, level, home, spin <degrees/s or off>, debug on|off, "
         + "width 1024|2048, telemetry on|off, steer hash|query, status, upright, memory, talk, presenters");
 }
 
@@ -447,19 +450,34 @@ stopSpin()
     gSpin = 0.0;
 }
 
+// The sphere's rotation in the region, set so it works whether the sphere
+// stands alone or is a child prim of a build: llSetRot on a child prim
+// lands wrong unless the root is unrotated. As the root of a build,
+// turning the sphere turns the build, so the scripts belong in the sphere
+// and the sphere in a build is a child.
+setRot(rotation global)
+{
+    if (llGetLinkNumber() > 1) llSetLocalRot(global / llGetRootRotation());
+    else llSetRot(global);
+}
+
 // The rotation the sphere rests at, and which of its own axes is its
 // north pole: the one pointing up at rest, which for a default sphere
-// upright() puts there, and for a mesh globe is its own.
+// upright() puts there, and for a mesh globe is its own. The rest is kept
+// in its build's frame, so turning the whole build keeps it, and written
+// into the object, so a reset while it is tilted doesn't take the tilt
+// for the rest.
 home()
 {
-    gHomeRot = llGetRot();
-    gNorth = <0.0, 0.0, 1.0> / gHomeRot;
+    gHomeRot = llGetLocalRot();
+    gNorth = <0.0, 0.0, 1.0> / llGetRot();
     gTilted = FALSE;
+    llLinksetDataWrite(HOME_KEY, (string)gHomeRot);
 }
 
 level()
 {
-    llSetRot(gHomeRot);
+    llSetLocalRot(gHomeRot);
     gTilted = FALSE;
 }
 
@@ -468,6 +486,7 @@ level()
 // steps from upright put it on the equator in front of them. The region
 // sends the rotation to every viewer, so all see the same angle, unlike
 // a spin, which each draws for itself and which a tilt therefore ends.
+// FALSE if it can't tell where they are, 2 if the pole already faces them.
 integer tilt(key who, integer south)
 {
     list d = llGetObjectDetails(who, [OBJECT_POS]);
@@ -484,14 +503,14 @@ integer tilt(key who, integer south)
     if (c > 1.0) c = 1.0;
     if (c < -1.0) c = -1.0;
     float angle = llAcos(c);
-    if (angle < 0.01) return TRUE;
+    if (angle < 0.01) return 2;
     float step = TILT * DEG_TO_RAD;
     if (step > angle) step = angle;
     // About pole x to, which carries the pole toward them; for a pole
     // pointing straight away, over the top instead.
     vector axis = pole % to;
     if (llVecMag(axis) < 0.001) axis = pole % <0.0, 0.0, 1.0>;
-    llSetRot(r * llAxisAngle2Rot(llVecNorm(axis), step));
+    setRot(r * llAxisAngle2Rot(llVecNorm(axis), step));
     gTilted = TRUE;
     return TRUE;
 }
@@ -504,7 +523,7 @@ upright()
     // A default sphere has its poles on its local X axis and wraps its
     // texture pole to pole, so a world map lands sideways. Turning -90
     // degrees about Y carries local X to world up; the texture turns 90.
-    llSetRot(llEuler2Rot(<0.0, -PI_BY_TWO, 0.0>));
+    setRot(llEuler2Rot(<0.0, -PI_BY_TWO, 0.0>));
     llRotateTexture(PI_BY_TWO, FACE);
     llScaleTexture(1.0, 1.0, FACE);
     llOffsetTexture(0.0, 0.0, FACE);
@@ -610,7 +629,17 @@ act(key who, integer owner, string msg)
         gDataset = "";
         gTitle = "";
         gPaused = FALSE;
-        if (cmd == "rest") { gRotation = gHome; if (gTilted) level(); }
+        if (cmd == "rest")
+        {
+            gRotation = gHome;
+            if (gTilted) level();
+            // The owner's spin, which a visitor's tilt ended, comes back.
+            if (gOwnerSpin != 0.0 && gSpin == 0.0 && !gTilted)
+            {
+                gSpin = gOwnerSpin;
+                llTargetOmega(<0.0, 0.0, 1.0>, gSpin * DEG_TO_RAD, 1.0);
+            }
+        }
         if (!commit(saved)) { tell(who, "The globe couldn't change just now."); return; }
         gReq = NULL_KEY;   // a show still waiting on the node is overtaken
         gReqWho = NULL_KEY;
@@ -669,9 +698,12 @@ act(key who, integer owner, string msg)
     if (cmd == "tilt")
     {
         if (larg != "south" && larg != "north") { tell(who, "Tilt which pole toward you, south or north?"); return; }
-        if (!tilt(who, larg == "south")) { tell(who, "The globe couldn't tell where you are."); return; }
+        string pole = llList2String(["North", "South"], larg == "south");
+        integer moved = tilt(who, larg == "south");
+        if (!moved) { tell(who, "The globe couldn't tell where you are."); return; }
+        if (moved == 2) { tell(who, "The " + pole + " Pole already faces you."); return; }
         broadcast();
-        tell(who, "Tilted. The " + llList2String(["North", "South"], larg == "south") + " Pole is coming round toward you.");
+        tell(who, "Tilted. The " + pole + " Pole is coming round toward you.");
         return;
     }
     if (cmd == "level")
@@ -745,6 +777,7 @@ act(key who, integer owner, string msg)
         if (larg == "off" || (isNumber(arg) && rate == 0.0))
         {
             stopSpin();
+            gOwnerSpin = 0.0;
             tell(who, "Spin off.");
             return;
         }
@@ -757,6 +790,7 @@ act(key who, integer owner, string msg)
         // sphere's poles no longer are.
         if (gTilted) { tell(who, "Not while the globe is tilted: /" + (string)CHAN + " level first."); return; }
         gSpin = rate;
+        gOwnerSpin = rate;
         llTargetOmega(<0.0, 0.0, 1.0>, gSpin * DEG_TO_RAD, 1.0);
         tell(who, "Spinning at " + num(gSpin) + " degrees a second. Each viewer draws the spin for itself, so "
             + "visitors don't all see the same side at once. Leave it off when someone will point at a place.");
@@ -824,10 +858,19 @@ act(key who, integer owner, string msg)
         tell(who, "Showing " + what + ". Spin " + num(gSpin) + " degrees a second. Address: " + address());
         return;
     }
+    if (cmd == "home")
+    {
+        if (gSpin != 0.0) stopSpin();
+        home();
+        broadcast();
+        tell(who, "The globe's rotation now is its rest: the idle return, Upright again and a reset stand it like this.");
+        return;
+    }
     if (cmd == "upright")
     {
         upright();
         home();
+        gOwnerSpin = 0.0;
         broadcast();
         tell(who, "Poles upright, texture turned 90 degrees, spin off.");
         return;
@@ -849,9 +892,22 @@ default
         llListen(CHAN, "", llGetOwner(), "");
         while (llGetSubString(NODE, -1, -1) == "/") NODE = llDeleteSubString(NODE, -1, -1);
         if (llGetObjectName() == "Object") llSetObjectName("TerraViz globe");
-        if (UPRIGHT_ON_START) upright();
-        else stopSpin();
-        home();
+        if (UPRIGHT_ON_START) { upright(); home(); }
+        else
+        {
+            // A mesh globe stands back at the rest it was given, so a
+            // reset while tilted doesn't keep the tilt.
+            stopSpin();
+            string stored = llLinksetDataRead(HOME_KEY);
+            if (stored == "") home();
+            else
+            {
+                gHomeRot = (rotation)stored;
+                llSetLocalRot(gHomeRot);
+                gNorth = <0.0, 0.0, 1.0> / llGetRot();
+                gTilted = FALSE;
+            }
+        }
         anchor();
         if (setMedia())
         {
