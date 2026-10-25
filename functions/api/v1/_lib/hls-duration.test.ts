@@ -110,6 +110,17 @@ describe('mediaPlaylistDuration', () => {
     }
   })
 
+  it('refuses a length that is not a finite number, so the manifest never sends null', () => {
+    const playlist = (...extinf: string[]) =>
+      ['#EXTM3U', '#EXT-X-PLAYLIST-TYPE:VOD', ...extinf.flatMap((e, i) => [`#EXTINF:${e},`, `s${i}.ts`]), '#EXT-X-ENDLIST'].join('\n')
+    // Digits enough to parse as Infinity.
+    expect(mediaPlaylistDuration(playlist('9'.repeat(310)))).toBeNull()
+    // Finite, but past the largest double once kept to the microsecond.
+    expect(mediaPlaylistDuration(playlist('1' + '0'.repeat(305)))).toBeNull()
+    // Each finite, but not their sum.
+    expect(mediaPlaylistDuration(playlist('1' + '0'.repeat(308), '1' + '0'.repeat(308)))).toBeNull()
+  })
+
   it('accepts a whole number, and an #EXTINF with no title separator', () => {
     expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('#EXTINF:0.200000,', '#EXTINF:1,'))).toBe(7)
     expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('#EXTINF:0.200000,', '#EXTINF:0.2'))).toBe(6.2)

@@ -147,9 +147,10 @@ export function isMasterPlaylist(text: string): boolean {
  * A VOD media playlist's total length in seconds, to the microsecond,
  * or `null` when it cannot be stated: not a playlist, a master, no
  * `#EXT-X-ENDLIST`, no segments, an `#EXTINF` that is not a plain
- * decimal, one with no segment after it before the next, or a segment
- * with no `#EXTINF` before it. Tags and blank lines between an
- * `#EXTINF` and its segment are allowed, as the spec allows them.
+ * decimal, one with no segment after it before the next, a segment
+ * with no `#EXTINF` before it, or a total too large for a double. Tags
+ * and blank lines between an `#EXTINF` and its segment are allowed, as
+ * the spec allows them.
  */
 export function mediaPlaylistDuration(text: string): number | null {
   const lines = playlistLines(text)
@@ -175,7 +176,11 @@ export function mediaPlaylistDuration(text: string): number | null {
     pending = null
   }
   if (pending !== null || segments === 0 || !(total > 0)) return null
-  return Math.round(total * 1e6) / 1e6
+  // Plain digits can still be too many for a double (310 nines read as
+  // Infinity), and finite ones can overflow summed or once kept to the
+  // microsecond. A manifest would send any of those as `null`.
+  const seconds = Math.round(total * 1e6) / 1e6
+  return Number.isFinite(seconds) ? seconds : null
 }
 
 /** The address of a master playlist's first variant, or `null` if it
