@@ -99,7 +99,6 @@ integer UPRIGHT_ON_START = TRUE; // FALSE for a mesh globe with its own mapping
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
 integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
-integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
 
 // Shared media is capped at 2048 pixels a side (indra/llprimitive/
 // llmediaentry.h); a script asking for more gets a bounds error.
@@ -153,11 +152,7 @@ integer gWidth = 2048;
 integer gHash = TRUE;   // changes go after the #
 
 float   gSpin;          // degrees a second, 0 for still
-key     gReq;           // the dataset check in flight, if any
-string  gReqId;         // the id it checks
-string  gReqTitle;      // a name to fall back on for its title
-key     gReqWho;        // who asked: the owner, a visitor, or NULL_KEY
-integer gTalk;          // a talk is on, as the visitors script last said
+integer gPeak;          // the most memory used while showing a dataset
 
 help()
 {
@@ -534,49 +529,11 @@ upright()
     llOffsetTexture(0.0, 0.0, FACE);
 }
 
-// Asks the node for the dataset before showing it: a mistyped id is
-// caught here rather than turning every visitor's globe to the live Earth.
-// FALSE if Second Life wouldn't send the request.
-integer check(key who, string id, string described)
-{
-    // Only the start of the reply is read, since a whole record can run
-    // past 12 KB, which would cost this script twice that in memory. This
-    // node's serializer puts id, slug, title and format first, and
-    // dataset-serializer.test.ts holds it to that for this script's sake;
-    // the order is not part of the published contract.
-    key req = llHTTPRequest(NODE + "/api/v1/datasets/" + id, [HTTP_BODY_MAXLENGTH, 2048], "");
-    if (req == NULL_KEY)
-    {
-        // Any earlier show still waiting is dropped too, or it would land
-        // after whoever asked was told to try again.
-        gReq = NULL_KEY;
-        gReqWho = NULL_KEY;
-        tell(who, "The globe is busy. Try again in a minute.");
-        if (who != llGetOwner()) llOwnerSay("[exhibit] Second Life is limiting this object's web requests.");
-        return FALSE;
-    }
-    gReq = req;
-    gReqId = id;
-    gReqTitle = described;
-    gReqWho = who;
-    return TRUE;
-}
-
-// A choice still waiting on the node, set aside because the globe has
-// moved on since: a talk started, which takes the globe from whoever
-// held it, or someone else changed it. Landing late, the choice would
-// undo what came after it, and for someone who may no longer act.
-drop(string why)
-{
-    if (gReq == NULL_KEY) return;
-    key who = gReqWho;
-    gReq = NULL_KEY;
-    gReqWho = NULL_KEY;
-    if (who != NULL_KEY) tell(who, "Your choice of " + shorten(gReqTitle) + " was set aside: " + why);
-}
-
 show(key who, string id, string title)
 {
+    // Measured, for /9 memory: this script runs close to its 64 KB, and
+    // showing a dataset is when it needs the most.
+    llScriptProfiler(PROFILE_SCRIPT_MEMORY);
     list saved = snapshot();
     gDataset = id;
     gTitle = title;
@@ -585,20 +542,11 @@ show(key who, string id, string title)
     gRate = 1.0;
     gPaused = FALSE;
     anchor();
-    if (!commit(saved)) { tell(who, "The globe couldn't change just now. Try again in a moment."); return; }
-    if (who == llGetOwner()) tell(who, "Showing " + gTitle + " from its start, at its own speed. Address: " + address());
+    if (!commit(saved)) tell(who, "The globe couldn't change just now. Try again in a moment.");
+    else if (who == llGetOwner()) tell(who, "Showing " + gTitle + " from its start, at its own speed. Address: " + address());
     else tell(who, "Showing " + shorten(gTitle) + " for everyone at the globe.");
-}
-
-// A dataset id the node refused or couldn't vouch for. The owner hears
-// the reason; a visitor who chose it from the menu hears only that it
-// didn't work, since the remedy (fixing the "datasets" notecard) is the
-// owner's.
-refused(key who, string id, string reason)
-{
-    if (who == llGetOwner()) { tell(who, reason + " The globe is unchanged."); return; }
-    tell(who, "That dataset isn't available right now. The globe is unchanged.");
-    llOwnerSay("[exhibit] A visitor chose " + id + " from the menu: " + reason);
+    llScriptProfiler(PROFILE_NONE);
+    if (llGetSPMaxMemory() > gPeak) gPeak = llGetSPMaxMemory();
 }
 
 // One command, from the owner's chat or a visitor's menu. A visitor
@@ -633,10 +581,17 @@ act(key who, integer owner, string msg)
         {
             if (owner) tell(who, "\"" + arg + "\" is neither a name from /" + (string)CHAN
                 + " list nor a dataset id. Ids are letters, digits, - and _.");
-            else refused(who, arg, "\"" + arg + "\" is not a dataset id.");
+            else
+            {
+                tell(who, "That dataset isn't available right now. The globe is unchanged.");
+                llOwnerSay("[exhibit] A visitor chose \"" + arg + "\" from the menu, which isn't a dataset id.");
+            }
             return;
         }
-        if (check(who, dataset, described) && owner) tell(who, "Asking the node about " + dataset + "...");
+        // Shown at once. The info script reads the record next and puts
+        // the globe back on the live Earth if the node has no such
+        // dataset or it is a tour; this script holds no reply of its own.
+        show(who, dataset, described);
         return;
     }
     // "rest" is the visitors script's own return, once nobody has been at
@@ -659,8 +614,6 @@ act(key who, integer owner, string msg)
             }
         }
         if (!commit(saved)) { tell(who, "The globe couldn't change just now."); return; }
-        gReq = NULL_KEY;   // a show still waiting on the node is overtaken
-        gReqWho = NULL_KEY;
         tell(who, "Back to the live Earth.");
         return;
     }
@@ -671,9 +624,6 @@ act(key who, integer owner, string msg)
             tell(who, "The live Earth follows the real clock, so there is nothing to " + cmd + ". Show a dataset first.");
             return;
         }
-        // Someone else acting on the clip on the globe comes after a
-        // choice still waiting on the node, and the later of the two wins.
-        if (who != gReqWho) drop("someone else changed the globe first.");
     }
     if (cmd == "pause")
     {
@@ -898,7 +848,9 @@ act(key who, integer owner, string msg)
     }
     if (cmd == "memory")
     {
-        tell(who, "Globe script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64.");
+        string peaked = "";
+        if (gPeak) peaked = ", and at most " + (string)(gPeak / 1024) + " KB while showing a dataset";
+        tell(who, "Globe script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64" + peaked + ".");
         return;
     }
     // The visitors script's commands, which it answers itself.
@@ -954,72 +906,9 @@ default
     link_message(integer sender, integer n, string str, key id)
     {
         if (n == MSG_HELLO) { broadcast(); return; }
-        if (n == MSG_TALK)
-        {
-            // Only the start of a talk, not the visitors script saying it
-            // again after a reset. The presenter who started it keeps a
-            // choice of their own.
-            integer talk = str == "1";
-            if (talk && !gTalk && id != gReqWho) drop("a talk started before the node answered.");
-            gTalk = talk;
-            return;
-        }
         if (n != MSG_CONTROL) return;
         // A visitor's own request, or one the scripts made (NULL_KEY). The
         // owner using the menu is still the owner.
         act(id, id == llGetOwner(), str);
-    }
-
-    http_response(key id, integer status, list meta, string body)
-    {
-        if (id != gReq) return;   // overtaken by a later show, or by earth
-        gReq = NULL_KEY;
-        // Who asked is kept only until the node answers.
-        key who = gReqWho;
-        gReqWho = NULL_KEY;
-        if (status == 404)
-        {
-            refused(who, gReqId, "The node has no dataset " + gReqId + ".");
-            return;
-        }
-        string title = "";
-        if (status == 200 && llGetSubString(body, 0, 0) != "{")
-            // Bot protection or a node whose app answers every path.
-            llOwnerSay("[exhibit] The node answered with a web page rather than " + gReqId + "'s record, so it "
-                + "couldn't be checked. Showing it anyway. If it won't load, every visitor's globe shows the live Earth.");
-        else if (status == 200)
-        {
-            // The record is cut short, so it is not JSON as a whole. Its
-            // first three fields are, closed off before "format".
-            integer f = llSubStringIndex(body, ",\"format\":\"");
-            if (f > 0)
-            {
-                title = llJsonGetValue(llGetSubString(body, 0, f - 1) + "}", ["title"]);
-                if (title == JSON_INVALID || title == JSON_NULL) title = "";
-                string rest = llGetSubString(body, f + 11, f + 60);
-                integer q = llSubStringIndex(rest + "\"", "\"");
-                string format = "";
-                if (q > 0) format = llGetSubString(rest, 0, q - 1);
-                // The page shows only images and videos, and refuses the
-                // rest without retrying, which would leave every visitor's
-                // globe on the live Earth.
-                if (llSubStringIndex(format, "image/") != 0 && llSubStringIndex(format, "video/") != 0)
-                {
-                    string kind = "is in the format \"" + format + "\"";
-                    if (format == "") kind = "has no format";
-                    if (llSubStringIndex(format, "tour/") == 0) kind = "is a tour, which drives the full app";
-                    refused(who, gReqId, gReqId + " " + kind + ". A globe shows only images and videos.");
-                    return;
-                }
-            }
-            else
-                llOwnerSay("[exhibit] Couldn't read " + gReqId + "'s format from the node's reply, so it couldn't be "
-                    + "checked. Showing it anyway. If it won't load, every visitor's globe shows the live Earth.");
-        }
-        else
-            llOwnerSay("[exhibit] Couldn't check " + gReqId + " with the node (HTTP " + (string)status + "). "
-                + "Showing it anyway. If it won't load, every visitor's globe shows the live Earth.");
-        if (title == "") title = gReqTitle;
-        show(who, gReqId, title);
     }
 }

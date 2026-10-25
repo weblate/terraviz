@@ -124,6 +124,13 @@ float   MAX_RATE = 12.8;
 string  ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 integer ID_MAX = 128;
 
+// The most of the node's record read when checking a dataset: its first
+// four fields (id, slug, title, format) are under 1 KB even for the
+// longest slug and title the node accepts, and every byte read is held
+// twice over while the reply is dealt with. Reading 2048 ran the
+// exhibit's globe script, which shares this code, out of memory in-world.
+integer CHECK_MAX = 1024;
+
 // What the globe shows. The address is built from these alone.
 string  gDataset;       // the node's dataset id, or "" for the live Earth
 string  gTitle;         // its title, as the node gave it
@@ -424,7 +431,7 @@ integer check(string id, string described)
     // node's serializer puts id, slug, title and format first, and
     // dataset-serializer.test.ts holds it to that for this script's sake;
     // the order is not part of the published contract.
-    key req = llHTTPRequest(NODE + "/api/v1/datasets/" + id, [HTTP_BODY_MAXLENGTH, 2048], "");
+    key req = llHTTPRequest(NODE + "/api/v1/datasets/" + id, [HTTP_BODY_MAXLENGTH, CHECK_MAX], "");
     if (req == NULL_KEY)
     {
         // Any earlier /8 show still waiting is dropped too, or it would

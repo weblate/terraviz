@@ -169,24 +169,44 @@ describe('second-life exhibit scripts', () => {
     expect(visitors).toContain('else if (msg == BTN_LEVEL) ask(who, "level");')
   })
 
-  it('set aside a dataset choice the globe has moved on from', () => {
-    // A choice waits on the node. A talk starting in that time takes the
-    // globe from whoever chose, so their choice must not land on the talk;
-    // nor may it undo someone else acting on the clip meanwhile (both
-    // found in review).
-    const drop = body(globe, 'drop(string why)')
-    expect(drop).toContain('gReq = NULL_KEY;')
-    expect(drop).toContain('gReqWho = NULL_KEY;')
-    // The presenter who starts a talk is named with it, and keeps a choice
-    // of their own; a talk said again after a reset is not a start.
-    for (const call of all(visitors, /\bstartTalk\(([^)]*)\);/g)) expect(call).toBe('who')
-    expect(body(visitors, 'startTalk(key who)')).toContain('llMessageLinked(LINK_THIS, MSG_TALK, "1", who);')
-    expect(globe).toContain('if (talk && !gTalk && id != gReqWho) drop(')
+  it('hold no web reply in the globe script, and leave checking a choice to the info script', () => {
+    // Second Life hands every web reply to every script in the prim with
+    // an http_response, and the globe script rests close to its 64 KB
+    // (62 KB, measured in-world in October 2026). Holding its own check's
+    // reply while it showed a dataset ran it out of memory there, and the
+    // info script's records would have too. So it makes no request and has
+    // no handler, and shows a choice at once.
+    expect(globe).not.toContain('http_response')
+    expect(globe).not.toContain('llHTTPRequest')
     const act = body(globe, 'act(key who, integer owner, string msg)')
-    const playback = act.slice(act.indexOf('if (cmd == "pause" || cmd == "play"'), act.indexOf('if (cmd == "pause")\n'))
-    expect(playback).toContain('if (who != gReqWho) drop(')
-    // Past the live Earth's refusal, which changes nothing.
-    expect(playback.indexOf('if (who != gReqWho) drop(')).toBeGreaterThan(playback.indexOf('return;'))
+    const show = act.slice(act.indexOf('if (cmd == "show")'), act.indexOf('if (cmd == "earth"'))
+    expect(show).toMatch(/\n\s+show\(who, dataset, described\);/)
+    // The info script, which reads the record anyway, puts the globe back
+    // on the live Earth when the node has no such dataset or it is a tour,
+    // as a script's own request, which tells no visitor.
+    const unshowable = body(info, 'unshowable(string why)')
+    expect(unshowable).toContain('llMessageLinked(LINK_THIS, MSG_CONTROL, "earth", NULL_KEY);')
+    expect(unshowable).toContain('llOwnerSay(')
+    expect(info).toContain('if (status == 404) { unshowable(')
+    expect(info).toContain('if (gUnshowable) { unshowable(')
+    expect(body(info, 'record(string body)')).toContain(
+      'gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;',
+    )
+    expect(body(info, 'forget()')).toContain('gUnshowable = FALSE;')
+    // "earth" is a control any script may send: it sits before the owner's
+    // gate in the globe script.
+    expect(act.indexOf('if (cmd == "earth"')).toBeLessThan(act.indexOf("// Everything below is the owner's."))
+    // The info script reads only as much of a record as fits beside what
+    // it holds at rest (50 KB of 64, measured in-world), and a little of
+    // an abstract, which it holds several times over while reading it.
+    expect(Number(constant(info, 'integer', 'BODY_MAX'))).toBeLessThanOrEqual(3072)
+    expect(Number(constant(info, 'integer', 'ABSTRACT_MAX'))).toBeLessThanOrEqual(1000)
+    // And the globe says how full showing a dataset left it.
+    const shown = body(globe, 'show(key who, string id, string title)')
+    expect(shown).toMatch(/\{\n[^\n]*\n[^\n]*\n\s+llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);/)
+    expect(shown).toMatch(/llScriptProfiler\(PROFILE_NONE\);\n\s+if \(llGetSPMaxMemory\(\) > gPeak\) gPeak = llGetSPMaxMemory\(\);$/)
+    expect(shown).not.toContain('return;')
+    expect(act).toContain('KB while showing a dataset')
   })
 
   it("trust a clip's length only from a manifest the node built itself", () => {

@@ -103,11 +103,7 @@ is told a talk is starting. Until it ends, only presenters can change
 the globe, and the floating text says a talk is on. It ends when a
 presenter chooses End talk, or once no presenter has been at the globe
 for `talk minutes`, so a presenter who logs off doesn't lock it. The
-owner counts as a presenter, and can end a talk from chat. A dataset a
-visitor chose just before the talk started, which the globe was still
-checking with the node, is set aside and they're told so, rather than
-landing on the talk. So is one chosen while somebody else paused or
-moved the clip on the globe.
+owner counts as a presenter, and can end a talk from chat.
 
 **The live Earth comes back** once nobody has been within `radius` of
 the globe for `idle minutes`, turned back to the owner's
@@ -276,8 +272,13 @@ command never reaches both kinds of globe:
 
 The probe kit's README describes each, under
 [Commands](../second-life-probe/README.md#commands). Here `/9 rotation`
-also sets where the globe goes back to once visitors leave. The owner
-can always act, and doesn't take the hold. Besides those:
+also sets where the globe goes back to once visitors leave, and
+`/9 show` shows the dataset at once rather than asking the node first:
+the info script reads its record next, and if the node has no such
+dataset, or it is a tour, it tells you and puts the globe back on the
+live Earth. (The globe script runs too close to its 64 KB to hold the
+node's reply; see Things that will trip you up.) The owner can always
+act, and doesn't take the hold. Besides those:
 
 | Command | What it does |
 |---|---|
@@ -287,7 +288,7 @@ can always act, and doesn't take the hold. Besides those:
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters and datasets, and the four settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
-| `/9 memory` | How much of its 64 KB each script uses. The info script also says the most it has used reading a record. |
+| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a record. |
 | `/9 help` | The globe script's list. |
 
 ## What leaves the object
@@ -297,9 +298,7 @@ region's avatar list every five seconds and keeps only how many are
 near and when someone last was. It knows the holder by key, and by
 display name to tell others who has the globe, only while the hold
 lasts, and anyone with a menu open by key, for the five minutes the
-menu answers. The globe script knows the key of a visitor whose choice
-of dataset the node is checking, until the node answers, so it can
-tell them if it was refused. The info script keeps the key of the last
+menu answers. The info script keeps the key of the last
 visitor who asked for "About", so a double press is answered once, and
 tells a visitor about a dataset in their own chat, which no one else
 sees. A tilt reads the position of whoever asked, once, to aim at them.
@@ -361,7 +360,9 @@ stand at the globe.
    five minutes. The floating text should show a date and a UTC time,
    from 30 Sep 2012, 12:00 UTC to 1 Oct 2012, 11:35 UTC across the clip.
    Then `/9 memory`. Every script should report well under 64 KB. The
-   info script's peak is the number that matters: say what it was.
+   peaks are the numbers that matter, the globe script's while showing a
+   dataset and the info script's while reading a record: say what they
+   were.
 
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
@@ -372,6 +373,15 @@ each avatar used, and what steps 2 and 9 showed.
   child prim.** A tilt turns the prim the scripts are in, so as the root
   of a build, with a stand linked to it, the whole build would tip.
 
+- **A script stops for good at 64 KB.** It reports a Stack-Heap
+  Collision and does nothing more until it is reset, and a script with
+  no room left can stop the moment it starts. In-world in October 2026
+  the globe script rested at 62 KB and the other two at about 50, and
+  every web reply goes to every script in the sphere with a handler for
+  one. So only the info script asks the node anything, the globe
+  script shows a choice without checking it first, and the info script
+  reads only the first 3 KB of a record: a long one loses the end of its
+  abstract, and a few datasets their dates or licence.
 - **A visitor's change takes a second.** Second Life pauses the globe
   script for a second whenever it sets media.
 - **A long dataset name in `datasets` is cut** to a button's 24 bytes.

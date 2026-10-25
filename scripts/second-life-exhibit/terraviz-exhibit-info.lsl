@@ -58,6 +58,7 @@
 integer CHAN = 9;
 
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
+integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
 integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
@@ -69,12 +70,16 @@ integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the 
 // exhibit.test.ts fails if it changes. A record longer than this is read
 // as far as it goes: a value cut short ends "...", a field past the cut is
 // missing, and "About" says the rest is at the dataset's page.
-integer BODY_MAX = 9000;
+// Held at two bytes a character, a read is the largest thing this script
+// holds, and it rests at about 50 KB of its 64 (measured in-world, October
+// 2026). 9000 couldn't fit; 3072 holds every field this script reads in 78%
+// of the node's records, the dates in 95% and the credit in all of them.
+integer BODY_MAX = 3072;
 // How much of a manifest: its length and stream address come before its
 // list of files, which for a Vimeo video is long, and this leaves room for
 // a long title and address before them.
 integer MANIFEST_MAX = 4096;
-integer ABSTRACT_MAX = 2500;   // characters of an abstract kept for "About"
+integer ABSTRACT_MAX = 1000;   // characters of an abstract kept for "About", each held several times while read
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
 float   TICK = 2.0;            // how often a playing clip's date is worked out again
 integer MIN_CREDIT = 48;       // bytes the credit keeps when the hover text is full
@@ -139,6 +144,7 @@ integer gRetryAt;
 
 string  gShown;        // the hover text as last set
 integer gPeak;         // the most memory used reading a record
+integer gUnshowable;   // the record names a format the page can't show
 string  gWarned;       // the dataset whose notecard the owner was last warned about
 key     gLastAbout;
 integer gLastAboutAt;
@@ -558,6 +564,17 @@ string ref(string slug)
     return slug;
 }
 
+// The globe shows a choice without asking the node first, since holding
+// the node's reply ran it out of memory (in-world, October 2026). So this
+// script, which reads the record anyway, puts it back on the live Earth
+// when the page can't show it, and tells the owner why.
+unshowable(string why)
+{
+    llOwnerSay("[exhibit] " + gDataset + " " + why + ", so the globe is back on the live Earth.");
+    gHaveRec = TRUE;   // nothing more to ask the node about it
+    llMessageLinked(LINK_THIS, MSG_CONTROL, "earth", NULL_KEY);
+}
+
 record(string body)
 {
     // Where the fields this script reads end. A record without it was cut
@@ -566,7 +583,11 @@ record(string body)
     integer whole = stop != -1;
     if (!whole) gCut = TRUE;
     gRef = ref(field(body, stop, "slug", 70));
-    gVideo = llSubStringIndex(field(body, stop, "format", 40), "video/") == 0;
+    string format = field(body, stop, "format", 40);
+    gVideo = llSubStringIndex(format, "video/") == 0;
+    // Named, and neither a video nor an image: a tour, which the page
+    // refuses. A format not read says nothing.
+    gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;
     gCuts = 0;
     gAbstract = field(body, stop, "abstractTxt", ABSTRACT_MAX);
     if (gLastCut) gCuts = gCuts | 1;
@@ -679,6 +700,7 @@ forget()
     gFor = gDataset;
     gHaveRec = FALSE;
     gVideo = FALSE;
+    gUnshowable = FALSE;
     gDated = FALSE;
     gDuration = 0.0;
     gFrames = FALSE;
@@ -739,6 +761,7 @@ default
         if (req == gRecReq)
         {
             gRecReq = NULL_KEY;
+            if (status == 404) { unshowable("isn't a dataset on the node"); pace(); return; }
             if (status != 200) { later(30); pace(); return; }
             llScriptProfiler(PROFILE_SCRIPT_MEMORY);
             record(body);
@@ -746,6 +769,7 @@ default
             tidy();
             llScriptProfiler(PROFILE_NONE);
             if (llGetSPMaxMemory() > gPeak) gPeak = llGetSPMaxMemory();
+            if (gUnshowable) { unshowable("is a tour, which drives the full app rather than a globe"); pace(); return; }
             fetch();
         }
         else if (req == gManReq)
