@@ -21,13 +21,15 @@
  *     what the frontend expects.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  TRANSIENT_CACHE_CONTROL,
   imageVariants,
   onRequestGet,
   parseDataRef,
   resolveManifest,
 } from './manifest'
+import { resetHlsDurationsForTests } from '../../_lib/hls-duration'
 import {
   asD1,
   makeCtx,
@@ -92,6 +94,11 @@ describe('imageVariants', () => {
 })
 
 describe('GET /api/v1/datasets/{id}/manifest', () => {
+  beforeEach(() => {
+    // A settled length is remembered per isolate, so no test may see
+    // another's.
+    resetHlsDurationsForTests()
+  })
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -183,6 +190,19 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     // wire shape is the union the frontend expects in Commit H.
     expect((body as unknown as { dash?: string }).dash).toBeUndefined()
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads an unusable Vimeo duration as unknown, since the field is never negative', async () => {
+    const sqlite = seedFixtures({ count: 1 })
+    const env = { CATALOG_DB: asD1(sqlite), CATALOG_KV: makeKV(), VIDEO_PROXY_BASE }
+    for (const duration of [-5, '600', null]) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ id: '100', duration, hls: 'https://cdn.test/hls.m3u8' }))),
+      )
+      const res = await onRequestGet(makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } }))
+      expect((await readJson<VideoBody>(res)).duration, JSON.stringify(duration)).toBe(0)
+    }
   })
 
   it('returns 502 when the video proxy fails', async () => {
@@ -452,8 +472,6 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     const sqlite = seedFixtures({ count: 1 })
     sqlite
       .prepare(
-        // A key no other test reads, since settled readings are
-        // remembered per isolate.
         `UPDATE datasets SET
             data_ref = 'r2:videos/DS000AAAAAAAAAAAAAAAAAAAAA/01FAILING/master.m3u8',
             format = 'video/mp4'
@@ -477,7 +495,35 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     const body = await readJson<{ duration: number; hls: string }>(res)
     expect(body.duration).toBe(0)
     expect(body.hls).toContain('01FAILING/master.m3u8')
-    expect(res.headers.get('cache-control')).toBe('no-store')
+    // Cached briefly, so no viewer keeps a 0 that would read
+    // differently a moment later, and a 304 says the same.
+    expect(res.headers.get('cache-control')).toBe(TRANSIENT_CACHE_CONTROL)
+    const etag = res.headers.get('etag')!
+    const again = await onRequestGet(
+      makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' }, headers: { 'if-none-match': etag } }),
+    )
+    expect(again.status).toBe(304)
+    expect(again.headers.get('cache-control')).toBe(TRANSIENT_CACHE_CONTROL)
+  })
+
+  it('hands the length read to waitUntil, so a late read can still be remembered', async () => {
+    const sqlite = seedFixtures({ count: 1 })
+    sqlite
+      .prepare(
+        `UPDATE datasets SET
+            data_ref = 'r2:videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8',
+            format = 'video/mp4'
+         WHERE slug = 'dataset-0'`,
+      )
+      .run()
+    const CATALOG_R2 = { async get() { return null } } as unknown as R2Bucket
+    const env = { CATALOG_DB: asD1(sqlite), CATALOG_KV: makeKV(), R2_PUBLIC_BASE: 'https://video.example.com', CATALOG_R2 }
+    const ctx = makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } })
+    const waitUntil = vi.fn()
+    ;(ctx as { waitUntil: (p: Promise<unknown>) => void }).waitUntil = waitUntil
+    expect((await onRequestGet(ctx)).status).toBe(200)
+    expect(waitUntil).toHaveBeenCalledTimes(1)
+    expect(waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise)
   })
 
   it('falls back to single-file MP4 for r2: video data_refs that do not end in .m3u8', async () => {

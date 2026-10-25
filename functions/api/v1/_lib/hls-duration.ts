@@ -37,20 +37,25 @@
  *   path of every video the main app loads, which ignores this field,
  *   so a slow bucket must not hold it up: past the limit the length is
  *   unknown.
- * - **Remembered per isolate** for `MEMO_TTL_MS`, so a crowd loading
- *   one globe's dataset reads its playlists about once. An upload's
- *   keys are immutable, and the time limit on a memo covers the older
- *   bundles rewritten in place.
+ * - **Remembered per isolate** for `MEMO_TTL_MS`, so once one reading
+ *   has landed, a crowd loading one globe's dataset through that
+ *   isolate reads nothing more. Requests that miss together each read,
+ *   since Workers can't share one request's I/O with another. An
+ *   upload's keys are immutable, and the time limit on a memo covers
+ *   the older bundles rewritten in place. A read that missed the time
+ *   limit is handed to `waitUntil`, so it can still land and be
+ *   remembered after the response has gone.
  *
  * **0 means unknown, and anything uncertain is unknown.** No binding, a
  * missing or oversized playlist, a variant outside the master's own
  * folder, a playlist with no `#EXT-X-ENDLIST` (a live window, whose
  * total is not the clip's), an `#EXTINF` that is not a plain decimal or
- * that no segment follows, an R2 error or the time limit all give 0.
+ * that no segment follows, a segment no `#EXTINF` comes before, an R2
+ * error or the time limit all give 0.
  * That is what the manifest reported before, so a reader is never worse
  * off than it was, and none of it costs the manifest itself. The last
- * two are reported as not `settled`, so the manifest is not cached on
- * a reading that could be different a moment later.
+ * two are reported as not `settled`, so the manifest is cached only
+ * briefly on a reading that could be different a moment later.
  */
 
 /** A playlist larger than this is not read. ffmpeg's playlists run
@@ -73,9 +78,11 @@ export const MEMO_MAX_ENTRIES = 512
  *  the master (`cli/lib/ffmpeg-hls.ts`, `cli/lib/hls-incremental.ts`). */
 const CONVENTIONAL_FIRST_VARIANT = 'stream_0/playlist.m3u8'
 
-/** An `#EXTINF` duration as the HLS spec writes one: a decimal integer
- *  or a decimal floating point number. `Number()` alone would also read
- *  `0x10`, `1e3` and `Infinity`. */
+/** An `#EXTINF` duration as both of TerraViz's writers put one: digits,
+ *  then optionally a point and more digits. That is narrower than the
+ *  HLS spec, which also allows `.5` and `5.`, and refusing those only
+ *  costs an unknown length. `Number()` alone would also read `0x10`,
+ *  `1e3` and `Infinity`. */
 const EXTINF_SECONDS = /^[0-9]+(?:\.[0-9]+)?$/
 
 /** The part of an R2 bucket this module reads, so a test needs no
@@ -91,20 +98,35 @@ export interface HlsDurationReading {
   settled: boolean
 }
 
+interface MemoEntry {
+  reading: HlsDurationReading
+  atMs: number
+}
+
 export interface HlsDurationMemo {
-  get(key: string): { reading: HlsDurationReading; atMs: number } | undefined
-  set(key: string, value: { reading: HlsDurationReading; atMs: number }): void
+  get(key: string): MemoEntry | undefined
+  set(key: string, value: MemoEntry): void
   delete(key: string): boolean
   readonly size: number
   keys(): IterableIterator<string>
 }
 
-const isolateMemo: HlsDurationMemo = new Map()
+const isolateMemo = new Map<string, MemoEntry>()
+
+/** Forget every remembered reading, so one test's cannot answer
+ *  another's. */
+export function resetHlsDurationsForTests(): void {
+  isolateMemo.clear()
+}
 
 export interface ReadHlsDurationOptions {
   budgetMs?: number
   memo?: HlsDurationMemo
   nowMs?: () => number
+  /** The request's `waitUntil`, so a read that misses the time limit
+   *  can still land and be remembered after the response has gone.
+   *  Without it a Worker cancels that read when the response ends. */
+  waitUntil?: (promise: Promise<unknown>) => void
 }
 
 function playlistLines(text: string): string[] | null {
@@ -125,7 +147,9 @@ export function isMasterPlaylist(text: string): boolean {
  * A VOD media playlist's total length in seconds, to the microsecond,
  * or `null` when it cannot be stated: not a playlist, a master, no
  * `#EXT-X-ENDLIST`, no segments, an `#EXTINF` that is not a plain
- * decimal, or one with no segment after it before the next.
+ * decimal, one with no segment after it before the next, or a segment
+ * with no `#EXTINF` before it. Tags and blank lines between an
+ * `#EXTINF` and its segment are allowed, as the spec allows them.
  */
 export function mediaPlaylistDuration(text: string): number | null {
   const lines = playlistLines(text)
@@ -276,7 +300,8 @@ export async function readHlsDuration(
     timer = setTimeout(() => resolve(UNKNOWN_FOR_NOW), options.budgetMs ?? READ_BUDGET_MS)
   })
   // Remembered when it lands, not when it is returned, so a reading
-  // that missed the time limit still spares the next request.
+  // that missed the time limit still spares the next request, as long
+  // as `waitUntil` keeps it alive past the response.
   const reading = readFromBucket(bucket, key).then(
     (seconds): HlsDurationReading => {
       const settled = { seconds, settled: true }
@@ -285,6 +310,7 @@ export async function readHlsDuration(
     },
     (): HlsDurationReading => UNKNOWN_FOR_NOW,
   )
+  options.waitUntil?.(reading)
   try {
     return await Promise.race([reading, outOfTime])
   } finally {

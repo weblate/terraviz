@@ -814,7 +814,7 @@ The work, smallest first:
      date. Phase 2 does both of these:
      - fill in the manifest's `duration`. The Federation reviewer
        classed it as a behaviour change, since the field already
-       existed, and approved it. *Done for `r2:` HLS bundles, which is
+       existed, and found no blocker. *Done for `r2:` HLS bundles, which is
        what the node hosts itself:* the manifest now reads the length
        from the bundle's own playlists
        (`functions/api/v1/_lib/hls-duration.ts`), and 0 still means
@@ -822,7 +822,8 @@ The work, smallest first:
        Hurricane Season 2024 reads 183 s, the same on all three
        renditions. `vimeo:` already carried Vimeo's figure. `stream:`
        and single files still report 0, and any reading can be 0 for
-       a moment when the bucket is slow;
+       a moment when the bucket is slow, which the manifest caches for
+       15 s rather than five minutes;
      - show the dataset's date range when the exact date can't be
        worked out, which covers those.
    - **The slow-link behaviour is page work, not the controller's.** It

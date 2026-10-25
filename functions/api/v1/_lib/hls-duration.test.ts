@@ -126,6 +126,23 @@ describe('mediaPlaylistDuration', () => {
     expect(mediaPlaylistDuration(doubled)).toBeNull()
   })
 
+  it('allows tags, comments and blank lines between an #EXTINF and its segment', () => {
+    const between = FFMPEG_VARIANT.replace(
+      '#EXTINF:0.200000,\nsegment_001.ts',
+      [
+        '#EXTINF:0.200000,',
+        '#EXT-X-BYTERANGE:1000@0',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-10-25T00:00:00Z',
+        '#EXT-X-DISCONTINUITY',
+        '# a comment',
+        '',
+        'segment_001.ts',
+      ].join('\n'),
+    )
+    expect(between).not.toBe(FFMPEG_VARIANT)
+    expect(mediaPlaylistDuration(between)).toBe(6.2)
+  })
+
   it('refuses a segment with no #EXTINF before it', () => {
     expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('segment_001.ts', 'segment_001.ts\nextra.ts'))).toBeNull()
   })
@@ -246,7 +263,7 @@ describe('readHlsDuration', () => {
     expect(r).toEqual({ seconds: 0, settled: true })
   })
 
-  it('is 0, and reads nothing the master didn’t name, for a variant outside its folder', async () => {
+  it('is 0, and reads only the master and the guess, for a variant outside its folder', async () => {
     const reads: string[] = []
     const master = MASTER.replace('stream_0/playlist.m3u8', 'https://cdn.example.com/p.m3u8')
     const r = await readHlsDuration(bucket({ [MASTER_KEY]: master }, reads), MASTER_KEY, { memo: memo() })
@@ -374,6 +391,28 @@ describe('readHlsDuration', () => {
     expect((await readHlsDuration(sometimes, MASTER_KEY, { memo: m })).settled).toBe(false)
     fail = false
     expect(await readHlsDuration(sometimes, MASTER_KEY, { memo: m })).toEqual({ seconds: 15.966667, settled: true })
+  })
+
+  it('hands the read to waitUntil, so it can land after the response', async () => {
+    const waitUntil = vi.fn()
+    await readHlsDuration(bucket({ [MASTER_KEY]: MASTER, [VARIANT_KEY]: VARIANT }), MASTER_KEY, { memo: memo(), waitUntil })
+    expect(waitUntil).toHaveBeenCalledTimes(1)
+    await expect(waitUntil.mock.calls[0][0]).resolves.toEqual({ seconds: 15.966667, settled: true })
+  })
+
+  it('counts a reading again as new, so the one just refreshed is not the next forgotten', async () => {
+    const m = memo()
+    const keyFor = (i: number) => `v/${i}/stream_0/playlist.m3u8`
+    const b = bucket(Object.fromEntries(Array.from({ length: MEMO_MAX_ENTRIES + 1 }, (_, i) => [keyFor(i), FFMPEG_VARIANT])))
+    let now = 0
+    const nowMs = () => now
+    for (let i = 0; i < MEMO_MAX_ENTRIES; i++) await readHlsDuration(b, keyFor(i), { memo: m, nowMs })
+    // The oldest expires and is read again, which makes it the newest.
+    now = MEMO_TTL_MS
+    await readHlsDuration(b, keyFor(0), { memo: m, nowMs })
+    await readHlsDuration(b, keyFor(MEMO_MAX_ENTRIES), { memo: m, nowMs })
+    expect(m.get(keyFor(0))).toBeDefined()
+    expect(m.get(keyFor(1))).toBeUndefined()
   })
 
   it('forgets the oldest reading past its size', async () => {

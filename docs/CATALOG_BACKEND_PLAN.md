@@ -930,9 +930,15 @@ number that is never negative and often has a fraction. **0 means
 unknown**, and a reader must treat it that way. A reader has to
 expect 0 from:
 - a `stream:` asset or a single file;
+- a `vimeo:` asset the proxy gave no usable length for;
+- an `r2:` bundle whose playlists can't state one (a live playlist, or
+  one the node can't parse);
 - an older node;
 - a node whose bucket could not be read just then, which makes the 0
-  temporary.
+  temporary. That manifest is served with a 15-second cache
+  (`max-age=15`) instead of the usual five minutes. The header is the
+  only way to tell, so a reader that needs the length should ask
+  again later after any 0.
 
 For a bundle the node hosts itself (`r2:` HLS) it is the bundle's own
 playlists' `#EXTINF`s summed, to the microsecond

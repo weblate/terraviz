@@ -57,7 +57,9 @@
  * proxy signs MP4 URLs with a ~1-hour TTL, so a few minutes is
  * generous-enough headroom without serving expired URLs. A manifest
  * whose `duration` could not be read for a passing reason (an R2 error
- * or the time limit) is sent `no-store`, so no viewer keeps the 0.
+ * or the time limit) is cached for `TRANSIENT_CACHE_CONTROL`'s 15 s
+ * instead, so no viewer keeps the 0 for long, while a bucket that
+ * stays slow still can't take caching away from every load.
  */
 
 import { CatalogEnv } from '../../_lib/env'
@@ -74,6 +76,10 @@ import { encodeR2Key, resolveR2HlsPublicUrl, resolveR2PublicUrl } from '../../_l
 import { readHlsDuration } from '../../_lib/hls-duration'
 
 const CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=600'
+
+/** For a manifest whose `duration` is 0 only for now: an R2 error or
+ *  the read's time limit (`_lib/hls-duration.ts`). */
+export const TRANSIENT_CACHE_CONTROL = 'public, max-age=15'
 
 /** Phase Z4 (docs/ZYRA_INTEGRATION_PLAN.md): rows with a LIVE
  *  update cadence re-bind to their newest upload bundle faster — a
@@ -196,7 +202,12 @@ async function fetchVimeoManifest(
     kind: 'video',
     id: data.id,
     title: data.title ?? '',
-    duration: data.duration ?? 0,
+    // The manifest's `duration` is never negative: anything the proxy
+    // sends that isn't a usable length reads as unknown.
+    duration:
+      typeof data.duration === 'number' && Number.isFinite(data.duration) && data.duration > 0
+        ? data.duration
+        : 0,
     hls: data.hls,
     files: data.files ?? [],
   }
@@ -231,6 +242,9 @@ export async function resolveManifest(
   row: { id: string; format: string; data_ref: string },
   env: CatalogEnv,
   fetchImpl: typeof fetch = fetch,
+  /** The request's `waitUntil`, so an `r2:` HLS length read that
+   *  misses its time limit can still be remembered. */
+  waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<
   | { manifest: Manifest; transient?: true }
   | { error: { status: number; code: string; message: string } }
@@ -392,7 +406,7 @@ export async function resolveManifest(
         }
         // From the bundle's own playlists; 0 whenever they can't say,
         // which is what this branch always reported before.
-        const length = await readHlsDuration(env.CATALOG_R2, parsed.value)
+        const length = await readHlsDuration(env.CATALOG_R2, parsed.value, { waitUntil })
         return {
           manifest: {
             kind: 'video',
@@ -463,14 +477,14 @@ export const onRequestGet: PagesFunction<CatalogEnv, 'id'> = async context => {
   }
   if (!row) return jsonError(404, 'not_found', `Dataset ${id} not found.`)
 
-  const result = await resolveManifest(row, context.env)
+  const result = await resolveManifest(row, context.env, undefined, p => context.waitUntil(p))
   if ('error' in result) {
     return jsonError(result.error.status, result.error.code, result.error.message)
   }
 
   const body = JSON.stringify(result.manifest)
   const etag = await computeEtag(body)
-  const cacheControl = result.transient ? 'no-store' : cacheControlFor(row)
+  const cacheControl = result.transient ? TRANSIENT_CACHE_CONTROL : cacheControlFor(row)
   if (context.request.headers.get('if-none-match') === etag) {
     return new Response(null, {
       status: 304,
