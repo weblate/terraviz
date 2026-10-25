@@ -21,8 +21,10 @@
 // - During a talk, only the presenters may act. A presenter starts a talk
 //   from the menu, whoever holds the globe. It ends when one chooses "End
 //   talk", or once no presenter has been at the globe for "talk minutes".
+// - Anyone who may act can turn the globe 30 degrees east or west.
 // - "idle minutes" after the last visitor leaves the globe, it goes back
-//   to the live Earth, but never during a talk.
+//   to the live Earth, turned back to the owner's rotation, but never
+//   during a talk.
 // Everyone at the globe sees every change, since there is one globe.
 //
 // TOUCHING THE GLOBE
@@ -85,6 +87,7 @@ integer PAGE = 9;            // datasets a menu page shows, beside its three mov
 integer CTX_TTL = 300;       // seconds a menu stays answerable
 integer CTX_MAX = 8;         // menus open at once
 float   NUDGE = 10.0;
+integer TURN = 30;           // degrees a turn button turns the globe
 
 string  BTN_ABOUT = "About";
 string  BTN_DATASETS = "Datasets";
@@ -97,6 +100,8 @@ string  BTN_EARTH = "Live Earth";
 string  BTN_JUMP = "Jump to...";
 string  BTN_START_TALK = "Start talk";
 string  BTN_END_TALK = "End talk";
+string  BTN_WEST = "Turn west";
+string  BTN_EAST = "Turn east";
 string  BTN_CLOSE = "Close";
 string  BTN_PREV = "< Previous";
 string  BTN_NEXT = "Next >";
@@ -106,6 +111,7 @@ string  BTN_MENU = "Main menu";
 string  gDataset;
 string  gTitle;
 integer gPaused;
+integer gTurned;             // a visitor turned the globe from the owner's rotation
 
 list    gPresenters;         // usernames, lowercase
 list    gMenu;               // name, id, name, id...
@@ -239,20 +245,23 @@ string showing()
     return "The globe shows " + t + ", " + llList2String(["playing", "paused"], gPaused) + ".";
 }
 
-// The main menu, in reading order: About and the datasets, the talk and
-// the jump, the transport, and the way out.
+// The main menu, in reading order: About with a presenter's jump and
+// talk, the transport, the datasets and the live Earth, the turns, and the
+// way out. Twelve at most, which is all a menu holds.
 mainMenu(key who)
 {
     integer can = mayAct(who);
     integer presenter = isPresenter(who);
     integer clip = gDataset != "";
     list b = [BTN_ABOUT];
-    if (can) b += [BTN_DATASETS];
     if (can && presenter && clip) b += [BTN_JUMP];
     // A presenter can start a talk whoever holds the globe, since the
     // talk is what a hold gives way to.
     if (presenter) b += [llList2String([BTN_START_TALK, BTN_END_TALK], gTalk)];
-    if (can && clip) b += [llList2String([BTN_PAUSE, BTN_PLAY], gPaused), BTN_BACK, BTN_FWD, BTN_RESTART, BTN_EARTH];
+    if (can && clip) b += [llList2String([BTN_PAUSE, BTN_PLAY], gPaused), BTN_BACK, BTN_FWD, BTN_RESTART];
+    if (can) b += [BTN_DATASETS];
+    if (can && clip) b += [BTN_EARTH];
+    if (can) b += [BTN_WEST, BTN_EAST];
     b += [BTN_CLOSE];
 
     string text = showing();
@@ -336,11 +345,11 @@ check()
         if (presenterNear) gTalkSeen = t;
         else if (t - gTalkSeen >= gTalkS) endTalk(", since no presenter has been here for a while");
     }
-    else if (near == 0 && gDataset != "" && !gIdleSent && t - gLastSeen >= gIdleS)
+    else if (near == 0 && (gDataset != "" || gTurned) && !gIdleSent && t - gLastSeen >= gIdleS)
     {
         gIdleSent = TRUE;
         gHolder = NULL_KEY;
-        llMessageLinked(LINK_THIS, MSG_CONTROL, "earth", NULL_KEY);
+        llMessageLinked(LINK_THIS, MSG_CONTROL, "rest", NULL_KEY);
     }
 }
 
@@ -476,6 +485,7 @@ default
         gDataset = dataset;
         gTitle = llJsonGetValue(str, ["title"]);
         gPaused = (integer)llJsonGetValue(str, ["paused"]);
+        gTurned = (integer)llJsonGetValue(str, ["turned"]);
     }
 
     listen(integer ch, string name, key who, string msg)
@@ -542,6 +552,8 @@ default
         if (msg == BTN_FWD) { ask(who, "nudge " + (string)((integer)NUDGE)); return; }
         if (msg == BTN_RESTART) { ask(who, "restart"); return; }
         if (msg == BTN_EARTH) { ask(who, "earth"); return; }
+        if (msg == BTN_EAST) { ask(who, "turn " + (string)TURN); return; }
+        if (msg == BTN_WEST) { ask(who, "turn -" + (string)TURN); return; }
         if (msg == BTN_JUMP && isPresenter(who))
         {
             remember(who, "jump", 0);

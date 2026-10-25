@@ -100,12 +100,44 @@ describe('second-life exhibit scripts', () => {
       ...all(visitors, /\bask\(who, "(\w+)/g),
       ...all(visitors, /MSG_CONTROL, "(\w+)/g),
     ])
-    expect(asked).toEqual(new Set(['show', 'earth', 'pause', 'play', 'jump', 'nudge', 'restart']))
+    expect(asked).toEqual(new Set(['show', 'earth', 'rest', 'pause', 'play', 'jump', 'nudge', 'restart', 'turn']))
     for (const cmd of asked) expect(allowed, cmd).toContain(cmd)
     // The rate stays the owner's, even though the globe's check that the
-    // live Earth has no clock to change names it before the gate.
+    // live Earth has no clock to change names it before the gate. So does
+    // the rotation a visitor's turn is undone back to.
     expect(asked).not.toContain('rate')
+    expect(asked).not.toContain('rotation')
     expect(Number(constant(visitors, 'float', 'NUDGE'))).toBeLessThanOrEqual(Number(constant(globe, 'float', 'NUDGE_MAX')))
+  })
+
+  it('turn the globe east the way the Earth turns, and undo it when visitors leave', () => {
+    // East moves the places facing a visitor to their right, so the
+    // picture's centre shows a longitude further west: the address's
+    // rotation goes down.
+    const act = body(globe, 'act(key who, integer owner, string msg)')
+    expect(act).toContain('gRotation = degrees(gRotation - (float)arg);')
+    const turn = Number(constant(visitors, 'integer', 'TURN'))
+    expect(turn).toBeGreaterThan(0)
+    expect(turn).toBeLessThanOrEqual(360)
+    expect(visitors).toContain('if (msg == BTN_EAST) { ask(who, "turn " + (string)TURN); return; }')
+    expect(visitors).toContain('if (msg == BTN_WEST) { ask(who, "turn -" + (string)TURN); return; }')
+    // The owner's rotation is home, and the scripts' own return goes back
+    // to it, even on a live Earth a visitor only turned.
+    expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(/gHome = gRotation;/)
+    expect(act).toContain('if (cmd == "rest") gRotation = gHome;')
+    expect(body(visitors, 'check()')).toContain('(gDataset != "" || gTurned)')
+  })
+
+  it('never offer more than a menu holds', () => {
+    // Every button mainMenu can add, counted as if every condition held:
+    // a choice between two labels is one button. Past 12, the menu
+    // isn't shown at all.
+    const menu = body(visitors, 'mainMenu(key who)')
+      .replace(/llList2String\(\[[^\]]*\], \w+\)/g, 'ONE')
+    const added = all(menu, /(?:list b = |b \+= )\[([^\]]*)\];/g)
+    expect(added.length).toBeGreaterThan(0)
+    const count = added.reduce((n, items) => n + items.split(',').length, 0)
+    expect(count).toBeLessThanOrEqual(12)
   })
 
   it("offer the globe's own presets when there is no datasets notecard", () => {

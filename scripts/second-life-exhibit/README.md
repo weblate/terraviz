@@ -84,6 +84,7 @@ menu that opens is theirs alone:
 | Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. |
 | Back 10 s, Forward 10 s, Start over | the same | Move through the animation. |
 | Live Earth | the same | Back to today's clouds and the real day and night. |
+| Turn west, Turn east | whoever may act | Turn the globe 30°. East is the way the Earth turns: the places facing you move to your right. Everyone sees the same turn. |
 | Jump to... | presenters | Type a time in the clip, such as `90` or `1:30`. |
 | Start talk, End talk | presenters, whoever holds the globe | See below. |
 
@@ -100,8 +101,15 @@ for `talk minutes`, so a presenter who logs off doesn't lock it. The
 owner counts as a presenter, and can end a talk from chat.
 
 **The live Earth comes back** once nobody has been within `radius` of
-the globe for `idle minutes`. Never during a talk, and not the moment a
-talk ends either: the clock starts again then.
+the globe for `idle minutes`, turned back to the owner's
+`/9 rotation`, so a visitor's turn doesn't outlast their visit. Never
+during a talk, and not the moment a talk ends either: the clock starts
+again then.
+
+**Turning with the mouse doesn't work yet.** A drag on the globe never
+reaches a script, for the same reason a left-click doesn't, so the menu
+turns it instead. A drag handle beside the globe is planned
+(`docs/SECOND_LIFE_COMPAT.md` §9, Phase 2, "Left out for now").
 
 **The floating text** holds 254 bytes, in this order:
 
@@ -217,11 +225,13 @@ command never reaches both kinds of globe:
 `/9 status`, `/9 upright`.
 
 The probe kit's README describes each, under
-[Commands](../second-life-probe/README.md#commands). The owner can
-always act, and doesn't take the hold. Besides those:
+[Commands](../second-life-probe/README.md#commands). Here `/9 rotation`
+also sets where the globe goes back to once visitors leave. The owner
+can always act, and doesn't take the hold. Besides those:
 
 | Command | What it does |
 |---|---|
+| `/9 turn <degrees>` | Turns the globe that far east, the way the Earth turns, or west for a negative number, as the menu's turn buttons do. Unlike `/9 rotation`, it doesn't move where the globe goes back to. |
 | `/9 presenters` | What the notecards gave: how many presenters and datasets, and the four settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
 | `/9 memory` | How much of its 64 KB each script uses. The info script also says the most it has used reading a record. |
@@ -278,9 +288,12 @@ stand at the globe.
    should say a talk is on. Leave the globe for longer than
    `talk minutes`, or use a short one in `settings`: the talk should end
    with a word in chat.
-8. **The idle return.** Set `idle minutes = 1`, show a dataset, and have
-   everyone leave the globe. It should go back to the live Earth about a
-   minute later, and not during a talk.
+8. **Turning, and the idle return.** `/9 rotation 0`. The other avatar
+   chooses Turn east: whichever side each of you faces, the places on it
+   should move to your right. Set `idle minutes = 1`, show a dataset, and
+   have everyone leave the globe. About a minute later it should go back
+   to the live Earth, facing as it did before the turn. It shouldn't
+   during a talk.
 9. **Memory, and a date with a time.** `/9 show 01KQG61S53Y319P64XSKMXMZT1`,
    Aurora, which has the longest record on the node and a frame every
    five minutes. The floating text should show a date and a UTC time,

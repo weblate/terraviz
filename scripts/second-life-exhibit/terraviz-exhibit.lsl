@@ -56,7 +56,10 @@
 //   /9 pause, /9 play      every visitor stops on, or starts from, the same frame
 //   /9 jump <s or m:ss>    go to that point in the clip, paused or playing
 //   /9 rate <speed>        0.084 to 12.8; 1 is the clip's own speed
-//   /9 rotation <degrees>  the longitude at the centre of the picture, east
+//   /9 rotation <degrees>  the longitude at the centre of the picture, east, and
+//                          where the globe goes back to once visitors leave
+//   /9 turn <degrees>      turn the globe that far east, as the Earth turns; minus is
+//                          west. Visitors' Turn east and Turn west buttons do this.
 //   /9 spin <degrees/s>    turn the whole sphere; /9 spin off stops it
 //   /9 debug on|off        TerraViz's diagnostic readout, drawn on the globe
 //   /9 width 1024|2048     the picture's resolution
@@ -131,6 +134,7 @@ integer gAtMs;          // and milliseconds
 float   gRate = 1.0;
 integer gPaused;
 float   gRotation;      // degrees east at the picture's centre, [0, 360)
+float   gHome;          // the owner's rotation, which a visitor's turn doesn't outlast
 integer gDebug;
 integer gTelemetry;
 integer gWidth = 2048;
@@ -145,7 +149,7 @@ key     gReqWho;        // who asked: the owner, a visitor, or NULL_KEY
 help()
 {
     llOwnerSay("[exhibit] Commands on /" + (string)CHAN + ": show <name or id>, list, earth, pause, play, "
-        + "jump <s or m:ss>, rate <speed>, rotation <degrees>, spin <degrees/s or off>, debug on|off, "
+        + "jump <s or m:ss>, rate <speed>, rotation <degrees>, turn <degrees east>, spin <degrees/s or off>, debug on|off, "
         + "width 1024|2048, telemetry on|off, steer hash|query, status, upright, memory, talk, presenters");
 }
 
@@ -219,6 +223,14 @@ float position()
 {
     if (gPaused) return gPos;
     return gPos + since(now()) * gRate;
+}
+
+// An angle in [0, 360), at the three places the address carries.
+float degrees(float r)
+{
+    r = (float)num(r - 360.0 * (float)llFloor(r / 360.0));
+    if (r >= 360.0) r = 0.0;
+    return r;
 }
 
 // A plain decimal with at most three places, as the page reads numbers:
@@ -341,7 +353,7 @@ broadcast()
     llMessageLinked(LINK_THIS, MSG_STATE, llList2Json(JSON_OBJECT, [
         "dataset", gDataset, "title", gTitle,
         "pos", gPos, "atS", gAtS, "atMs", gAtMs, "rate", gRate, "paused", gPaused,
-        "telemetry", gTelemetry, "node", NODE]), NULL_KEY);
+        "telemetry", gTelemetry, "turned", gRotation != gHome, "node", NODE]), NULL_KEY);
 }
 
 // Puts the current state on the face, every setting every time: a face
@@ -529,11 +541,15 @@ act(key who, integer owner, string msg)
         if (check(who, dataset, described) && owner) tell(who, "Asking the node about " + dataset + "...");
         return;
     }
-    if (cmd == "earth")
+    // "rest" is the visitors script's own return, once nobody has been at
+    // the globe for a while: the live Earth, turned back to the owner's
+    // rotation.
+    if (cmd == "earth" || cmd == "rest")
     {
         gDataset = "";
         gTitle = "";
         gPaused = FALSE;
+        if (cmd == "rest") gRotation = gHome;
         if (!commit(saved)) { tell(who, "The globe couldn't change just now."); return; }
         gReq = NULL_KEY;   // a show still waiting on the node is overtaken
         tell(who, "Back to the live Earth.");
@@ -588,6 +604,17 @@ act(key who, integer owner, string msg)
         if (commit(saved)) tell(who, "At " + num(gPos) + " s, " + llList2String(["playing.", "paused."], gPaused));
         return;
     }
+    if (cmd == "turn")
+    {
+        // Degrees east, the way the Earth turns, so the places facing a
+        // visitor move to their right. The picture's centre then shows a
+        // longitude that far west.
+        if (!isNumber(arg) || llFabs((float)arg) > 360.0) { tell(who, "Turn by how many degrees east?"); return; }
+        gRotation = degrees(gRotation - (float)arg);
+        if (commit(saved))
+            tell(who, "Turned " + num(llFabs((float)arg)) + " degrees " + llList2String(["east.", "west."], (float)arg < 0.0));
+        return;
+    }
 
     // Everything below is the owner's.
     if (!owner) return;
@@ -625,11 +652,10 @@ act(key who, integer owner, string msg)
             tell(who, "Rotation in degrees east, from -3600 to 3600, like 90 or -75.");
             return;
         }
-        float r = (float)arg;
-        r = (float)num(r - 360.0 * (float)llFloor(r / 360.0));
-        if (r >= 360.0) r = 0.0;
-        gRotation = r;
-        if (commit(saved)) tell(who, num(gRotation) + " degrees east is at the centre of the picture.");
+        gRotation = degrees((float)arg);
+        if (!commit(saved)) return;
+        gHome = gRotation;
+        tell(who, num(gRotation) + " degrees east is at the centre of the picture.");
         return;
     }
     if (cmd == "spin")

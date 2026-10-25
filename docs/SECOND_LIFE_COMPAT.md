@@ -1536,14 +1536,19 @@ driven by its owner in chat, with none of the visitor controls.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start
-  over, a dataset, and the live Earth. They are offered when that
+  over, a dataset, the live Earth, and Turn east and Turn west, which
+  turn the globe 30° (added on 25 October). East is the way the Earth
+  turns, so the places facing a visitor move to their right. The
+  controls are offered when that
   visitor may act: outside a talk, nobody else holds the globe;
   during one, they are a presenter. A hold ends when it runs out or
   when its holder leaves the globe. Presenters also get "Start talk"
   and "End talk", and "Jump to", which takes a time. A presenter can
   start a talk whoever holds the globe. A visitor
-  doesn't change the rate, the rotation, the width or the telemetry,
-  which stay the owner's, in chat.
+  doesn't change the rate, the width or the telemetry, which stay the
+  owner's, in chat. Nor does a turn change the owner's rotation: that
+  is where the globe goes back to, with the live Earth, once the last
+  visitor has gone.
 - **Notecards in the globe, all optional, re-read when they change:**
   - `presenters`: one username a line. A legacy name such as "Eric
     Hackathorn" is read as its username. A display name never is.
@@ -1568,6 +1573,29 @@ driven by its owner in chat, with none of the visitor controls.
   waits on the left-click test, and until then visitors right-click
   and choose Touch, which the viewer's source says always reaches the
   script. Rate control for visitors is also left out.
+- **For later: a drag handle, to turn the globe with the mouse.** A
+  drag on the globe itself can't reach a script: a left-click on a
+  face showing media goes to the media, and Touch from the right-click
+  menu is a single touch. A ring or stand linked to the globe, showing
+  no media, can feel a drag, since `touch` repeats while the button is
+  held and `llDetectedTouchST` says where the pointer is on the
+  surface. There are two ways to turn from it:
+  - **The sphere prim itself**, through its local rotation
+    (`llSetLinkPrimitiveParamsFast` with `PRIM_ROT_LOCAL`) so the
+    handle doesn't turn with it. The region sends the rotation to
+    every viewer, so all see one angle. It has to compose with
+    `/9 upright` and end any `/9 spin` first, since `llTargetOmega` is
+    drawn by each viewer for itself.
+  - **The address's `rotation`**, as the turn buttons use. Every viewer
+    applies it after the `#` with no reload, but the globe script
+    sleeps a second after each media change, so a drag would move in
+    one-second steps.
+
+  The first follows the hand more closely, and the second keeps the
+  picture's own longitude as the one thing turned. Either way, a
+  drag goes through the visitors script's hold and talk rules like
+  any other control. Until then, Turn east and Turn west in the menu
+  do the job.
 
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.
