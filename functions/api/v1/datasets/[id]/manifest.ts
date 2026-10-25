@@ -38,7 +38,13 @@
  * Wire shape:
  *   - Video: matches the existing `VideoProxyResponse` shape
  *     (`{ id, title, duration, hls, files }`) so `hlsService.ts`
- *     consumes it unchanged once Commit H lands.
+ *     consumes it unchanged once Commit H lands. `duration` is the
+ *     clip's length in seconds, or 0 when the node doesn't know it:
+ *     Vimeo's figure for `vimeo:`, the sum of the bundle's own
+ *     `#EXTINF`s for `r2:` HLS (`_lib/hls-duration.ts`), and 0 for
+ *     `stream:` and single files. Browsers ignore it, since a player
+ *     reads the length from the playlist; a Second Life globe's
+ *     script needs it to turn a clip position into a date.
  *   - Image: `{ kind: "image", variants: [{ width, url }], fallback }`
  *     per `CATALOG_BACKEND_PLAN.md` "Image datasets (R2 + Cloudflare
  *     Images)". Phase 2 enriches this with real Cloudflare Images
@@ -61,6 +67,7 @@ import { isConfigurationError } from '../../_lib/errors'
 import { streamPlaybackUrl } from '../../_lib/stream-store'
 import { computeEtag } from '../../_lib/snapshot'
 import { encodeR2Key, resolveR2HlsPublicUrl, resolveR2PublicUrl } from '../../_lib/r2-public-url'
+import { readHlsDuration } from '../../_lib/hls-duration'
 
 const CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=600'
 
@@ -381,7 +388,9 @@ export async function resolveManifest(
             kind: 'video',
             id: row.id,
             title: '',
-            duration: 0,
+            // From the bundle's own playlists; 0 whenever they can't
+            // say, which is what this branch always reported before.
+            duration: await readHlsDuration(env.CATALOG_R2, parsed.value),
             hls,
             files: [],
           },

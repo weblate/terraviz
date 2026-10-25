@@ -399,6 +399,50 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     // the same R2 prefix; the SPA's hlsService.ts consumes
     // `hls` and walks from there.
     expect(body.files).toEqual([])
+    // No bucket binding here, so the length is unknown: 0, as before.
+    expect((body as { duration?: number }).duration).toBe(0)
+  })
+
+  it('reports an r2: HLS bundle’s length from its own playlists', async () => {
+    const sqlite = seedFixtures({ count: 1 })
+    sqlite
+      .prepare(
+        `UPDATE datasets SET
+            data_ref = 'r2:videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8',
+            format = 'video/mp4'
+         WHERE slug = 'dataset-0'`,
+      )
+      .run()
+    const playlists: Record<string, string> = {
+      'videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8':
+        '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=2160x1080\nstream_0/playlist.m3u8\n',
+      'videos/DS000AAAAAAAAAAAAAAAAAAAAA/stream_0/playlist.m3u8':
+        '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:6.000000,\nsegment_000.ts\n#EXTINF:4.500000,\nsegment_001.ts\n#EXT-X-ENDLIST\n',
+    }
+    const reads: string[] = []
+    const CATALOG_R2 = {
+      async get(key: string) {
+        reads.push(key)
+        const text = playlists[key]
+        return text === undefined ? null : { size: text.length, text: async () => text }
+      },
+    } as unknown as R2Bucket
+    const env = {
+      CATALOG_DB: asD1(sqlite),
+      CATALOG_KV: makeKV(),
+      R2_PUBLIC_BASE: 'https://video.example.com',
+      CATALOG_R2,
+    }
+    const ctx = makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } })
+    const res = await onRequestGet(ctx)
+    expect(res.status).toBe(200)
+    const body = await readJson<{ duration: number; hls: string }>(res)
+    expect(body.duration).toBe(10.5)
+    expect(body.hls).toBe('https://video.example.com/videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8')
+    expect(reads).toEqual([
+      'videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8',
+      'videos/DS000AAAAAAAAAAAAAAAAAAAAA/stream_0/playlist.m3u8',
+    ])
   })
 
   it('falls back to single-file MP4 for r2: video data_refs that do not end in .m3u8', async () => {

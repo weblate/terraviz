@@ -813,9 +813,14 @@ The work, smallest first:
      Without the length a script can't turn a position into a date.
      Phase 2 does both of these:
      - add a duration to the manifest, an additive v1 change for the
-       Federation reviewer;
+       Federation reviewer. *Done for `r2:` HLS bundles, which is what
+       the node hosts itself:* the manifest now reads the length from
+       the bundle's own playlists (`functions/api/v1/_lib/hls-duration.ts`).
+       Hurricane Season 2024 reads 183 s, the same on all three
+       renditions. `vimeo:` already carried Vimeo's figure. `stream:`
+       and single files still report 0, which means unknown;
      - show the dataset's date range when the exact date can't be
-       worked out.
+       worked out, which covers those.
    - **The slow-link behaviour is page work, not the controller's.** It
      lives in the clock steering and the HLS player, plus a 1024×512
      rendition in the transcode pipeline. That is two pull requests
@@ -1359,7 +1364,9 @@ yet.
     stream would settle it. The fix is one period every copy agrees on
     whichever rendition it plays, such as the playlist's total
     duration, used both where the target wraps (`clockTargetS`) and
-    where the error is measured round the loop (`loopView`).
+    where the error is measured round the loop (`loopView`). The
+    manifest now carries that number for the node's own bundles (item
+    4 above), so the page can read it alongside the stream.
   - **A copy that fell back to a video's single file stays on it.**
     Its stream is not tried again once the file has loaded, and the clock
     wraps on each element's own length. If the file and the stream differ
@@ -1476,8 +1483,9 @@ Each control rewrites the media address, and the media itself stays
 non-interactive so that the controls are the only way in. Its first
 check is whether a visitor's left-click reaches the script at all,
 since that decides whether the controls sit on the globe or on a stand
-beside it. The manifest gains a clip duration for the date, and the
-slow-link work is two page PRs beside it (§7 item 4).
+beside it. The manifest gains a clip duration for the date (*built for
+the node's own HLS bundles*), and the slow-link work is two page PRs
+beside it (§7 item 4).
 It is the in-world half of Phase 1.
 *A smoke-test script exists, not the controller.*
 [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe)
