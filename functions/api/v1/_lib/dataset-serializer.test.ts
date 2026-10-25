@@ -657,15 +657,18 @@ describe('data-encoded video (renderEncoding / colorScale)', () => {
   })
 })
 
-describe('serializeDataset — what the Second Life globe script reads', () => {
-  // scripts/second-life-probe/terraviz-globe.lsl reads only the first
-  // 2048 bytes of GET /api/v1/datasets/:id, since a whole record can cost
-  // an LSL script twice its size in memory. It cuts that at `,"format":"`,
-  // parses what is before as an object of id, slug and title, and reads
-  // the format after it to refuse anything but an image or a video. So it
-  // depends on this field order, which is not part of the published
-  // contract (docs/protocol/). This pins the one reader that does: a
-  // reorder that fails here needs that script changed with it.
+describe('serializeDataset — what the Second Life globe scripts read', () => {
+  // scripts/second-life-probe/terraviz-globe.lsl, and the exhibit's
+  // scripts/second-life-exhibit/terraviz-exhibit.lsl after it, read only
+  // the first 2048 bytes of GET /api/v1/datasets/:id, since a whole
+  // record can cost an LSL script twice its size in memory. They cut that
+  // at `,"format":"`, parse what is before as an object of id, slug and
+  // title, and read the format after it to refuse anything but an image
+  // or a video. So they depend on this field order, which is not part of
+  // the published contract (docs/protocol/README.md). This pins it for
+  // both: a reorder that fails here needs those scripts changed with it.
+  // The exhibit's info script leans on the order further down the record,
+  // which scripts/second-life-exhibit/exhibit.test.ts pins.
   it('puts id, slug, title and format first, inside 2048 bytes', () => {
     // The longest title and slug the validators allow, at three bytes a
     // character, the most a JavaScript string's code unit can cost.
