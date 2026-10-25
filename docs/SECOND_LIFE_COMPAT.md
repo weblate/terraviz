@@ -857,13 +857,18 @@ The work, smallest first:
      which answers a touch in chat, shows whether it arrived.
    - **The hover text holds 254 bytes**, shared by the title, the date,
      the credit and any telemetry notice. Phase 2 needs a fixed order
-     for them and a rule for shortening. *Set in the controller:* the
-     notice comes first, under the globe's name, then the title, the
-     date and the credit, then a talk if one is on and how to touch the
-     globe. Only the title and the credit are ever cut, sharing what the
-     rest leave, so the notice never is: the title keeps at least 32
-     bytes and the credit 48 where both fit, and the title's come first
-     where they don't, as behind a preview node's longer address.
+     for them and a rule for shortening. *Set in the controller,* and
+     kept short at the maintainer's request (25 October): the title,
+     the date, then while telemetry is on the notice, "Counts anonymous
+     use:" and the privacy policy's address, then the credit, a talk if
+     one is on, and how to touch the globe. "Privacy:" and the address
+     alone was tried and set aside: visitors rarely see the object's
+     description, so the floating text is where they learn the globe is
+     measured. Only the title and the credit are ever cut, sharing what
+     the rest leave, so the notice never is: the
+     title keeps at least 32 bytes and the credit 48 where both fit, and
+     the title's come first where they don't, as behind a preview node's
+     longer address.
 
    **What that means for the design.** The first version of this item
    had each copy work out its position from the time of day. That only
@@ -1592,9 +1597,9 @@ driven by its owner in chat, with none of the visitor controls.
     the last visitor has been gone for the idle time.
   - **info** owns what the globe says about itself. It reads the
     record and the manifest for each dataset. From them it keeps the
-    hover text (any telemetry notice, the title, the date and a short
-    credit, in that fixed order, in 254 bytes: §7 item 4 has the
-    shortening rule). It also gives the abstract and full credit on
+    hover text (the title, the date, any telemetry notice and a short
+    credit, in that fixed order, in 254 bytes: §7 item 4
+    has the shortening rule). It also gives the abstract and full credit on
     request, and tells whoever paused, played or moved the clip the
     date the globe now shows. When the node has no such dataset, or
     it is a tour, it puts the globe back on the live Earth and says

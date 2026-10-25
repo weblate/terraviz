@@ -14,12 +14,12 @@
 // globe shows. terraviz-exhibit.lsl tells it what that is after every
 // change. From the node it reads the dataset's record and, for a video,
 // the clip's length, and from those it keeps two things:
-// - The hover text over the globe, in this order:
-//     TerraViz globe
-//     the telemetry notice, while the owner has telemetry on
+// - The hover text over the globe, kept short, in this order:
 //     the title
 //     the date: exact when paused, every couple of seconds while playing,
 //       and the dataset's range when the clip's length isn't known
+//     the telemetry notice, "Counts anonymous use:" and the privacy
+//       policy's address, while the owner has telemetry on
 //     a short credit, such as "Credit: NOAA · CC-BY-4.0"
 //     "Talk in progress", during one
 //     how to touch the globe
@@ -94,7 +94,7 @@ string  TAG_START = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/!";
 // or "Center</a>, USGS"; any other tag stands for a break.
 list    INLINE = ["a", "abbr", "b", "big", "code", "em", "font", "i", "small", "span", "strong", "sub", "sup", "u"];
 
-string  LIVE_LINE = "The live Earth: today's clouds and the real day and night";
+string  LIVE_LINE = "Live Earth: today's clouds";
 string  LIVE_CREDIT = "Credit: NASA Blue Marble, Black Marble";
 string  LIVE_ABOUT = "The live Earth: NASA's Blue Marble by day and its Black Marble city lights at night, under today's clouds, lit by the Sun as it stands right now. The globe rests on it when nobody has chosen a dataset.";
 string  TOUCH_LINE = "Right-click, Touch for more";
@@ -408,15 +408,14 @@ hover()
             stamp = date();
         }
     }
-    string top = "TerraViz globe\n";
-    if (gTelemetry) top += "Counts anonymous use: " + gNode + "/privacy\n";
     string tail = "";
     if (stamp != "") tail += "\n" + stamp;
+    if (gTelemetry) tail += "\nCounts anonymous use: " + gNode + "/privacy";
     string end = "";
     if (gTalk) end += "\n" + TALK_LINE;
     end += "\n" + TOUCH_LINE;
 
-    integer avail = 254 - bytes(top) - bytes(tail) - bytes(end);
+    integer avail = 254 - bytes(tail) - bytes(end);
     if (credit != "") avail -= 1;
     integer t = bytes(title);
     integer c = bytes(credit);
@@ -431,7 +430,7 @@ hover()
         title = fit(title, keepT);
         credit = fit(credit, avail - bytes(title));
     }
-    string s = top + title + tail;
+    string s = title + tail;
     if (credit != "") s += "\n" + credit;
     s += end;
     if (bytes(s) > 254) s = fit(s, 254);
@@ -807,7 +806,7 @@ default
     state_entry()
     {
         llListen(CHAN, "", llGetOwner(), "");
-        llSetText("TerraViz globe", <1.0, 1.0, 1.0>, 1.0);
+        llSetText("", <1.0, 1.0, 1.0>, 1.0);
         gShown = "";
         llMessageLinked(LINK_THIS, MSG_HELLO, "", NULL_KEY);
     }

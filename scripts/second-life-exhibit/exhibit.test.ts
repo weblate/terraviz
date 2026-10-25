@@ -433,7 +433,16 @@ describe('second-life exhibit scripts', () => {
     // a sub-daily range, which shows while a clip's length is unknown.
     const string = (name: string) => JSON.parse(constant(info, 'string', name)) as string
     const hover = body(info, 'hover()')
-    expect(hover).toContain('"Counts anonymous use: " + gNode + "/privacy\\n"')
+    // The telemetry notice sits under the date, says what the globe does
+    // and where the policy is, and is never cut: it is counted before the
+    // title and credit share what is left, and it is drawn whole.
+    expect(hover).toMatch(/if \(stamp != ""\) tail \+= "\\n" \+ stamp;\n\s+if \(gTelemetry\) tail \+= "\\nCounts anonymous use: " \+ gNode \+ "\/privacy";/)
+    expect(hover).toContain('integer avail = 254 - bytes(tail) - bytes(end);')
+    expect(hover).toContain('string s = title + tail;')
+    expect(body(globe, 'describe()')).toContain('desc = "TerraViz globe. Counts anonymous use: " + NODE + "/privacy";')
+    // Kept short, at the maintainer's request: no line naming the globe.
+    expect(info).not.toMatch(/llSetText\("TerraViz/)
+    expect(hover).not.toContain('TerraViz globe')
     expect(hover).toContain('if (keepT < MIN_TITLE) keepT = MIN_TITLE;')
     const preview = `https://${'a'.repeat(28)}.terraviz.pages.dev`
     const production = JSON.parse(constant(globe, 'string', 'NODE')) as string
@@ -444,13 +453,13 @@ describe('second-life exhibit scripts', () => {
     const minTitle = Number(constant(info, 'integer', 'MIN_TITLE'))
     const minCredit = Number(constant(info, 'integer', 'MIN_CREDIT'))
     for (const node of [preview, production]) {
-      const top = 'TerraViz globe\n' + `Counts anonymous use: ${node}/privacy\n`
-      const left = 254 - bytes(top) - bytes(range) - bytes(end) - 1
+      const privacy = `\nCounts anonymous use: ${node}/privacy`
+      const left = 254 - bytes(range) - bytes(privacy) - bytes(end) - 1
       expect(left, node).toBeGreaterThanOrEqual(minTitle)
       // On the node the exhibit ships for, the credit keeps its floor too.
       if (node === production) expect(left - minTitle, node).toBeGreaterThanOrEqual(minCredit)
       // The live Earth's lines fit whole, with nothing cut.
-      const live = top + string('LIVE_LINE') + '\n' + string('LIVE_CREDIT') + end
+      const live = string('LIVE_LINE') + privacy + '\n' + string('LIVE_CREDIT') + end
       expect(bytes(live), node).toBeLessThanOrEqual(254)
     }
   })

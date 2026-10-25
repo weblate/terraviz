@@ -59,8 +59,8 @@ notecards and the visitor list would run out.
    `NODE` in the globe script first if you need to. The order doesn't
    matter: each asks the others for what it missed.
 3. Within a few seconds the sphere stands its poles upright and shows
-   the live Earth, and the floating text reads `TerraViz globe`, the
-   live Earth's line and its credit. Chat shows the visitors script's
+   the live Earth, and the floating text gives the live Earth's line
+   and its credit. Chat shows the visitors script's
    summary of what the notecards gave: with none, no presenters and the
    five built-in datasets.
 4. Add any of the notecards below, and say `/9 presenters` to check what
@@ -135,14 +135,16 @@ reaches a script, for the same reason a left-click doesn't, so the menu
 turns it instead. A drag handle beside the globe is planned
 (`docs/SECOND_LIFE_COMPAT.md` §9, Phase 2, "Left out for now").
 
-**The floating text** holds 254 bytes, in this order:
+**The floating text** holds 254 bytes, in this order, here for a
+dataset a `datasets` notecard names "Wildfire Smoke Overhead
+(2026-08-12)" (the title is the menu's or the notecard's name, or the
+id for `/9 show`):
 
 ```
-TerraViz globe
-Counts anonymous use: https://terraviz.zyra-project.org/privacy   (only with telemetry on)
-Earthquakes - 2001-2015
-14 Sep 2004
-Credit: NOAA Pacific Tsunami Warning Center, USGS National Earthquake Information Cent...
+Wildfire Smoke Overhead (2026-08-12)
+12 Aug 2026, 06:00 UTC
+Counts anonymous use: https://terraviz.zyra-project.org/privacy    (only with telemetry on)
+Credit: NOAA/NWS/NCEP Rapid Refresh Forecast System (RRFS), distributed via NOAA O...
 Talk in progress                                                   (only during one)
 Right-click, Touch for more
 ```
