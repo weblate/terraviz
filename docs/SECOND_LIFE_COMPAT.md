@@ -1406,13 +1406,30 @@ Written down so these don't get re-proposed in six months.
   also be a product with no users and permanent maintenance. No.
 - **Rebuilding the catalog in LSL.** Option A is read-only. In-world
   objects display TerraViz state; nothing in-world writes back.
-- **An in-world Orbit chatbot driven by scripts.** Orbit streams its
-  replies and scripts can't consume a stream, on top of the reply and
-  memory limits in §4.1. Option E brings the real Orbit to a flat
-  panel through the existing chat path; anything script-driven would
-  have to follow [`CONTRIBUTING.md`](../CONTRIBUTING.md) §LLM
-  Integrations and belongs in
-  [`LLM_INTEGRATION_OPPORTUNITIES.md`](LLM_INTEGRATION_OPPORTUNITIES.md).
+- **An in-world Orbit chatbot driven by scripts, through today's chat
+  endpoint.** The first version gave the reason as "Orbit streams its
+  replies and scripts can't consume a stream". That is out of date:
+  the endpoint also answers in one reply when asked (`stream: false`,
+  `functions/api/chat/completions.ts`). What stands in the way is
+  this:
+  - **The prompt is built in the visitor's browser.** Orbit's
+    instructions and catalog are put together by `docentContext.ts`,
+    which a script can't run, and the catalog alone is far past the
+    reply and memory limits in §4.1.
+  - **The endpoint refuses a request without an allowed `Origin`
+    header.** A script would have to fake one, which defeats the check.
+  - **Its rate limit is per IP address**, 30 requests a minute. Scripts'
+    requests come from Linden Lab's simulator hosts, so every globe on
+    a host would share one budget.
+
+  Option E brings the real Orbit to a flat panel today, through the
+  existing chat path, with each visitor's conversation their own. Orbit
+  steering a globe for everyone at it needs a narrow endpoint of its
+  own, built under [`CONTRIBUTING.md`](../CONTRIBUTING.md) §LLM
+  Integrations. It is entry 10 in
+  [`LLM_INTEGRATION_OPPORTUNITIES.md`](LLM_INTEGRATION_OPPORTUNITIES.md),
+  and comes after Phase 2, whose touch, presenter and hold rules it
+  uses.
 - **Patching around #5189 inside TerraViz.** Nothing here reproduced
   it, and there is nothing in TerraViz to change if it does fire — it
   is a crash in the viewer's own embedded browser.
