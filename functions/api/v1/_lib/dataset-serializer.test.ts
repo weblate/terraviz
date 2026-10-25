@@ -663,8 +663,8 @@ describe('serializeDataset — what the Second Life globe scripts read', () => {
   // scripts/second-life-probe/terraviz-globe.lsl reads only the first
   // CHECK_MAX bytes of GET /api/v1/datasets/:id, since a whole record can
   // cost an LSL script twice its size in memory, and the exhibit's globe
-  // script, which once shared this check, ran out of memory reading 2048
-  // in-world and now makes no request at all. It cuts that
+  // script, which once had this check, ran out of memory in-world with
+  // web replies in hand and now makes no request at all. It cuts that
   // at `,"format":"`, parses what is before as an object of id, slug and
   // title, and reads the format after it to refuse anything but an image
   // or a video. So it depends on this field order, which is not part of

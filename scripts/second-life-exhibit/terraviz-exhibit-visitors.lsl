@@ -65,9 +65,9 @@ integer CHAN = 9;
 // The link messages the three scripts share. exhibit.test.ts holds the
 // numbers to the globe script's.
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
-integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
+integer MSG_CONTROL = 271002;  // visitors or info to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
-integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
+integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
 // The settings, and what the "settings" notecard may set them to.
@@ -350,8 +350,7 @@ datasetsMenu(key who, integer page)
     menu(who, text, b, gDlgSets);
 }
 
-// The presenter who started it goes with the message, so the globe keeps
-// a dataset choice of theirs still waiting on the node.
+// The presenter who started it goes with the message.
 startTalk(key who)
 {
     gTalk = TRUE;

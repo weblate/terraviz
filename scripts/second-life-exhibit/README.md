@@ -81,7 +81,7 @@ menu that opens is theirs alone:
 |---|---|---|
 | About | everyone | The abstract, credit and licence, in their own chat, or a notecard the owner wrote. |
 | Datasets | whoever may act | The menu of datasets, nine to a page. |
-| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, for a dataset with dates. |
+| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, where the info script knows it: not for a dataset with no dates, nor for a video on Vimeo, whose length it isn't given. |
 | Back 10 s, Forward 10 s, Start over | the same | Move through the animation. |
 | Live Earth | the same | Back to today's clouds and the real day and night. |
 | Turn... | whoever may act | A menu for turning the globe, for everyone at it, which comes back after each press: |
@@ -275,8 +275,9 @@ The probe kit's README describes each, under
 also sets where the globe goes back to once visitors leave, and
 `/9 show` shows the dataset at once rather than asking the node first:
 the info script reads its record next, and if the node has no such
-dataset, or it is a tour, it tells you and puts the globe back on the
-live Earth. (The globe script runs too close to its 64 KB to hold the
+dataset, or it is a tour, it tells you, tells whoever chose it from the
+menu that it can't be shown, and puts the globe back on the live Earth,
+unless someone has chosen another since. (The globe script runs too close to its 64 KB to hold the
 node's reply; see Things that will trip you up.) The owner can always
 act, and doesn't take the hold. Besides those:
 
@@ -300,8 +301,9 @@ display name to tell others who has the globe, only while the hold
 lasts, and anyone with a menu open by key, for the five minutes the
 menu answers. The info script keeps the key of the last
 visitor who asked for "About", so a double press is answered once, and
-tells a visitor about a dataset in their own chat, which no one else
-sees. A tilt reads the position of whoever asked, once, to aim at them.
+the key of whoever chose the dataset showing, until the node has said
+whether the globe can show it. It tells a visitor about a dataset in
+their own chat, which no one else sees. A tilt reads the position of whoever asked, once, to aim at them.
 Nothing is kept across a reset.
 
 What each visitor's viewer loads is the output page, from the node, like
@@ -337,7 +339,8 @@ stand at the globe.
 5. **Pause.** They pause. The reply should give the date the globe now
    shows, the floating text's date should stop and match the frame, and
    both views should show the same frame. On a dataset with no dates,
-   such as Air Traffic, the reply just says it paused.
+   such as Air Traffic, or a video on Vimeo, such as `/9 show sst`, the
+   reply just says it paused.
 6. **About.** They choose About. They should get the abstract, the
    credit, the licence and a link, in their own chat, in a few pieces.
    Nobody else should see it. Then add a notecard named
@@ -385,6 +388,14 @@ each avatar used, and what steps 2 and 9 showed.
   So only the info script asks the node anything, the globe script
   shows a choice without checking it first, and the info script reads
   only the first 3 KB of a record and copies as little of it as it can.
+- **The info script checks a choice after it is shown.** For a second or
+  two, a dataset the node doesn't have, or a tour, is in every visitor's
+  page address, and the page shows the live Earth while it fails. With
+  telemetry on, each page still in its first minute reports that
+  failure, and with `/9 steer query` each reloads twice. The info script
+  is also what answers a pause, a play or a move with the date. If it
+  stops, the globe still shows and plays what visitors choose, but those
+  replies don't come, and a dataset the page can't show stays chosen.
 - **A visitor's change takes a second.** Second Life pauses the globe
   script for a second whenever it sets media.
 - **A long dataset name in `datasets` is cut** to a button's 24 bytes.
@@ -396,13 +407,13 @@ each avatar used, and what steps 2 and 9 showed.
   video's own, which can differ slightly (`SECOND_LIFE_COMPAT.md` §7).
 - **A long record is read only in part.** The info script reads its
   first 3,072 bytes. On the node in October 2026 that holds every field
-  it needs in 78% of records, and the dates in 95%. It keeps 500
-  characters of an abstract, 600 of a licence statement and 300 of a
-  credit. A value cut short ends `...`, and "About" then says the rest
-  is at the dataset's page, as it does when a link too long to keep is
-  left out. In a longer record, a field past the cut is missing, in the
-  order the node writes them: the credit first, then the licence, then
-  the period and the dates. A lost credit doesn't fall
+  it needs in 78% of records, and the dates in 95%. It keeps the first
+  500 characters of an abstract, which cuts most of them (135 of the 143
+  on the node then), 600 of a licence statement and 300 of a credit. A
+  value cut short ends `...`, and "About" then says the rest is at the
+  dataset's page, as it does when a link too long to keep is left out. In a longer record, a field past the cut is missing, from
+  the end of what the node writes: first the credit, which it writes
+  last, then the licence, then the period and the dates. A lost credit doesn't fall
   back to the organization, which might not be the credit the record
   gives, and a lost period shows a yearly dataset's date to the day.
 - **Display names don't make presenters.** If someone in `presenters`

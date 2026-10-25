@@ -29,8 +29,9 @@
 // dataset, where in its animation, and whether it is paused. Every copy
 // reads the same address, so everyone at the globe sees the same moment.
 // This script is the only one that sets that address. The visitors script
-// asks it for changes, and it tells the other two what the globe shows
-// after each one.
+// asks it for changes, as the info script does to put back a dataset the
+// page can't show, and it tells the other two what the globe shows after
+// each one.
 //
 // Changes go after the address's #, which a web browser applies without
 // reloading the page. Firestorm 7.2.4 was seen to do the same in-world.
@@ -97,7 +98,7 @@ integer UPRIGHT_ON_START = TRUE; // FALSE for a mesh globe with its own mapping
 // The link messages the three scripts share. The numbers are arbitrary;
 // all three must agree, and exhibit.test.ts holds them to it.
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
-integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
+integer MSG_CONTROL = 271002;  // visitors or info to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
 
 // Shared media is capped at 2048 pixels a side (indra/llprimitive/
@@ -153,7 +154,7 @@ integer gHash = TRUE;   // changes go after the #
 
 float   gSpin;          // degrees a second, 0 for still
 integer gPeak;          // the most memory used while showing a dataset
-key     gBy;            // who paused, played or moved the clip, for the next broadcast
+key     gBy = NULL_KEY; // who chose a dataset, or paused, played or moved the clip, for the next broadcast
 
 help()
 {
@@ -547,6 +548,9 @@ show(key who, string id, string title)
     gRate = 1.0;
     gPaused = FALSE;
     anchor();
+    // A new choice names its chooser, whom the info script tells if the
+    // page can't show it. The same dataset again is only a restart.
+    if (llList2String(saved, 0) != id) gBy = who;
     if (!commit(saved)) tell(who, "The globe couldn't change just now. Try again in a moment.");
     else if (who == llGetOwner()) tell(who, "Showing " + gTitle + " from its start, at its own speed. Address: " + address());
     else tell(who, "Showing " + shorten(gTitle) + " for everyone at the globe.");
@@ -601,7 +605,10 @@ act(key who, integer owner, string msg)
     }
     // "rest" is the visitors script's own return, once nobody has been at
     // the globe for a while: the live Earth, turned back to the owner's
-    // rotation. Only the scripts send it, with no key.
+    // rotation. Only the scripts send it, with no key. The info script's
+    // "earth" names the dataset the page can't show, and is set aside
+    // once the globe has gone on to another.
+    if (cmd == "earth" && who == NULL_KEY && arg != "" && arg != gDataset) return;
     if (cmd == "earth" || (cmd == "rest" && who == NULL_KEY))
     {
         gDataset = "";

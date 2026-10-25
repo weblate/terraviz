@@ -31,8 +31,9 @@
 // - "About", from the touch menu. If the globe holds a notecard named by
 //   the dataset's id, the visitor is given it. Otherwise they get the
 //   abstract, the full credit, the licence and a link to the dataset's
-//   page, in their own chat, in pieces of about 1 KB. A very long
-//   abstract is cut, and the link has the rest.
+//   page, in their own chat, in pieces of about 1 KB. Only the first 500
+//   characters of the abstract are given, which cuts most of them, and
+//   the link has the rest.
 //
 // A DATE is the dataset's start time plus the share of its span that the
 // clip has played, the arithmetic of the app's videoTimeToDate. How it is
@@ -58,9 +59,9 @@
 integer CHAN = 9;
 
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
-integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
+integer MSG_CONTROL = 271002;  // visitors or info to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
-integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
+integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
 // How much of a record is read, in bytes. Every field this script uses
@@ -78,9 +79,10 @@ integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the 
 // 78% of the node's records, and gives the dates a whole record would in
 // 95% and the credit in 81%.
 integer BODY_MAX = 3072;
-// How much of a manifest: its id, length and stream address come first
-// (by byte 80, and Vimeo's name by 120, on the node in October 2026), and
-// this leaves room for a long title before them.
+// How much of a manifest: its id comes first, then its title, which the
+// node's own manifests leave empty, then its length and stream address
+// (by byte 80, and Vimeo's name by 120, on the node in October 2026).
+// This leaves room for a long title before the length.
 integer MANIFEST_MAX = 1024;
 integer ABSTRACT_MAX = 500;    // characters of an abstract kept for "About"; the link has the rest
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
@@ -152,6 +154,7 @@ string  gShown;        // the hover text as last set
 integer gPeak;         // the most memory used reading a record or answering About
 integer gUnshowable;   // the record names a format the page can't show
 string  gWarned;       // the dataset whose notecard the owner was last warned about
+key     gChose;        // who chose the dataset shown, until the node has said whether it can be
 key     gLastAbout;
 integer gLastAboutAt;
 
@@ -486,12 +489,14 @@ string field(string name, integer max)
     i += llStringLength(name) + 4;
     string raw = llGetSubString(gBody, i, i + max + 16);
     // The closing quote is the first one not escaped. Most values hold no
-    // escape at all. In one that does, JSON can't hold a raw tab, so two
-    // tabs stand in for each escaped quote (after each escaped backslash,
-    // where there is one), which keeps every index, and the first quote
-    // left is the one that closes the value.
-    integer esc = llSubStringIndex(raw, "\\") != -1;
+    // escape at all, and in one with no backslash before its first quote,
+    // that quote closes it. In one that does, JSON can't hold a raw tab,
+    // so two tabs stand in for each escaped quote (after each escaped
+    // backslash, where there is one), which keeps every index, and the
+    // first quote left is the one that closes the value.
     integer at = llSubStringIndex(raw, "\"");
+    integer bs = llSubStringIndex(raw, "\\");
+    integer esc = bs != -1 && (at == -1 || bs < at);
     if (esc)
     {
         if (llSubStringIndex(raw, "\\\\") == -1) at = llSubStringIndex(llReplaceSubString(raw, "\\\"", "\t\t", 0), "\"");
@@ -542,15 +547,26 @@ string plain(string s)
         for (i = 1; i < n; ++i)
         {
             string p = llList2String(parts, i);
-            integer b = llSubStringIndex(p, ">");
             if (p == "" || llSubStringIndex(TAG_START, llGetSubString(p, 0, 0)) == -1) out += ["<" + p];
-            else if (b == -1) i = n;
             else
             {
-                string name = llToLower(llList2String(llParseString2List(llGetSubString(p, 0, b - 1),
-                    [" ", "\n", "/"], []), 0));
-                if (llListFindList(INLINE, [name]) == -1) out += [" "];
-                out += [llDeleteSubString(p, 0, b)];
+                // A tag runs on to the next > there is, past any < inside
+                // it, which is rare enough to be joined back up as it comes.
+                integer b = llSubStringIndex(p, ">");
+                while (b == -1 && i + 1 < n)
+                {
+                    ++i;
+                    p += "<" + llList2String(parts, i);
+                    b = llSubStringIndex(p, ">");
+                }
+                if (b == -1) i = n;
+                else
+                {
+                    string name = llToLower(llList2String(llParseString2List(llGetSubString(p, 0, b - 1),
+                        [" ", "\n", "/"], []), 0));
+                    if (llListFindList(INLINE, [name]) == -1) out += [" "];
+                    out += [llDeleteSubString(p, 0, b)];
+                }
             }
         }
         parts = [];
@@ -585,11 +601,18 @@ string ref(string slug)
 
 // Answers whoever paused, played or moved the clip, with the date the
 // globe now shows: the clip's seconds mean nothing to a visitor. A dataset
-// with no dates, or whose clip length isn't known yet, gets the plain word.
+// with no dates gets the plain word, as does one whose clip length isn't
+// known: not yet, or never, for a video on Vimeo.
 moved(key who)
 {
     string d = "";
+    // The date at the position the globe broadcast, which it took before
+    // setting the media, and that takes a second: a playing clip has moved
+    // on since by a second times its rate.
+    integer paused = gPaused;
+    gPaused = TRUE;
     if (gFor == gDataset && gDuration > 0.0) d = date();
+    gPaused = paused;
     string s = "Playing.";
     if (d != "") s = "Playing from " + d + ".";
     if (gPaused)
@@ -605,12 +628,19 @@ moved(key who)
 // The globe shows a choice without asking the node first, since holding
 // the node's reply ran it out of memory (in-world, October 2026). So this
 // script, which reads the record anyway, puts it back on the live Earth
-// when the page can't show it, and tells the owner why.
+// when the page can't show it, and tells the owner why and whoever chose
+// it that it can't be shown. The request names the dataset, so a globe
+// that has gone on to another since leaves that one up, which is why
+// neither is told where the globe is now.
 unshowable(string why)
 {
-    llOwnerSay("[exhibit] " + gDataset + " " + why + ", so the globe is back on the live Earth.");
+    llOwnerSay("[exhibit] " + gDataset + " " + why + ", so the globe won't show it.");
+    if (gChose)
+        if (gChose != llGetOwner())
+            llRegionSayTo(gChose, 0, "That dataset can't be shown on this globe after all.");
+    gChose = NULL_KEY;
     gHaveRec = TRUE;   // nothing more to ask the node about it
-    llMessageLinked(LINK_THIS, MSG_CONTROL, "earth", NULL_KEY);
+    llMessageLinked(LINK_THIS, MSG_CONTROL, "earth " + gDataset, NULL_KEY);
 }
 
 record()
@@ -735,12 +765,10 @@ about(key av)
     if (r != "") lines = [gTitle + " (" + r + ")"];
     if (gAbstract != "") lines += [gAbstract];
     if (gWho != "") lines += ["Credit: " + gWho];
-    list lic = [];
-    if (gSpdx != "") lic += [gSpdx];
-    if (gStatement != "") lic += [gStatement];
-    if (gLicUrl != "") lic += [gLicUrl];
-    if (llGetListLength(lic)) lines += ["Licence: " + llDumpList2String(lic, " ")];
-    lic = [];
+    // The licence on one line, its own line breaks and empty parts gone.
+    string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\n"), ["\n"], []), " ");
+    if (lic != "") lines += ["Licence: " + lic];
+    lic = "";
     if (gCut) lines += ["Some of this was too long to give here. All of it is at " + link];
     else lines += ["More about it: " + link];
     say(av, llDumpList2String(lines, "\n"));
@@ -813,13 +841,17 @@ default
         gPaused = (integer)llJsonGetValue(str, ["paused"]);
         gTelemetry = (integer)llJsonGetValue(str, ["telemetry"]);
         gNode = llJsonGetValue(str, ["node"]);
+        // The globe names who changed what it shows: who chose a dataset,
+        // told if it can't be shown, or who paused, played or moved the
+        // clip, told the date it now shows. A key is true only when it is
+        // a real one.
         if (gDataset != gFor)
         {
             forget();
+            gChose = id;
             fetch();
         }
-        // Someone paused, played or moved the clip: the globe names them.
-        if (id != NULL_KEY) moved(id);
+        else if (id) moved(id);
         hover();
         pace();
     }
@@ -839,6 +871,7 @@ default
             tidy();
             peak();
             if (gUnshowable) { unshowable("is a tour, which drives the full app rather than a globe"); pace(); return; }
+            gChose = NULL_KEY;   // it can be shown, so nobody needs telling
             fetch();
         }
         else if (req == gManReq)

@@ -127,8 +127,10 @@ integer ID_MAX = 128;
 // The most of the node's record read when checking a dataset: its first
 // four fields (id, slug, title, format) are under 1 KB even for the
 // longest slug and title the node accepts, and every byte read is held
-// twice over while the reply is dealt with. Reading 2048 ran the
-// exhibit's globe script, which shares this code, out of memory in-world.
+// twice over while the reply is dealt with. The exhibit's globe script,
+// which once had this check, ran out of memory in-world with replies in
+// hand: its own, and the info script's records, since Second Life hands
+// a web reply to every script in the prim with a handler for one.
 integer CHECK_MAX = 1024;
 
 // What the globe shows. The address is built from these alone.

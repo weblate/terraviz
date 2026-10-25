@@ -172,10 +172,11 @@ describe('second-life exhibit scripts', () => {
   it('hold no web reply in the globe script, and leave checking a choice to the info script', () => {
     // Second Life hands every web reply to every script in the prim with
     // an http_response, and the globe script rests close to its 64 KB
-    // (62 KB, measured in-world in October 2026). Holding its own check's
-    // reply while it showed a dataset ran it out of memory there, and the
-    // info script's records would have too. So it makes no request and has
-    // no handler, and shows a choice at once.
+    // (62 KB, measured in-world in October 2026). It ran out of memory
+    // there after showing a dataset, with replies in hand: its own check's,
+    // and the info script's records, up to 9,000 bytes then, which every
+    // show set off. So it makes no request and has no handler, and shows a
+    // choice at once.
     expect(globe).not.toContain('http_response')
     expect(globe).not.toContain('llHTTPRequest')
     const act = body(globe, 'act(key who, integer owner, string msg)')
@@ -183,12 +184,32 @@ describe('second-life exhibit scripts', () => {
     expect(show).toMatch(/\n\s+show\(who, dataset, described\);/)
     // The info script, which reads the record anyway, puts the globe back
     // on the live Earth when the node has no such dataset or it is a tour,
-    // as a script's own request, which tells no visitor.
+    // as a script's own request, and tells the owner and whoever chose it.
     const unshowable = body(info, 'unshowable(string why)')
-    expect(unshowable).toContain('llMessageLinked(LINK_THIS, MSG_CONTROL, "earth", NULL_KEY);')
+    expect(unshowable).toContain('llMessageLinked(LINK_THIS, MSG_CONTROL, "earth " + gDataset, NULL_KEY);')
     expect(unshowable).toContain('llOwnerSay(')
-    expect(info).toContain('if (status == 404) { unshowable(')
-    expect(info).toContain('if (gUnshowable) { unshowable(')
+    expect(unshowable).toMatch(/if \(gChose\)\n\s+if \(gChose != llGetOwner\(\)\)\n\s+llRegionSayTo\(gChose, 0, /)
+    // Only for the record it asked for, and only once it has read it.
+    const reply = info.slice(info.indexOf('if (req == gRecReq)'), info.indexOf('else if (req == gManReq)'))
+    expect(reply).toContain('if (status == 404) { unshowable(')
+    // The chooser is kept only until the node has answered about their
+    // choice, and the README's account of what the scripts keep says so.
+    expect(reply).toMatch(/gChose = NULL_KEY;[^\n]*\n\s+fetch\(\);/)
+    expect(unshowable).toContain('gChose = NULL_KEY;')
+    expect(readme).toContain('the key of whoever chose the dataset showing, until the node has said')
+    expect(reply.indexOf('record();')).toBeGreaterThan(-1)
+    expect(reply.indexOf('record();')).toBeLessThan(reply.indexOf('if (gUnshowable) { unshowable('))
+    // The globe names the chooser of a new dataset in the broadcast that
+    // shows it, and the info script keeps it with the dataset. A request
+    // naming a dataset the globe has since gone on from is set aside, so
+    // a slow record can't undo someone else's choice.
+    expect(body(globe, 'show(key who, string id, string title)')).toMatch(
+      /if \(llList2String\(saved, 0\) != id\) gBy = who;\n\s+if \(!commit\(saved\)\)/,
+    )
+    expect(info).toMatch(/forget\(\);\n\s+gChose = id;\n\s+fetch\(\);\n\s+\}\n\s+else if \(id\) moved\(id\);/)
+    const stale = 'if (cmd == "earth" && who == NULL_KEY && arg != "" && arg != gDataset) return;'
+    expect(act).toContain(stale)
+    expect(act.indexOf(stale)).toBeLessThan(act.indexOf('if (cmd == "earth" || (cmd == "rest"'))
     expect(body(info, 'record()')).toContain(
       'gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;',
     )
@@ -204,7 +225,8 @@ describe('second-life exhibit scripts', () => {
     expect(Number(constant(info, 'integer', 'MANIFEST_MAX'))).toBeLessThanOrEqual(1024)
     // And the globe says how full showing a dataset left it.
     const shown = body(globe, 'show(key who, string id, string title)')
-    expect(shown).toMatch(/\{\n[^\n]*\n[^\n]*\n\s+llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);/)
+    const statements = shown.slice(shown.indexOf('{') + 1).split('\n').filter((line) => line.trim() !== '' && !/^\s*\/\//.test(line))
+    expect(statements[0].trim()).toBe('llScriptProfiler(PROFILE_SCRIPT_MEMORY);')
     expect(shown).toMatch(/llScriptProfiler\(PROFILE_NONE\);\n\s+if \(llGetSPMaxMemory\(\) > gPeak\) gPeak = llGetSPMaxMemory\(\);$/)
     expect(shown).not.toContain('return;')
     expect(act).toContain('KB while showing a dataset')
@@ -219,19 +241,27 @@ describe('second-life exhibit scripts', () => {
     expect(reply).toMatch(/gBody = body;\n\s+body = "";\n\s+record\(\);\n\s+gBody = "";\n\s+tidy\(\);\n\s+peak\(\);/)
     const field = body(info, 'string field(string name, integer max)')
     expect(field).toContain('llGetSubString(gBody, i, i + max + 16)')
-    // A value with no escape is returned as read, which most are.
+    // A value with no escape is returned as read, which most are, and
+    // only a backslash before the value's first quote is one of its own.
     expect(field).toContain('if (!esc) return raw;')
+    expect(field).toContain('integer esc = bs != -1 && (at == -1 || bs < at);')
     // HTML is taken out in one split rather than a copy per tag, and each
     // step runs only when there is something for it to do.
     const plain = body(info, 'string plain(string s)')
     expect(plain).toContain('llParseStringKeepNulls(s, ["<"], [])')
     expect(plain).not.toContain('out += llGetSubString')
+    // A tag runs on to the next >, past any < inside it, as it did before.
+    expect(plain).toMatch(/while \(b == -1 && i \+ 1 < n\)\n\s+\{\n\s+\+\+i;\n\s+p \+= "<" \+ llList2String\(parts, i\);/)
     for (const gate of ['"<"', '"&"', '"\\t"']) expect(plain, gate).toContain(`if (llSubStringIndex(s, ${gate}) != -1)`)
     // "About" is joined once and measured a character at a time, not
     // copied for each line added and each piece counted.
     const about = body(info, 'about(key av)')
     expect(about).not.toMatch(/text \+=/)
     expect(about).toContain('say(av, llDumpList2String(lines, "\\n"));')
+    // The licence on one line, its own line breaks folded, as before.
+    expect(about).toContain(
+      'string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\\n"), ["\\n"], []), " ");',
+    )
     const say = body(info, 'say(key av, string text)')
     expect(say).toContain('llOrd(text, n)')
     expect(say).not.toContain('bytes(')
@@ -249,13 +279,25 @@ describe('second-life exhibit scripts', () => {
     const act = body(globe, 'act(key who, integer owner, string msg)')
     const playback = act.slice(act.indexOf('if (cmd == "pause")\n'), act.indexOf('if (cmd == "tilt")'))
     expect(playback.match(/gBy = who;\n\s+commit\(saved\);/g)).toHaveLength(3)
+    // Every key the globe names goes out in the very next broadcast: one
+    // left set by a change that returned first would name its asker in
+    // someone else's. The key starts as a real NULL_KEY, since a key
+    // never given a value is "", which the info script would answer.
+    const named = [...globe.matchAll(/gBy = who;\n([^\n]*)/g)].map((m) => m[1].trim())
+    expect(named).toHaveLength(4)
+    for (const next of named) expect(next).toMatch(/^(if \(!)?commit\(saved\)/)
+    expect(globe).toMatch(/^key\s+gBy = NULL_KEY;/m)
     expect(playback).not.toMatch(/" s[.,]/)
     expect(body(globe, 'broadcast()')).toMatch(/"node", NODE\]\), gBy\);\n\s+gBy = NULL_KEY;/)
     // A refused change names nobody, so no one is told it happened.
     expect(body(globe, 'integer commit(list saved)')).toContain('if (!setMedia()) { restore(saved); gBy = NULL_KEY; return FALSE; }')
-    expect(info).toContain('if (id != NULL_KEY) moved(id);')
+    expect(info).toContain('else if (id) moved(id);')
     const moved = body(info, 'moved(key who)')
-    expect(moved).toContain('if (gFor == gDataset && gDuration > 0.0) d = date();')
+    // The date at the position broadcast, not a second later: the globe
+    // takes it before setting the media, which takes a second.
+    expect(moved).toMatch(
+      /integer paused = gPaused;\n\s+gPaused = TRUE;\n\s+if \(gFor == gDataset && gDuration > 0\.0\) d = date\(\);\n\s+gPaused = paused;/,
+    )
     expect(moved).toContain('if (d != "") s = "Paused at " + d + ".";')
     expect(moved).toContain('if (d != "") s = "Playing from " + d + ".";')
   })

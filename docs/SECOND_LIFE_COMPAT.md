@@ -17,7 +17,11 @@ you don't need it. Every claim about TerraViz cites a file and line.
 Every claim about Second Life cites a public source, the viewer's
 source code, or a test result in §4, all collected in §11.
 
-**Last reviewed:** 2026-10-24 (in-world, in Firestorm 7.2.4: the
+**Last reviewed:** 2026-10-25 (in-world: the exhibit controller from
+#500 ran, and its scripts ran out of their 64 KB, first the globe
+script and then the info script; fixed in #501, and §9 Phase 2's status
+note updated. The same day, the page camera of §7 item 7 and §9 Phase 4
+was built.) 2026-10-24 (in-world, in Firestorm 7.2.4: the
 output page's web mode played a TerraViz video on a globe driven by the
 kit's globe script, and pausing and resuming it changed only the part
 of the address after `#`, with no reload — §10 question 10 answered for
@@ -1540,15 +1544,22 @@ beside it. The manifest gains a clip duration for the date (*built for
 the node's own HLS bundles*), and the slow-link work is two page PRs
 beside it (§7 item 4).
 It is the in-world half of Phase 1.
-*Written, and not yet run in-world.* The controller is the three scripts
-in [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md),
+*Run in-world in part, 25 October 2026.* The controller is the three
+scripts in [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md),
 whose README carries the in-world checklist, the left-click test among
-it. LSL compiles only in-world, so what has been checked is its syntax
-(lslint), its date arithmetic against the calendar for every day from
-year 1 to 2100, and, by tests, that its scripts agree with each other,
-with the output page and with the node's serializer. How much of a
-record it can read rests on one measurement of the node's records, in
-October. The smoke-test script,
+it. Its first in-world run found the scripts running out of their 64 KB:
+the globe script stopped after showing a dataset, at 62 KB at rest, and
+once that was fixed the info script stopped in its turn, at about 50.
+Both are fixed (#501): the globe script asks the node nothing, and the
+info script copies as little as it can while it reads. The maintainer
+then used the exhibit for a while with no further stop, but the
+checklist has not been run in full, and the scripts' peak memory has not
+yet been measured. Beyond that run, what has been checked is the
+scripts' syntax (lslint), their date arithmetic against the calendar for
+every day from year 1 to 2100, and, by tests, that the scripts agree with
+each other, with the output page and with the node's serializer. How much
+of a record the info script can read rests on one measurement of the
+node's records, in October. The smoke-test script,
 [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
 stays for testing the page by hand: it does the recipe and the media,
 driven by its owner in chat, with none of the visitor controls.
@@ -1564,8 +1575,11 @@ driven by its owner in chat, with none of the visitor controls.
     smoke-test script's core, unchanged in what it writes, and it is
     the only script that changes what visitors see. It takes the
     owner's chat commands, as before, and control requests from the
-    visitors script. After every change it tells the other two what
-    the globe now shows.
+    visitors script, and from the info script to put back a dataset the
+    page can't show. After every change it tells the other two what
+    the globe now shows. It asks the node nothing: a web reply goes to
+    every script in the prim with a handler for one, and this one has
+    the least room.
   - **visitors** owns people. It turns touches into menus, keeps the
     presenter list, runs talks and the short hold, watches who is at
     the globe, and asks the globe to go back to the live Earth once
@@ -1575,7 +1589,10 @@ driven by its owner in chat, with none of the visitor controls.
     hover text (any telemetry notice, the title, the date and a short
     credit, in that fixed order, in 254 bytes: §7 item 4 has the
     shortening rule). It also gives the abstract and full credit on
-    request.
+    request, and tells whoever paused, played or moved the clip the
+    date the globe now shows. When the node has no such dataset, or
+    it is a tour, it puts the globe back on the live Earth and says
+    so.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start
