@@ -25,26 +25,37 @@
  * a bearing of 0. Stepping it turns the picture about the pole, which is
  * what turning a tipped globe on its axis does.
  *
- * **The view moves like a heavy globe.** A Second Life globe script can
- * change its media address at most once a second, and a picture that
- * jumped 30° each time would read as a fault; one that eased in and out
- * reads as an animation. So each part of the view is a mass on a bearing,
- * given a short push toward its new place and left to coast there
- * (`stepView`): it starts within a tenth of a second, then slows the way
- * the app's own globes do after a flick (`VIEW_COAST_S`). The motion is
- * the exact solution, so a copy drawing at 30 Hz and one at 144 Hz are in
- * the same place at the same moment; it never swings past a target it set
- * out for from rest; and a new target arriving mid-coast adds to the
- * motion rather than stopping it, so a press made while the globe still
- * turns pushes it on, and a view sent every second reads as one movement.
- * Copies differ while they move, as they do after a seek, then agree.
+ * **The address names where the picture comes to rest**, and the view
+ * moves there like a heavy globe (the maintainer's decision, 25 October
+ * 2026, recorded as a v1 behaviour change in the grammar). A Second Life
+ * globe script can change its media address at most once a second, and a
+ * picture that jumped 30° each time would read as a fault; one that
+ * eased in and out reads as an animation. So each part of the view is a
+ * mass on a bearing, given a short push toward its new place and left to
+ * coast there (`stepView`): it moves on the first frame and is at full
+ * speed after about 0.23 s, then slows like a spun globe on its bearing,
+ * with the VR globe's flick constant (`VIEW_COAST_S`). Between the stops
+ * below, the motion is the exact solution, so a copy drawing at 30 Hz and
+ * one at 144 Hz are in the same place at the same moment; it never swings
+ * past a target it set out for from rest; and a new target arriving
+ * mid-coast adds to the motion rather than stopping it, so a press made
+ * while the globe still turns pushes it on, and a view sent every second
+ * reads as one movement. The stops (a crossed target, a pole, zero zoom,
+ * arriving) are applied at frame boundaries, so copies can differ by up
+ * to a frame there. Copies differ while they move, as they do after a
+ * seek, then agree.
  *
  * **Every copy turns the same way.** Which way is the short way round is
- * decided between one address and the next, which every copy shares, and
- * not from where each copy's picture happens to be, which differs while
- * they move: decided from the picture, two copies near the antipode of a
- * new view turned opposite ways (found in review). Exactly half a turn
- * goes the way that counts the longitude up, as `shortTurn` reads 180.
+ * decided between one address and the next, never from where each copy's
+ * picture happens to be, which differs while they move: decided from the
+ * picture, two copies near the antipode of a new view turned opposite
+ * ways (found in review). The target is kept as the address's own number,
+ * so the decision is made from two numbers every copy that applied the
+ * same last address parsed from the same text; built up by arithmetic,
+ * copies with different histories held targets a few units in the last
+ * place apart and split on a half turn, which is what the exhibit's idle
+ * return makes for about one home rotation in ten (found in review). A
+ * half turn, to within `HALF_TURN_SLACK_DEG`, counts the longitude up.
  *
  * The view is set at once, with no motion, on the first reading of an
  * address (a copy opening mid-session shows what the others show, not a
@@ -78,8 +89,9 @@ export function viewParams(view: WebView): EquirectParams {
 }
 
 /**
- * How long the push lasts, in seconds: the time the globe takes to get
- * going. Short, so a press visibly answers at once.
+ * How quickly the push gets the globe going, in seconds. Short, so a
+ * press visibly answers at once; with the coast below, the globe moves on
+ * the first frame and reaches full speed after about 0.23 s.
  */
 export const VIEW_PUSH_S = 0.1
 
@@ -87,10 +99,8 @@ export const VIEW_PUSH_S = 0.1
  * How the globe slows, in seconds: its speed falls to 37% in this time,
  * then to 37% of that, and so on, as a spun globe's does on its bearing.
  * The value `vrInteraction`'s flick-to-spin uses (`INERTIA_TIME_CONSTANT`),
- * tuned there on a headset to match the 2D globe's flick, so a web
- * output's sphere coasts like the app's globes. Copied rather than
- * imported, which would pull Three into this page; a test holds the two
- * equal.
+ * tuned there on a headset. Copied rather than imported, which would pull
+ * Three into this page; a test holds the two equal.
  */
 export const VIEW_COAST_S = 0.7
 
@@ -108,6 +118,11 @@ export interface ViewMotion {
   velocity: WebView
 }
 
+/** How near half a turn a change of longitude counts as one: past the
+ *  rounding of two decimals read from an address (`180.07 − 0.07` is not
+ *  quite 180), well short of any turn a controller means. */
+export const HALF_TURN_SLACK_DEG = 1e-6
+
 /** `deg` as the shortest signed turn, in (−180, 180]. */
 function shortTurn(deg: number): number {
   const wrapped = (((deg % 360) + 540) % 360) - 180
@@ -121,8 +136,8 @@ const COAST = 1 / VIEW_COAST_S
  * One component, `dtS` seconds on. `offset` is the distance from the
  * target. The exact solution of `x″ + (p + c)x′ + pc·x = 0`, with the
  * push's rate `p` and the coast's `c`: overdamped, so from rest it closes
- * on the target without passing it, getting up to speed over about
- * `VIEW_PUSH_S` and slowing over `VIEW_COAST_S`.
+ * on the target without passing it, at full speed when `e^(−pt) · p`
+ * meets `e^(−ct) · c` (about 0.23 s) and slowing over `VIEW_COAST_S`.
  */
 function coastTowards(
   offset: number,
@@ -205,6 +220,9 @@ export interface ViewGlide {
   /** Move on to `nowMs`. Whether the view changed, so the caller draws
    *  it; false once it has arrived, so a still picture costs nothing. */
   advance(nowMs: number): boolean
+  /** Whether it is still on its way: drawn at the moving-content pace
+   *  until it arrives. */
+  moving(): boolean
 }
 
 export function createViewGlide(initial: WebView = DEFAULT_VIEW): ViewGlide {
@@ -226,11 +244,16 @@ export function createViewGlide(initial: WebView = DEFAULT_VIEW): ViewGlide {
       // Up to now toward the old target first, so a change of target
       // costs no motion, whatever the frame phase it lands on.
       catchUp(nowMs)
-      // The short way round from the last address, which every copy
-      // shares, then both moved by whole turns to keep the numbers small.
-      const lon = target.lonDeg + shortTurn(next.lonDeg - target.lonDeg)
-      const turns = 360 * Math.floor(lon / 360)
-      target = { ...next, lonDeg: lon - turns }
+      // The short way round from the last address to this one: both are
+      // numbers read from an address, so every copy that applied the same
+      // last address decides alike.
+      let turn = shortTurn(next.lonDeg - target.lonDeg)
+      if (Math.abs(turn) > 180 - HALF_TURN_SLACK_DEG) turn = 180
+      // The new target is the address's own number, which lies that turn
+      // from the old target give or take whole turns, so the picture is
+      // moved by those whole turns instead and nothing builds up.
+      const turns = 360 * Math.round((target.lonDeg + turn - next.lonDeg) / 360)
+      target = { ...next }
       motion = snap
         ? { view: { ...target }, velocity: STILL }
         : { view: { ...motion.view, lonDeg: motion.view.lonDeg - turns }, velocity: motion.velocity }
@@ -241,5 +264,7 @@ export function createViewGlide(initial: WebView = DEFAULT_VIEW): ViewGlide {
       catchUp(nowMs)
       return motion !== before
     },
+
+    moving: () => !isSettled(motion, target),
   }
 }

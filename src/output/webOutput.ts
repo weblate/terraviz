@@ -161,9 +161,13 @@ export interface WebOutputDeps {
 export interface WebOutput {
   /** Apply a reading of the address: at load, and on every `hashchange`. */
   apply(settings: WebOutputSettings): void
-  /** Every frame: move the camera on through any glide, and steer the
-   *  video to the clock, whose outcome this returns. */
+  /** Every frame: move the camera on, and steer the video to the clock,
+   *  whose outcome this returns. */
   steer(): SyncOutcome
+  /** Whether the camera is on its way to a view. The loop then paces the
+   *  picture as it paces a playing video, at 30 fps on any display,
+   *  rather than drawing on every callback. */
+  cameraMoving(): boolean
   /** A fatal error from the stream, reported if the address has
    *  telemetry on. */
   reportStreamError(err: Error): void
@@ -318,10 +322,17 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       report(t => t.streamError(err))
     },
 
+    cameraMoving: () => !disposed && camera.moving(),
+
     steer() {
+      // Drawn at the moving-content pace while on its way (`cameraMoving`),
+      // not on every callback: at the display rate a 30° turn drew 824
+      // frames on a 144 Hz display where this draws about 170 (found in
+      // review). The resting view is asked for at once, since the pace
+      // drops to the static floor once nothing moves.
       if (!disposed && camera.advance(monotonicMs())) {
         scene.setParams(viewParams(camera.view()))
-        deps.markDirty()
+        if (!camera.moving()) deps.markDirty()
       }
       const video = mirror.current()?.video ?? null
       if (!video || !current) {

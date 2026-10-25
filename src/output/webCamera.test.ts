@@ -62,7 +62,7 @@ describe('viewParams', () => {
 })
 
 describe('stepView: a heavy globe on a bearing', () => {
-  it('pushes off at once, then coasts in the way the app’s globes slow after a flick', () => {
+  it('pushes off at once, then coasts in, slowing like a spun globe on its bearing', () => {
     const path = glide(at(0, 0), lon(90), FRAME_S, 180)
     const speeds = path.map(m => m.velocity.lonDeg)
     // Moving on the first frame, and up to speed within a few tenths.
@@ -74,10 +74,13 @@ describe('stepView: a heavy globe on a bearing', () => {
     expect(left(119) / left(59)).toBeCloseTo(Math.exp(-1 / VIEW_COAST_S), 3)
   })
 
-  it('coasts the way the VR globe does after a flick', () => {
+  it('slows with the VR globe’s flick constant', () => {
     // Copied from `vrInteraction`, which would pull Three into the page.
+    // The constant only: the VR spin also stops dead below about 57°/s,
+    // where this has a target to land on.
     const vr = readFileSync(resolve(process.cwd(), 'src/services/vrInteraction.ts'), 'utf-8')
-    expect(vr).toMatch(new RegExp(`^const INERTIA_TIME_CONSTANT = ${VIEW_COAST_S}$`, 'm'))
+    const constant = String(VIEW_COAST_S).replace('.', '\\.')
+    expect(vr).toMatch(new RegExp(`^const INERTIA_TIME_CONSTANT = ${constant}$`, 'm'))
   })
 
   it('never swings past a target it set out for from rest', () => {
@@ -104,6 +107,15 @@ describe('stepView: a heavy globe on a bearing', () => {
     const target = { latDeg: -80, lonDeg: 0, zoom: 0 }
     const path = glide(going, target, FRAME_S, 900)
     expect(Math.min(...path.map(m => m.view.latDeg))).toBe(-90)
+    expect(path.at(-1)!.view).toEqual(target)
+  })
+
+  it('never takes the zoom below none', () => {
+    // Moving fast away from a small zoom it was sent back to.
+    const out: ViewMotion = { view: { latDeg: 0, lonDeg: 0, zoom: 0.2 }, velocity: { latDeg: 0, lonDeg: 0, zoom: -10 } }
+    const target = { latDeg: 0, lonDeg: 0, zoom: 0.5 }
+    const path = glide(out, target, FRAME_S, 900)
+    expect(Math.min(...path.map(m => m.view.zoom))).toBe(0)
     expect(path.at(-1)!.view).toEqual(target)
   })
 
@@ -208,6 +220,59 @@ describe('createViewGlide', () => {
       expect(l).toBeLessThan(241)
     }
     expect(opened.view()).toEqual(turning.view())
+  })
+
+  it('turns copies with different histories the same way on a half turn', () => {
+    // The exhibit's own pattern: an owner's home of 0.07°, six presses of
+    // Turn east 30° apart, then the idle return home, half a turn away.
+    // One copy followed every press; another opened after the last. Built
+    // up by arithmetic, their targets differed in the last place and they
+    // spun opposite ways for one home in ten (found in review).
+    const followed = createViewGlide()
+    followed.aim(lon(0.07), true, 0)
+    let t = 0
+    for (const r of [330.07, 300.07, 270.07, 240.07, 210.07, 180.07]) {
+      t += 1000
+      followed.aim(lon(r), false, t)
+    }
+    const late = createViewGlide()
+    late.aim(lon(180.07), true, t)
+    t += 1000
+    followed.aim(lon(0.07), false, t)
+    late.aim(lon(0.07), false, t)
+    // A half turn counts the longitude up: from 180.07 through 270 to 360.07.
+    const up = (l: number): number => (((l - 180.07) % 360) + 360) % 360
+    const a = run(followed, t, t + 10_000)
+    const b = run(late, t, t + 10_000)
+    expect(up(a[180])).toBeGreaterThan(90)
+    expect(up(b[180])).toBeGreaterThan(90)
+    for (const l of b) expect(up(l)).toBeLessThanOrEqual(180 + 1e-9)
+    expect(followed.view()).toEqual(late.view())
+    expect(followed.view().lonDeg).toBe(0.07)
+  })
+
+  it('reads a turn within a hair of half as half, counting up', () => {
+    // `180.07 − 0.07` is not quite 180 in floating point, either way.
+    for (const [from, to] of [[0.07, 180.07], [180.07, 0.07], [10.1, 190.1], [359.9, 179.9]]) {
+      const g = createViewGlide()
+      g.aim(lon(from), true, 0)
+      g.aim(lon(to), false, 0)
+      g.advance(500)
+      const turned = (((g.view().lonDeg - from) % 360) + 360) % 360
+      expect(turned, `${from} to ${to}`).toBeGreaterThan(0)
+      expect(turned, `${from} to ${to}`).toBeLessThan(180)
+    }
+  })
+
+  it('says it is moving until it arrives', () => {
+    const g = createViewGlide()
+    expect(g.moving()).toBe(false)
+    g.aim(lon(30), false, 0)
+    expect(g.moving()).toBe(true)
+    run(g, 0, 10_000)
+    expect(g.moving()).toBe(false)
+    g.aim(lon(60), true, 10_000)
+    expect(g.moving()).toBe(false)
   })
 
   it('times a motion from when it was asked for, after a still minute', () => {

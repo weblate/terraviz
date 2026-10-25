@@ -135,9 +135,9 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 | `dataset` | the node's own dataset id, the one `GET /api/v1/datasets/:id` takes | Show that dataset. A video plays and an image holds. | the live Earth |
 | `fit` | `fill` | Stretch the picture to the page instead of letterboxing it. For a page used as a texture, whose shape the host may not keep at 2:1. | letterbox (`contain`) |
 | `width` | `1024`, `2048`, `4096`, `8192` | The picture's width in pixels; its height is half. A video stream is capped at the narrowest rendition at least this wide, and an image takes its narrowest size at least this wide. | the narrowest of these at least as wide as the picture is shown on the page, up to `4096` |
-| `rotation` | degrees | The longitude at the centre of the picture, in degrees east: `rotation=90` puts 90°E at the centre. Wrapped round the turn. With `lat` at a pole, where every longitude meets, the meridian the centre sits on: it runs up the picture from the South Pole and down it from the North Pole, so `lat=90&rotation=180` puts 0°E up. | `0` |
-| `lat` | degrees, −90 to 90 | The latitude at the centre of the picture, in degrees north. The picture turns to bring it there with north up, so `lat=-90` puts the South Pole at the centre of an upright sphere. | `0` |
-| `zoom` | 0 or more | Magnify the centre of the picture, in the main app's zoom levels. The far side shrinks rather than being cut off, so the whole Earth is still on the sphere. A zoom past about `5.67`, the most the picture can magnify, reads as that most. | `0` |
+| `rotation` | degrees | The longitude at the centre of the picture once it comes to rest (below), in degrees east: `rotation=90` puts 90°E at the centre. Wrapped round the turn. With `lat` at a pole, where every longitude meets, the meridian the centre sits on: it runs up the picture from the South Pole and down it from the North Pole, so `lat=90&rotation=180` puts 0°E up. | `0` |
+| `lat` | degrees, −90 to 90 | The latitude at the centre of the picture once it comes to rest, in degrees north. The picture turns to bring it there with north up, so `lat=-90` puts the South Pole at the centre of an upright sphere. | `0` |
+| `zoom` | 0 or more | How far the centre of the picture is magnified once it comes to rest, in the main app's zoom levels. The far side shrinks rather than being cut off, so the whole Earth is still on the sphere. A zoom past about `5.67`, the most the picture can magnify, reads as that most. | `0` |
 | `debug` | present | The output's debug readout, drawn on the picture. | off |
 | `t` | seconds into the clip, 0 or more | Where the clip is. A `t` past the clip's end wraps round it, paused or playing. | `0` |
 | `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when this copy read the address: at load, or at the `#` change that last changed the clock |
@@ -182,16 +182,22 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 - **Whoever controls the globe writes a new `t` and `at` on every
   pause, resume and jump.** Resuming at 40 s and resuming at 70 s are
   then different addresses.
-- **The view moves like a heavy globe.** A change to `rotation`, `lat`
-  or `zoom` after the `#` sets the picture moving at once. It is up to
-  speed in a quarter of a second, then coasts to a stop on the new view,
-  slowing the way the main app's globe does after a flick: a 30° turn
+- **`rotation`, `lat` and `zoom` name the view the picture comes to
+  rest on, and the picture moves there like a heavy globe.** A change
+  to any of them after the `#` sets the picture moving at once. It is
+  at full speed after about a quarter of a second, then coasts to a stop
+  on the new view, slowing like a spun globe on its bearing: a 30° turn
   is 95% done in about two seconds. A new view that arrives while it
   still moves pushes it on rather than stopping it, so a controller that
   can change the address only once a second still looks like one
-  movement. Every copy turns the same way round: the shorter way from
-  the last address to the new one, and for exactly half a turn, the way
-  that has the centre's longitude counting up.
+  movement. Every copy that applied the same last address turns the
+  same way round: the shorter way from that address to the new one, and
+  for half a turn, the way that has the centre's longitude counting up.
+- **Write the view to rest on, at most once a second.** The picture is
+  not a display of the latest value: a composer that animated these
+  keys by writing them faster would see the picture trail by most of a
+  second, and a back-and-forth swing made every two seconds shrink to
+  about 40% of its size.
 - **Some views are set at once.** The first reading of an address is
   shown at once, so a copy that opens mid-session matches the others.
   So is every view for a viewer whose browser reports that they asked
@@ -311,7 +317,7 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 |---|---|---|
 | v1 | 2026-07-04 | Initial written contract. Documents the pre-existing `dataset` / `/dataset/:id` / `tour` / `catalog` / `preview` selectors and the `terrain` / `labels` / `borders` / `rotate` / `layout` / `setview` / `orbit` / `prompt` modifiers, and introduces the new `embed` minimal-chrome flag and its `chat` sub-flag. |
 | v1 | 2026-10-24 | Additive. The output page (`/output/output`) gains its parameters: `dataset`, `fit`, `width`, `rotation` (the longitude at the picture's centre), `debug`, and the clock `t` / `at` / `rate` / `paused`, each with its own default, read from the query and the fragment alike. No main-app parameter changes. A bare output-page address draws the live Earth it always did, now sized to the page as displayed and with clouds that refresh. Later the same day, also additive: `telemetry=1`, which turns on the page's own Essential telemetry, off by default. It fails toward off rather than following the truthy convention. |
-| v1 | 2026-10-25 | Additive, with one behavior change. The output page gains `lat`, the latitude at the picture's centre, and `zoom`, which magnifies it, through the desktop output's follow turn; a zoom past what the picture can magnify (about 5.67) reads as that most. `rotation` keeps its meaning and draws the same picture as before; at a pole it names the meridian the centre sits on. The behavior change: a change to any of the three after the `#` now sets the picture moving, coasting to a stop on the new view the way the main app's globe slows after a flick, instead of jumping there. The first reading of an address, and every view for a viewer whose browser reports reduced motion, still jump. No main-app parameter changes. |
+| v1 | 2026-10-25 | Additive, with one behavior change. The output page gains `lat`, the latitude at the picture's centre, and `zoom`, which magnifies it, through the desktop output's follow turn; a zoom past what the picture can magnify (about 5.67) reads as that most. `rotation` keeps its meaning and draws the same picture as before; at a pole it names the meridian the centre sits on. The behavior change: the three keys name the view the picture comes to rest on, and a change to any of them after the `#` now sets the picture moving, coasting to a stop on the new view like a spun globe on its bearing, instead of jumping there. The first reading of an address, and every view for a viewer whose browser reports reduced motion, still jump. Kept in v1 by the maintainer's decision of 25 October 2026: the section was a day old, and every known composer writes at most once a second, the Second Life limit. **Migration:** a composer that animated `rotation` by writing it faster than once a second now sees the picture trail by about 0.8 s, and its swings shrink to about 40% at 0.5 Hz; write the view the picture should come to rest on, at most once a second. No main-app parameter changes. |
 
 ---
 

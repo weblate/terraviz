@@ -969,13 +969,16 @@ The work, smallest first:
    was dropped: on the equator the follow turn *is* a turn about the
    poles, so `rotation` and `lon` would be one number under two names,
    and at a pole that number names the meridian the centre sits on (up
-   the picture from the South Pole, down it from the North). The page
-   moves between views like a heavy globe: pushed off at once, then
-   coasting to a stop the way the app's globes slow after a flick
-   (0.7 s, the VR globe's tuning), so a press made while it still turns
-   pushes it on and a script that changes the address once a second
-   reads as one movement. Every copy turns the same way round, chosen
-   from the addresses rather than from its own picture. This is the
+   the picture from the South Pole, down it from the North). The keys
+   name the view the picture comes to rest on, and the page moves there
+   like a heavy globe: pushed off at once, then coasting to a stop like a
+   spun globe on its bearing (0.7 s, the VR flick's constant), so a
+   press made while it still turns pushes it on and a script that
+   changes the address once a second reads as one movement. That changes
+   what a composer writing faster than once a second sees, which the
+   maintainer kept in the grammar's v1 as a behaviour change on 25
+   October, with a migration note. Every copy turns the same way round,
+   chosen from the addresses rather than from its own picture. This is the
    first of three layers proposed for a natural feel. The other two
    need the address to carry a speed: a spin that keeps going, shared
    by every copy through a start time as the clock is, which would also

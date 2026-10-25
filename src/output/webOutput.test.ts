@@ -355,22 +355,29 @@ describe('moving the camera', () => {
     }
   }
 
-  it('glides to a later view, then stops asking for frames', () => {
+  it('moves to a later view at the moving-content pace, then stops asking for frames', () => {
     const h = harness()
     h.show('#rotation=0')
     h.show('#rotation=30&lat=-30')
     // Nothing jumps on the change itself.
     expect(h.params).toHaveLength(1)
+    expect(h.out.cameraMoving()).toBe(true)
+    // On its way, the view moves every frame and the loop paces the
+    // drawing like a playing video, so no frame is demanded on top.
     h.markDirty.mockClear()
     h.advance(16)
     h.out.steer()
-    expect(h.markDirty).toHaveBeenCalled()
     const first = h.params.at(-1)
     expect(first).not.toEqual(viewParams({ latDeg: -30, lonDeg: 30, zoom: 0 }))
     expect(first).not.toEqual(viewParams({ latDeg: 0, lonDeg: 0, zoom: 0 }))
+    frames(h, 1000)
+    expect(h.markDirty).not.toHaveBeenCalled()
     frames(h, 10_000)
+    // Arrived: the resting view is asked for at once, then a still
+    // picture goes back to the 1 Hz floor.
     expect(h.params.at(-1)).toEqual(viewParams({ latDeg: -30, lonDeg: 30, zoom: 0 }))
-    // Arrived: a still picture goes back to the 1 Hz floor.
+    expect(h.out.cameraMoving()).toBe(false)
+    expect(h.markDirty).toHaveBeenCalledTimes(1)
     const count = h.params.length
     h.markDirty.mockClear()
     frames(h, 500)
