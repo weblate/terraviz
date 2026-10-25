@@ -42,7 +42,8 @@
  *     clip's length in seconds, never negative and often with a
  *     fraction, or 0 when the node doesn't know it, which can be for
  *     a moment as well as for good:
- *     Vimeo's figure for `vimeo:`, the sum of the bundle's own
+ *     Vimeo's figure for `vimeo:` (whole seconds, so up to a second
+ *     off what a player reads from the stream), the sum of the bundle's own
  *     `#EXTINF`s for `r2:` HLS (`_lib/hls-duration.ts`), and 0 for
  *     `stream:` and single files. Browsers ignore it, since a player
  *     reads the length from the playlist; a Second Life globe's

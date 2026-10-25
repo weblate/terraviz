@@ -39,12 +39,17 @@
 // shown is this script's own: to the period's precision, the year for a
 // yearly dataset ("P1Y"), the month for a monthly one, the time for one
 // with a period under a day, and the day for the rest, all in UTC. The
-// app shows the day, in the viewer's time zone, for all of them. A day,
+// app shows the day, or for a period under a day the time, in the
+// viewer's time zone. A day,
 // month or year is counted from the start's own, so on data stamped at
 // noon the day changes with the frame rather than at midnight between.
 // A video on Vimeo shows its range: Vimeo gives its length in whole
-// seconds, the page loops on the file's own, and a date worked out from
-// the first drifts from the picture with every loop.
+// seconds, the page loops on the stream's own, and a date worked out
+// from the first drifts from the picture with every loop. Only the node
+// knows a dataset is on Vimeo; this script recognises one by a
+// player.vimeo.com address anywhere in its manifest. A node whose proxy
+// rewrote that address would be missed, and its Vimeo datasets' dates
+// would drift.
 //
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
@@ -58,13 +63,17 @@ integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" other
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
 // How much of a record is read, in bytes. Every field this script uses
-// comes before the record's `createdAt`, which began at byte 8,356 in the
-// longest record on the node in October 2026. That order is this node's
+// comes before the record's `createdAt`, which began at byte 8,356 (UTF-8,
+// measured to that key) in the longest record on the node in October 2026. That order is this node's
 // serializer's, not a promise of the protocol (docs/protocol/README.md);
 // exhibit.test.ts fails if it changes. A record longer than this is read
 // as far as it goes: a value cut short ends "...", a field past the cut is
 // missing, and "About" says the rest is at the dataset's page.
 integer BODY_MAX = 9000;
+// How much of a manifest: its length and stream address come before its
+// list of files, which for a Vimeo video is long, and this leaves room for
+// a long title and address before them.
+integer MANIFEST_MAX = 4096;
 integer ABSTRACT_MAX = 2500;   // characters of an abstract kept for "About"
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
 float   TICK = 2.0;            // how often a playing clip's date is worked out again
@@ -404,7 +413,8 @@ fetch()
     else if (gHaveRec && gVideo && gDuration <= 0.0 && gManTries < 4)
     {
         ++gManTries;
-        gManReq = llHTTPRequest(base + "/manifest", [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json"], "");
+        gManReq = llHTTPRequest(base + "/manifest", [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json",
+            HTTP_BODY_MAXLENGTH, MANIFEST_MAX], "");
     }
     else return;
     // A request Second Life throttled gets no key and never an answer.
@@ -435,11 +445,12 @@ string field(string body, integer stop, string name, integer max)
     {
         // Longer than kept, or cut off by BODY_MAX: end at a space, which
         // can't fall inside an escape. A value with no space, such as a
-        // time, is dropped rather than read cut.
+        // time or a long link, is dropped rather than read cut, and
+        // "About" says some of the record is at its page.
         raw = llGetSubString(raw, 0, max - 1);
         integer sp = llStringLength(raw) - 1;
         while (sp > 0 && llGetSubString(raw, sp, sp) != " ") --sp;
-        if (sp <= 0) return "";
+        if (sp <= 0) { gCut = TRUE; return ""; }
         raw = llGetSubString(raw, 0, sp - 1);
         gLastCut = TRUE;
         gCut = TRUE;

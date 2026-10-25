@@ -154,8 +154,10 @@ stamped at noon the day changes with the frame rather than at midnight
 in between. Until the node has said how long the clip is, and for an
 image, it shows the dataset's range instead. So does a video hosted on
 Vimeo, such as Sea temperature: the node gives its length in whole
-seconds, which isn't quite the file's, and a date worked out from it
-would drift from the picture with every loop.
+seconds, which isn't quite the stream's, and a date worked out from it
+would drift from the picture with every loop. The script knows one by
+a `player.vimeo.com` address in its manifest; a node whose video proxy
+rewrites that address would get a drifting date instead.
 
 The credit is the record's attribution, or else its rights holder, or
 else its organization, with the licence after it. A record that names
@@ -355,10 +357,12 @@ each avatar used, and what steps 2 and 9 showed.
   record on the node, the longest needing 8,356. It keeps 2,500
   characters of an abstract, 600 of a licence statement and 300 of a
   credit. A value cut short ends `...`, and "About" then says the rest
-  is at the dataset's page. In a record longer than 9,000 bytes, a field
-  past the cut is missing: the licence is lost first, then the dates.
-  The credit then doesn't fall back to the organization, which might
-  not be the credit the record gives.
+  is at the dataset's page, as it does when a link too long to keep is
+  left out. In a record longer than 9,000 bytes, a field past the cut is
+  missing, in the order the node writes them: the credit first, then the
+  licence, then the period and the dates. A lost credit doesn't fall
+  back to the organization, which might not be the credit the record
+  gives, and a lost period shows a yearly dataset's date to the day.
 - **Display names don't make presenters.** If someone in `presenters`
   isn't recognised, check their username in their profile.
 

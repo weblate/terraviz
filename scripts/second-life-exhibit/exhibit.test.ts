@@ -227,6 +227,9 @@ describe('second-life exhibit scripts', () => {
       fullRow(),
       { tags: ['Air'], categories: [], keywords: ['k'], developers: [{ role: 'data', name: 'D', affiliation_url: null }], related: [] },
       { node_id: 'N', display_name: 'N', base_url: 'https://n.example', description: null, contact_email: null, public_key: 'k', created_at: T },
+      undefined,
+      undefined,
+      () => 'https://n.example/frames/{n}.png',
     )
     const sent = JSON.parse(JSON.stringify(wire)) as Record<string, unknown>
     const keys = Object.keys(sent)
@@ -237,9 +240,13 @@ describe('second-life exhibit scripts', () => {
       expect(keys.indexOf(name), `${name} before createdAt`).toBeLessThan(end)
       expect(typeof sent[name], `${name} is a string`).toBe('string')
     }
-    // Nothing before it is an object, so no key nested in one (a
-    // publisher's probingInfo, enriched) can be taken for a field the
-    // record lacks.
+    // Every object the record can carry comes after it, so no key nested
+    // in one can be taken for a field the record lacks. probingInfo is the
+    // one a publisher writes freely, and the fixture's holds a "period".
+    for (const key of ['probingInfo', 'boundingBox', 'renderEncoding', 'colorScale', 'frames', 'enriched']) {
+      expect(keys.indexOf(key), `${key} is in the fixture's record`).toBeGreaterThan(-1)
+      expect(keys.indexOf(key), `${key} after createdAt`).toBeGreaterThan(end)
+    }
     for (const key of keys.slice(0, end)) {
       const value = sent[key]
       const flat = typeof value !== 'object' || value === null
@@ -300,7 +307,11 @@ describe('second-life exhibit scripts', () => {
 
 const T = '2026-05-01T00:00:00.000Z'
 
-/** A dataset row with every field the wire can carry filled in. */
+/**
+ * A dataset row with every field that can put an object on the wire
+ * filled in, and the text and time fields the info script reads. Not a
+ * tour, so no `tourJsonUrl`.
+ */
 function fullRow(): DatasetRow {
   return {
     id: '01KQG611HF8YXJNRBEHT0757KT',
@@ -339,7 +350,7 @@ function fullRow(): DatasetRow {
     publisher_id: null,
     legacy_id: 'INTERNAL_SOS_768',
     color_table_ref: null,
-    probing_info: null,
+    probing_info: JSON.stringify({ period: 'P1Y', note: 'a publisher writes what it likes here' }),
     bbox_n: 90,
     bbox_s: -90,
     bbox_w: -180,
@@ -353,15 +364,23 @@ function fullRow(): DatasetRow {
     radius_mi: null,
     lon_origin: null,
     is_flipped_in_y: null,
-    render_encoding: null,
-    playback_fps: null,
-    color_scale: null,
+    render_encoding: 'data-luma',
+    playback_fps: 30,
+    color_scale: JSON.stringify({
+      stops: [
+        { t: 0, rgba: [0, 0, 0, 0] },
+        { t: 1, rgba: [255, 0, 0, 255] },
+      ],
+      vmin: 0,
+      vmax: 50,
+      units: 'mg m-2',
+    }),
     transcoding: null,
     active_transcode_upload_id: null,
-    frame_count: null,
-    frame_extension: null,
-    frame_source_filenames_ref: null,
+    frame_count: 10,
+    frame_extension: 'png',
+    frame_source_filenames_ref: 'r2:datasets/x/frames.json',
     content_digest: null,
-    source_digest: null,
+    source_digest: 'abc',
   }
 }

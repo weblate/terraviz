@@ -821,13 +821,19 @@ The work, smallest first:
        unknown (`CATALOG_BACKEND_PLAN.md` beside the manifest's shape).
        Hurricane Season 2024 reads 183 s, the same on all three
        renditions. `vimeo:` already carried Vimeo's figure, which is
-       whole seconds and so not quite the file's: 12 for the real-time
-       sea surface temperature's 12.1 s. Every copy of the page loops on
-       the file's own length, so a date worked out from Vimeo's drifts
-       from the picture with every loop, months on a year-long clip
-       after a few minutes. The controller therefore shows those
-       datasets' range, and reading the length from the file itself
-       (its MP4 header) would give them a moving date. `stream:`
+       whole seconds and so not quite the stream's: 12 for the
+       real-time sea surface temperature's 12.1 s
+       (`CATALOG_BACKEND_PLAN.md` says so beside the manifest). Every
+       copy of the page plays the `hls` stream and loops on its length,
+       so a date worked out from Vimeo's drifts from the picture with
+       every loop, months on a year-long clip after a few minutes. The
+       controller therefore shows those datasets' range. It knows one
+       by a `player.vimeo.com` address in the manifest, since only the
+       node knows a row is `vimeo:`, so a proxy that rewrote that
+       address would defeat it. The fix belongs on the node: report 0
+       for `vimeo:`, or sum the Vimeo playlist as `hls-duration.ts`
+       sums the node's own, which would give those datasets a moving
+       date. `stream:`
        and single files still report 0, and any reading can be 0 for
        a moment when the bucket is slow, which the manifest caches for
        15 s rather than five minutes;
