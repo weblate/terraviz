@@ -185,10 +185,12 @@ describe('second-life exhibit scripts', () => {
     }
   })
 
-  it('read only record fields the node writes before the long tail', () => {
+  it('read only record fields the node writes before createdAt', () => {
     // The info script reads a record only as far as BODY_MAX, which works
-    // because every field it needs comes before `enriched`. A serializer
-    // that moved one after it would cut that field from long records.
+    // because every field it needs comes before `createdAt`, which every
+    // record has. A serializer that moved one after it would cut that
+    // field from long records. The order isn't the protocol's promise
+    // (docs/protocol/README.md); it is this node's, and this pins it.
     const fields = all(info, /field\(body, stop, "(\w+)"/g)
     expect(fields.length).toBeGreaterThan(0)
     const wire = serializeDataset(
@@ -196,15 +198,26 @@ describe('second-life exhibit scripts', () => {
       { tags: ['Air'], categories: [], keywords: ['k'], developers: [{ role: 'data', name: 'D', affiliation_url: null }], related: [] },
       { node_id: 'N', display_name: 'N', base_url: 'https://n.example', description: null, contact_email: null, public_key: 'k', created_at: T },
     )
-    const keys = Object.keys(JSON.parse(JSON.stringify(wire)) as Record<string, unknown>)
-    expect(keys.at(-1)).toBe('enriched')
+    const sent = JSON.parse(JSON.stringify(wire)) as Record<string, unknown>
+    const keys = Object.keys(sent)
+    const end = keys.indexOf('createdAt')
+    expect(end).toBeGreaterThan(-1)
     for (const name of fields) {
-      expect(keys, name).toContain(name)
-      expect(typeof (wire as unknown as Record<string, unknown>)[name], `${name} is a string`).toBe('string')
+      expect(keys.indexOf(name), name).toBeGreaterThan(-1)
+      expect(keys.indexOf(name), `${name} before createdAt`).toBeLessThan(end)
+      expect(typeof sent[name], `${name} is a string`).toBe('string')
     }
-    // And the script stops looking where `enriched` starts, so a field the
-    // record lacks is never found inside it.
-    expect(body(info, 'record(string body)')).toContain('llSubStringIndex(body, ",\\"enriched\\":")')
+    // Nothing before it is an object, so no key nested in one (a
+    // publisher's probingInfo, enriched) can be taken for a field the
+    // record lacks.
+    for (const key of keys.slice(0, end)) {
+      const value = sent[key]
+      const flat = typeof value !== 'object' || value === null
+        || (Array.isArray(value) && value.every((v) => typeof v === 'string'))
+      expect(flat, key).toBe(true)
+    }
+    // And the script stops looking there.
+    expect(body(info, 'record(string body)')).toContain('llSubStringIndex(body, ",\\"createdAt\\":")')
   })
 
   it("leave the title room in the hover text, whatever else it says", () => {

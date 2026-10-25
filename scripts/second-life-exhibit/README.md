@@ -128,8 +128,8 @@ keeping at least 48 bytes, and either is cut with `...` when it must
 be: above, with both optional lines showing, the credit loses its end.
 Nothing else is ever cut, so the telemetry notice can't be lost.
 
-The date is worked out as the app does: the dataset's start time plus
-the share of its span the animation has played. It is exact when paused
+The date is the dataset's start time plus the share of its span the
+animation has played, the same arithmetic as the app's. It is exact when paused
 and updated every couple of seconds while playing. It shows to the
 dataset's period: the year for a yearly dataset, the month for a monthly
 one, the time in UTC for one updated more often than daily, and the day
@@ -310,14 +310,20 @@ each avatar used, and what steps 2 and 9 showed.
   script for a second whenever it sets media.
 - **A long dataset name in `datasets` is cut** to a button's 24 bytes.
   Two names that cut alike answer as the first.
-- **The date is UTC**, and follows the clip as the region's clock says,
-  so it is as close as visitors' copies of the clip are: a second or so
-  while playing, exact when paused.
-- **A record longer than the info script reads** shows no date and no
-  licence, rather than wrong ones. The script reads the first 9,000
-  characters, which today holds every field it needs for every record
-  on the node, and keeps an abstract's first 2,500 characters, with the
-  rest at the link.
+- **The date is UTC**, and follows the clip as the region's clock says:
+  a second or so from the picture while playing, exact when paused. On
+  a clip left looping for hours it can drift further, since the script
+  wraps on the length the node reports and each viewer's page on the
+  video's own, which can differ slightly (`SECOND_LIFE_COMPAT.md` §7).
+- **A long record is read only in part.** The info script reads its
+  first 9,000 bytes, which today holds every field it needs for every
+  record on the node, the longest needing 8,356. It keeps 2,500
+  characters of an abstract, 600 of a licence statement and 300 of a
+  credit. A value cut short ends `...`, and "About" then says the rest
+  is at the dataset's page. In a record longer than 9,000 bytes, a field
+  past the cut is missing: the licence is lost first, then the dates.
+  The credit then doesn't fall back to the organization, which might
+  not be the credit the record gives.
 - **Display names don't make presenters.** If someone in `presenters`
   isn't recognised, check their username in their profile.
 

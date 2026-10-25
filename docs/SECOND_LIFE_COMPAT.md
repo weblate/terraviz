@@ -1505,7 +1505,9 @@ whose README carries the in-world checklist, the left-click test among
 it. LSL compiles only in-world, so what has been checked is its syntax
 (lslint), its date arithmetic against the calendar for every day from
 year 1 to 2100, and, by tests, that its scripts agree with each other,
-with the output page and with the node's records. The smoke-test script,
+with the output page and with the node's serializer. How much of a
+record it can read rests on one measurement of the node's records, in
+October. The smoke-test script,
 [`terraviz-globe.lsl`](../scripts/second-life-probe/README.md#the-globe),
 stays for testing the page by hand: it does the recipe and the media,
 driven by its owner in chat, with none of the visitor controls.

@@ -34,10 +34,11 @@
 //   abstract is cut, and the link has the rest.
 //
 // A DATE is the dataset's start time plus the share of its span that the
-// clip has played, as the app works it out. It shows to the period's
-// precision: the year for a yearly dataset ("P1Y"), the month for a
-// monthly one, the time for one with a period under a day, and the day
-// for the rest, all in UTC.
+// clip has played, the arithmetic of the app's videoTimeToDate. How it is
+// shown is this script's own: to the period's precision, the year for a
+// yearly dataset ("P1Y"), the month for a monthly one, the time for one
+// with a period under a day, and the day for the rest, all in UTC. The
+// app shows the day, in the viewer's time zone, for all of them.
 //
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
@@ -50,10 +51,13 @@ integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script re
 integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
-// How much of a record is read. Every field this script uses comes before
-// the record's long tail, and ended by character 8,356 in the longest
-// record on the node in October 2026. A record cut before its dates shows
-// no date rather than a wrong one.
+// How much of a record is read, in bytes. Every field this script uses
+// comes before the record's `createdAt`, which began at byte 8,356 in the
+// longest record on the node in October 2026. That order is this node's
+// serializer's, not a promise of the protocol (docs/protocol/README.md);
+// exhibit.test.ts fails if it changes. A record longer than this is read
+// as far as it goes: a value cut short ends "...", a field past the cut is
+// missing, and "About" says the rest is at the dataset's page.
 integer BODY_MAX = 9000;
 integer ABSTRACT_MAX = 2500;   // characters of an abstract kept for "About"
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
@@ -102,7 +106,7 @@ string  gSpdx;
 string  gLicUrl;
 string  gStatement;
 string  gAbstract;
-integer gCut;          // the abstract was cut
+integer gCut;          // a value was cut short, or the record wasn't read to the end
 
 key     gRecReq;
 key     gManReq;
@@ -169,9 +173,10 @@ list instant(string t)
         + (integer)llGetSubString(t, 17, 18)];
 }
 
-// What a period says about the date's precision, read with the app's
-// grammar: P, then any of nY nM nW nD, then T and any of nH nM nS. One
-// that doesn't parse shows the day, which is what the app falls back to.
+// What a period says about the date's precision, read as the ISO 8601
+// durations the app's parseISO8601Duration takes: P, then any of nY nM nW
+// nD, then T and any of nH nM nS. The node doesn't check a period when
+// it's written, so one that doesn't parse shows the day.
 period(string p)
 {
     gRes = RES_DAY;
@@ -383,8 +388,9 @@ fetch()
 }
 
 // A field's string value from a record that may have been cut short, up
-// to `max` characters of it. Only the record's own fields count, never one
-// inside its trailing "enriched" object.
+// to `max` characters of it. Only matches before `stop` count: every field
+// read comes before `createdAt`, and nothing before it is an object, so no
+// key inside one (probingInfo's, enriched's) can be taken for a field.
 string field(string body, integer stop, string name, integer max)
 {
     string tag = "\"" + name + "\":\"";
@@ -413,21 +419,24 @@ string field(string body, integer stop, string name, integer max)
     }
     rest = "";
     if (at == 0) return "";
+    string more = "";
     if (at > 0 && at <= max) raw = llGetSubString(raw, 0, at - 1);
     else
     {
         // Longer than kept, or cut off by BODY_MAX: end at a space, which
-        // can't fall inside an escape.
+        // can't fall inside an escape, and say so. A value with no space,
+        // such as a time, is dropped rather than read cut.
         raw = llGetSubString(raw, 0, max - 1);
         integer sp = llStringLength(raw) - 1;
         while (sp > 0 && llGetSubString(raw, sp, sp) != " ") --sp;
         if (sp <= 0) return "";
         raw = llGetSubString(raw, 0, sp - 1);
-        if (name == "abstractTxt") gCut = TRUE;
+        more = "...";
+        gCut = TRUE;
     }
     string v = llJsonGetValue("[\"" + raw + "\"]", [0]);
     if (v == JSON_INVALID) return "";
-    return v;
+    return v + more;
 }
 
 // Text from HTML, as some records' organizations and abstracts are:
@@ -471,13 +480,20 @@ string ref(string slug)
 
 record(string body)
 {
-    integer stop = llSubStringIndex(body, ",\"enriched\":");
+    // Where the fields this script reads end. A record without it was cut
+    // before it by BODY_MAX, so a field not found may be one not read.
+    integer stop = llSubStringIndex(body, ",\"createdAt\":");
+    integer whole = stop != -1;
+    if (!whole) gCut = TRUE;
     gRef = ref(field(body, stop, "slug", 70));
     gVideo = llSubStringIndex(field(body, stop, "format", 40), "video/") == 0;
     gAbstract = plain(field(body, stop, "abstractTxt", ABSTRACT_MAX));
     gWho = field(body, stop, "attributionText", 300);
     if (gWho == "") gWho = field(body, stop, "rightsHolder", 300);
-    if (gWho == "") gWho = field(body, stop, "organization", 400);
+    // The organization, which comes first, is the credit only when the
+    // record says nothing later: it may not be the credit a record cut
+    // short would have given.
+    if (gWho == "" && whole) gWho = field(body, stop, "organization", 400);
     gWho = plain(gWho);
     gSpdx = plain(field(body, stop, "licenseSpdx", 120));
     gLicUrl = field(body, stop, "licenseUrl", 300);
@@ -539,15 +555,13 @@ about(key av)
     string text = gTitle;
     string r = range();
     if (r != "") text += " (" + r + ")";
-    if (gAbstract != "")
-    {
-        text += "\n" + gAbstract;
-        if (gCut) text += "... (the rest is at the link below)";
-    }
+    if (gAbstract != "") text += "\n" + gAbstract;
     if (gWho != "") text += "\nCredit: " + gWho;
     string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\n"), ["\n"], []), " ");
     if (lic != "") text += "\nLicence: " + lic;
-    say(av, text + "\nMore about it: " + link);
+    if (gCut) text += "\nSome of this was too long to give here. All of it is at " + link;
+    else text += "\nMore about it: " + link;
+    say(av, text);
 }
 
 forget()
