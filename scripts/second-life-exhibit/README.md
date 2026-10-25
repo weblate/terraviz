@@ -118,7 +118,10 @@ does the end of a talk, so a choice made from beyond the radius isn't
 undone at once.
 
 **Turning and tilting are different motions.** A turn spins the picture
-about the globe's poles, in the page's address. A tilt tips the sphere
+about the globe's poles, in the page's address; each visitor's page
+sets it moving and lets it coast to a stop, so a turn takes a couple of
+seconds to settle and a second press while it still moves pushes it on.
+A tilt tips the sphere
 itself, which the region shows every viewer at the same angle, so the
 poles stop being straight up. A tilt ends any spin, and the owner's
 `/9 spin` waits until the globe is upright; the idle return brings the
@@ -127,7 +130,8 @@ upright again.
 
 The tilt is a stopgap. The plan is to turn the picture instead, so the
 sphere stays upright and a pole comes to the front with zoom alongside
-(Phase 4), and to take the tilt out when that lands.
+(Phase 4). The page can already do that (`lat` and `zoom` in the
+address); the tilt comes out when this controller's menu drives them.
 
 **Turning with the mouse doesn't work yet.** A drag on the globe never
 reaches a script, for the same reason a left-click doesn't, so the menu

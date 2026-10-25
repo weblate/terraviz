@@ -1588,9 +1588,10 @@ driven by its owner in chat, with none of the visitor controls.
   ozone hole on the equator in front of their audience; Upright again
   undoes it. A tilt is the prim's rotation, which the region sends
   every viewer, so all see one angle. **The tilt is a stopgap**, kept
-  on 25 October because it works now: it is to come out when Phase 4's
-  page camera lands (§7 item 7), which turns the picture to bring a
-  pole to the front with the sphere upright and zoom alongside, since a
+  on 25 October because it works now: it is to come out when the
+  controller drives Phase 4's page camera (§7 item 7; the camera itself
+  landed the same day), which turns the picture to bring a pole to the
+  front with the sphere upright and zoom alongside, since a
   tipped sphere under a turned picture would compound into angles
   nobody chose. Whether walk-up visitors come to prefer a globe that
   aims at them is the one thing worth weighing then. The controls are
@@ -1660,18 +1661,26 @@ designed on whatever the `#` test found. Firestorm applies a change
 after the `#` without a reload, so the view can change live. The shape
 proposed on 25 October, after the Phase 2 controller's menu turned out
 clunky for presenting:
-- **The camera on the page.** The output page takes `lat`, `lon` and
-  `zoom` after the `#`, through the follow turn and camera offset the
-  2:1 desktop output already uses (`followCamera` in
+- **The camera on the page. Built on 25 October, not yet seen
+  in-world.** The output page takes `lat` and `zoom` after the `#`,
+  with `rotation` as the longitude, through the follow turn and camera
+  offset the 2:1 desktop output already uses (`followCamera` in
   `src/output/equirectRtt.ts`), so the sphere stays upright and any
-  place, a pole included, comes to the front. The page eases from one
-  view to the next, so the globe script's once-a-second address changes
-  look like motion. This is a change to the URL grammar, so it is its
-  own pull request, with the Federation review and a check of the
-  WordPress plugin.
+  place, a pole included, comes to the centre. The `lon` key first
+  proposed here was dropped, since on the equator it would be
+  `rotation` under a second name (§7 item 7). The keys name the view
+  the picture comes to rest on, and the page moves there like a heavy
+  globe, coasting to a stop, so the globe script's once-a-second
+  address changes look like one motion; for a composer writing faster
+  than that it is a change in what the keys show, which the maintainer
+  kept in the grammar's v1 as a behaviour change, with a migration
+  note. The Federation reviewer and the Code Reviewer reviewed it, and
+  the WordPress plugin was checked: it composes only main-app
+  addresses.
 - **Menu buttons on it.** "Pole to front" and zoom in and out, beside
   Turn east and Turn west, all moving that one camera. The Phase 2
-  tilt comes out then.
+  tilt comes out then. The globe script should keep `lat` within ±90
+  itself, since the page reads a latitude past a pole as 0.
 - **A presenter remote.** A TerraViz globe the presenter drags and
   zooms like the app, opened from a private link the globe gives them,
   in their own browser, the viewer's built-in one or a HUD. It sends its
