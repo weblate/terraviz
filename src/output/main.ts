@@ -585,7 +585,7 @@ async function boot(): Promise<void> {
     // changes when the operator pauses without any state key changing
     // shape. See `contentKindFor`. A web output's camera on its way to a
     // view is moving content too, paced by the same carried deadline at
-    // 30 fps on any display, rather than drawn on every callback.
+    // most 30 fps on any display, rather than drawn on every callback.
     const kind = cameraMoving() ? 'video' : contentKindFor(mirror.current())
     // A lost context draws nothing — Three's renderer returns from
     // `render()` immediately once it has seen `webglcontextlost`. The

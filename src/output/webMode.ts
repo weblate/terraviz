@@ -73,7 +73,7 @@ export interface WebOutputSettings {
   framebufferWidth: FramebufferWidth | null
   /** What the centre of the picture shows and how magnified it is: `lat`,
    *  `rotation` as the longitude (wrapped into [0, 360)) and `zoom`. The
-   *  scene takes it through `webCamera.viewParams`, gliding between
+   *  scene takes it through `webCamera.viewParams`, moving between
    *  views. */
   view: WebView
   /** Show the debug HUD. */

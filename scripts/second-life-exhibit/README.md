@@ -119,8 +119,9 @@ undone at once.
 
 **Turning and tilting are different motions.** A turn spins the picture
 about the globe's poles, in the page's address; each visitor's page
-sets it moving and lets it coast to a stop, so a turn takes a couple of
-seconds to settle and a second press while it still moves pushes it on.
+sets it moving and lets it coast to a stop, so a turn is most of the
+way there in about two seconds, and a second press while it still moves
+pushes it on.
 A tilt tips the sphere
 itself, which the region shows every viewer at the same angle, so the
 poles stop being straight up. A tilt ends any spin, and the owner's

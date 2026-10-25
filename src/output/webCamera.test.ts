@@ -251,8 +251,25 @@ describe('createViewGlide', () => {
     expect(followed.view().lonDeg).toBe(0.07)
   })
 
-  it('reads a turn within a hair of half as half, counting up', () => {
-    // `180.07 − 0.07` is not quite 180 in floating point, either way.
+  it('turns the short way on a tiny step, either side of the turn', () => {
+    // The whole turns the picture is moved by are rounded, not floored:
+    // floored, 0 then 0.01 moved it a turn and turned it 359.99° the wrong
+    // way (found in review).
+    for (const [from, to] of [[0, 0.01], [0.01, 0], [359.99, 0], [0, 359.99], [180, 180.01], [359.9, 0.1]]) {
+      const g = createViewGlide()
+      g.aim(lon(from), true, 0)
+      g.aim(lon(to), false, 0)
+      for (const l of run(g, 0, 8000)) {
+        const apart = Math.abs(((((l - from) % 360) + 540) % 360) - 180)
+        expect(apart, `${from} to ${to}`).toBeLessThan(1)
+      }
+      expect(g.view().lonDeg, `${from} to ${to}`).toBe(to)
+    }
+  })
+
+  it('counts a half turn up, decimals included', () => {
+    // `180.07 − 0.07` is not quite 180 in floating point; `shortTurn`'s
+    // wrap rounds it to 180, which counts up.
     for (const [from, to] of [[0.07, 180.07], [180.07, 0.07], [10.1, 190.1], [359.9, 179.9]]) {
       const g = createViewGlide()
       g.aim(lon(from), true, 0)

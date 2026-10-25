@@ -149,10 +149,10 @@ export interface WebOutputDeps {
   /** Wall-clock milliseconds, for the clock's anchor. */
   nowMs?: () => number
   /** Monotonic milliseconds, for how long a dataset took to show and
-   *  for the camera's glide. */
+   *  for the camera's motion. */
   monotonicMs?: () => number
   /** Whether the viewer asked for reduced motion, read at each change
-   *  of view: the view is then set rather than glided to. */
+   *  of view: the view is then set rather than moved to. */
   reducedMotion?: () => boolean
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
@@ -165,7 +165,7 @@ export interface WebOutput {
    *  whose outcome this returns. */
   steer(): SyncOutcome
   /** Whether the camera is on its way to a view. The loop then paces the
-   *  picture as it paces a playing video, at 30 fps on any display,
+   *  picture as it paces a playing video, at most 30 fps on any display,
    *  rather than drawing on every callback. */
   cameraMoving(): boolean
   /** A fatal error from the stream, reported if the address has
@@ -299,7 +299,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       scene.setFramebufferWidth(framebufferFor(next, deps.displaySizePx()))
       deps.setFill(next.fit === 'fill')
       // Set at once on the first reading, so a copy opening mid-session
-      // shows what the others show; glided to after that, by `steer`.
+      // shows what the others show; moved to after that, by `steer`.
       if (!previous || !sameView(next.view, previous.view)) {
         const snap = !previous || reducedMotion()
         camera.aim(next.view, snap, monotonicMs())

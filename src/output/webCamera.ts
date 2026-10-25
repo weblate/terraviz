@@ -55,7 +55,8 @@
  * copies with different histories held targets a few units in the last
  * place apart and split on a half turn, which is what the exhibit's idle
  * return makes for about one home rotation in ten (found in review). A
- * half turn, to within `HALF_TURN_SLACK_DEG`, counts the longitude up.
+ * half turn counts the longitude up, as `shortTurn` reads it, and that
+ * holds for decimals too: its `+ 540` rounds `180.07 − 0.07` to 180.
  *
  * The view is set at once, with no motion, on the first reading of an
  * address (a copy opening mid-session shows what the others show, not a
@@ -117,11 +118,6 @@ export interface ViewMotion {
   /** Per second, in each component's own units. */
   velocity: WebView
 }
-
-/** How near half a turn a change of longitude counts as one: past the
- *  rounding of two decimals read from an address (`180.07 − 0.07` is not
- *  quite 180), well short of any turn a controller means. */
-export const HALF_TURN_SLACK_DEG = 1e-6
 
 /** `deg` as the shortest signed turn, in (−180, 180]. */
 function shortTurn(deg: number): number {
@@ -247,11 +243,13 @@ export function createViewGlide(initial: WebView = DEFAULT_VIEW): ViewGlide {
       // The short way round from the last address to this one: both are
       // numbers read from an address, so every copy that applied the same
       // last address decides alike.
-      let turn = shortTurn(next.lonDeg - target.lonDeg)
-      if (Math.abs(turn) > 180 - HALF_TURN_SLACK_DEG) turn = 180
+      const turn = shortTurn(next.lonDeg - target.lonDeg)
       // The new target is the address's own number, which lies that turn
       // from the old target give or take whole turns, so the picture is
-      // moved by those whole turns instead and nothing builds up.
+      // moved by those whole turns instead and nothing builds up. Rounded,
+      // not floored: the quotient lands a hair either side of a whole
+      // number, and floored, 0 then 0.01 shifted the picture a turn and
+      // sent it 359.99° the wrong way (found in review).
       const turns = 360 * Math.round((target.lonDeg + turn - next.lonDeg) / 360)
       target = { ...next }
       motion = snap

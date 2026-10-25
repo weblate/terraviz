@@ -1674,9 +1674,10 @@ clunky for presenting:
   address changes look like one motion; for a composer writing faster
   than that it is a change in what the keys show, which the maintainer
   kept in the grammar's v1 as a behaviour change, with a migration
-  note. The Federation reviewer and the Code Reviewer reviewed it, and
-  the WordPress plugin was checked: it composes only main-app
-  addresses.
+  note. AI-assisted review only (the Federation reviewer and the Code
+  Reviewer, a partial measure); no human outside the session that
+  wrote it has reviewed it yet. The WordPress plugin was checked: it
+  composes only main-app addresses.
 - **Menu buttons on it.** "Pole to front" and zoom in and out, beside
   Turn east and Turn west, all moving that one camera. The Phase 2
   tilt comes out then. The globe script should keep `lat` within ±90
