@@ -820,7 +820,14 @@ The work, smallest first:
        (`functions/api/v1/_lib/hls-duration.ts`), and 0 still means
        unknown (`CATALOG_BACKEND_PLAN.md` beside the manifest's shape).
        Hurricane Season 2024 reads 183 s, the same on all three
-       renditions. `vimeo:` already carried Vimeo's figure. `stream:`
+       renditions. `vimeo:` already carried Vimeo's figure, which is
+       whole seconds and so not quite the file's: 12 for the real-time
+       sea surface temperature's 12.1 s. Every copy of the page loops on
+       the file's own length, so a date worked out from Vimeo's drifts
+       from the picture with every loop, months on a year-long clip
+       after a few minutes. The controller therefore shows those
+       datasets' range, and reading the length from the file itself
+       (its MP4 header) would give them a moving date. `stream:`
        and single files still report 0, and any reading can be 0 for
        a moment when the bucket is slow, which the manifest caches for
        15 s rather than five minutes;
@@ -843,8 +850,9 @@ The work, smallest first:
      notice comes first, under the globe's name, then the title, the
      date and the credit, then a talk if one is on and how to touch the
      globe. Only the title and the credit are ever cut, sharing what the
-     rest leave, with the credit keeping at least 48 bytes, so the notice
-     never is.
+     rest leave, so the notice never is: the title keeps at least 32
+     bytes and the credit 48 where both fit, and the title's come first
+     where they don't, as behind a preview node's longer address.
 
    **What that means for the design.** The first version of this item
    had each copy work out its position from the time of day. That only
@@ -1568,7 +1576,7 @@ driven by its owner in chat, with none of the visitor controls.
   - a notecard named by a dataset's id, given to a visitor who asks
     about that dataset in place of the chat abstract.
 - **Who is at the globe** comes from the region's avatar list and each
-  avatar's distance, every five seconds. That costs less than a sensor
+  avatar's distance from the globe's surface, every five seconds. That costs less than a sensor
   and isn't capped at 16 avatars. Nothing about a visitor leaves the
   object: no name or key reaches the node.
 - **Left out for now:** a stand beside the globe for left-clicks. It

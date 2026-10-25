@@ -44,14 +44,15 @@
 //   datasets    the menu, one "Name = dataset id" a line, in the order it
 //               shows them. Without it the menu offers five built in.
 //   settings    "name = value" lines, any of:
-//                 radius = 15         metres that count as at the globe
+//                 radius = 15         metres from the globe's surface that count as at it
 //                 idle minutes = 5    before the live Earth comes back
 //                 hold seconds = 60   one visitor's hold after acting
 //                 talk minutes = 2    no presenter nearby ends a talk
 //
 // Nothing about a visitor leaves the object. Who is at the globe is read
-// from the region every few seconds and kept only as a time; the holder
-// and the presenters are known by key while they are here.
+// from the region every few seconds and kept only as a count and a time.
+// The holder is known by key and display name while the hold lasts, and
+// anyone with a menu open by key, for up to five minutes.
 //
 // The owner may always act, and has two commands on channel 9 beside the
 // globe script's: /9 talk (whether one is on; "/9 talk start" and "/9 talk
@@ -73,6 +74,11 @@ integer gIdleS = 300;
 integer gHoldS = 60;
 integer gTalkS = 120;
 
+// The ids the globe script takes, so a notecard line it would refuse is
+// caught when the notecard is read. exhibit.test.ts holds them to its.
+string  ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+integer ID_MAX = 128;
+
 // The menu without a "datasets" notecard: the globe script's presets.
 list    DEFAULT_MENU = [
     "Hurricanes 2024",      "01KQG611HF8YXJNRBEHT0757KT",
@@ -84,7 +90,7 @@ list    DEFAULT_MENU = [
 
 float   TICK = 5.0;          // how often presence, holds and talks are checked
 integer PAGE = 9;            // datasets a menu page shows, beside its three moves
-integer CTX_TTL = 300;       // seconds a menu stays answerable
+integer CTX_TTL = 300;       // seconds a menu stays answerable after it opened
 integer CTX_MAX = 8;         // menus open at once
 float   NUDGE = 10.0;
 integer TURN = 30;           // degrees a turn button turns the globe
@@ -124,8 +130,12 @@ integer gLastSeen;           // when anyone was last at the globe
 integer gIdleSent;
 integer gNear;               // avatars at the globe at the last check
 
-integer gDlg;                // the menus' channel
-list    gCtx;                // who, what menu, page, when: one entry per open menu
+// Each kind of menu answers on its own channel, so an answer from an
+// older menu still means what that menu meant.
+integer gDlg;                // the main menu's channel
+integer gDlgSets;            // the datasets menu's
+integer gDlgJump;            // the jump text box's
+list    gCtx;                // who, their datasets page, when: one entry per visitor with a menu open
 
 list    gCards = ["settings", "presenters", "datasets"];
 integer gCard;               // the notecard being read, as an index into gCards
@@ -133,6 +143,10 @@ integer gLine;
 key     gCardReq;
 list    gNewPresenters;
 list    gNewMenu;
+float   gNewRadius;          // the settings being read, applied once all are in
+integer gNewIdleS;
+integer gNewHoldS;
+integer gNewTalkS;
 
 integer unix() { return llGetUnixTime(); }
 
@@ -169,7 +183,23 @@ string whyNot()
     integer left = gHoldUntil - unix();
     string name = gHolderName;
     if (name == "") name = "Another visitor";
-    return name + " is using the globe. It frees up in " + (string)left + " s, or when they choose something.";
+    return name + " is using the globe. It frees up in " + (string)left + " s, or sooner if they leave it.";
+}
+
+release()
+{
+    gHolder = NULL_KEY;
+    gHolderName = "";
+}
+
+integer isId(string s)
+{
+    integer n = llStringLength(s);
+    if (n < 1 || n > ID_MAX) return FALSE;
+    integer i;
+    for (i = 0; i < n; ++i)
+        if (llSubStringIndex(ID_CHARS, llGetSubString(s, i, i)) == -1) return FALSE;
+    return TRUE;
 }
 
 // The visitor who acts holds the globe a while, outside a talk.
@@ -224,17 +254,17 @@ list layout(list b)
     return out;
 }
 
-menu(key who, string text, list b)
+menu(key who, string text, list b, integer channel)
 {
-    llDialog(who, fit(text, 500), layout(b), gDlg);
+    llDialog(who, fit(text, 500), layout(b), channel);
 }
 
-remember(key who, string kind, integer page)
+remember(key who, integer page)
 {
     integer at = llListFindList(gCtx, [who]);
-    if (at != -1) gCtx = llDeleteSubList(gCtx, at, at + 3);
-    gCtx += [who, kind, page, unix()];
-    while (llGetListLength(gCtx) > CTX_MAX * 4) gCtx = llDeleteSubList(gCtx, 0, 3);
+    if (at != -1) gCtx = llDeleteSubList(gCtx, at, at + 2);
+    gCtx += [who, page, unix()];
+    while (llGetListLength(gCtx) > CTX_MAX * 3) gCtx = llDeleteSubList(gCtx, 0, 2);
 }
 
 string showing()
@@ -269,8 +299,11 @@ mainMenu(key who)
     else if (gTalk) text += "\nA talk is in progress.";
     else if (who != llGetOwner()) text += "\nEveryone at the globe sees what you choose. It's yours for "
         + (string)gHoldS + " s after each choice.";
-    remember(who, "main", 0);
-    menu(who, text, b);
+    integer at = llListFindList(gCtx, [who]);
+    integer page = 0;
+    if (at != -1) page = llList2Integer(gCtx, at + 1);
+    remember(who, page);
+    menu(who, text, b, gDlg);
 }
 
 datasetsMenu(key who, integer page)
@@ -287,15 +320,15 @@ datasetsMenu(key who, integer page)
     else b += [BTN_MENU];
     string text = "Choose a dataset for the globe.";
     if (pages > 1) text += " Page " + (string)(page + 1) + " of " + (string)pages + ".";
-    remember(who, "datasets", page);
-    menu(who, text, b);
+    remember(who, page);
+    menu(who, text, b, gDlgSets);
 }
 
 startTalk()
 {
     gTalk = TRUE;
     gTalkSeen = unix();
-    gHolder = NULL_KEY;
+    release();
     llMessageLinked(LINK_THIS, MSG_TALK, "1", NULL_KEY);
     llSay(0, "A talk is starting at this globe. Until it ends, its presenters change what it shows.");
 }
@@ -304,7 +337,7 @@ endTalk(string why)
 {
     if (!gTalk) return;
     gTalk = FALSE;
-    gHolder = NULL_KEY;
+    release();
     // Timed from now, so the idle return doesn't follow the moment a talk
     // ends: whoever stayed for it hasn't left.
     gLastSeen = unix();
@@ -317,7 +350,14 @@ endTalk(string why)
 // to the live Earth.
 check()
 {
+    // From the globe's surface, so a big globe isn't empty to everyone
+    // standing at it.
     vector here = llGetPos();
+    vector size = llGetScale();
+    float reach = size.x;
+    if (size.y > reach) reach = size.y;
+    if (size.z > reach) reach = size.z;
+    reach = gRadius + reach / 2.0;
     list agents = llGetAgentList(AGENT_LIST_REGION, []);
     integer n = llGetListLength(agents);
     integer near = 0;
@@ -328,7 +368,7 @@ check()
     {
         key a = llList2Key(agents, i);
         list d = llGetObjectDetails(a, [OBJECT_POS]);
-        if (d != [] && llVecDist(llList2Vector(d, 0), here) <= gRadius)
+        if (d != [] && llVecDist(llList2Vector(d, 0), here) <= reach)
         {
             ++near;
             if (a == gHolder) holderNear = TRUE;
@@ -339,7 +379,7 @@ check()
     integer t = unix();
     if (near > 0) { gLastSeen = t; gIdleSent = FALSE; }
     // A hold ends when it runs out, or when its holder walks away from it.
-    if (gHolder != NULL_KEY && (t >= gHoldUntil || !holderNear)) gHolder = NULL_KEY;
+    if (gHolder != NULL_KEY && (t >= gHoldUntil || !holderNear)) release();
     if (gTalk)
     {
         if (presenterNear) gTalkSeen = t;
@@ -348,7 +388,7 @@ check()
     else if (near == 0 && (gDataset != "" || gTurned) && !gIdleSent && t - gLastSeen >= gIdleS)
     {
         gIdleSent = TRUE;
-        gHolder = NULL_KEY;
+        release();
         llMessageLinked(LINK_THIS, MSG_CONTROL, "rest", NULL_KEY);
     }
 }
@@ -360,10 +400,10 @@ setting(string line)
     if (eq < 1) return;
     string name = llToLower(llStringTrim(llGetSubString(line, 0, eq - 1), STRING_TRIM));
     float v = (float)llStringTrim(llGetSubString(line, eq + 1, -1), STRING_TRIM);
-    if (name == "radius" && v >= 2.0 && v <= 96.0) gRadius = v;
-    else if (name == "idle minutes" && v >= 1.0 && v <= 1440.0) gIdleS = (integer)(v * 60.0);
-    else if (name == "hold seconds" && v >= 10.0 && v <= 3600.0) gHoldS = (integer)v;
-    else if (name == "talk minutes" && v >= 1.0 && v <= 120.0) gTalkS = (integer)(v * 60.0);
+    if (name == "radius" && v >= 2.0 && v <= 96.0) gNewRadius = v;
+    else if (name == "idle minutes" && v >= 1.0 && v <= 1440.0) gNewIdleS = (integer)(v * 60.0);
+    else if (name == "hold seconds" && v >= 10.0 && v <= 3600.0) gNewHoldS = (integer)v;
+    else if (name == "talk minutes" && v >= 1.0 && v <= 120.0) gNewTalkS = (integer)(v * 60.0);
     else llOwnerSay("[exhibit] The settings notecard's line \"" + line + "\" isn't a setting this script "
         + "knows, or is out of its range. It is ignored.");
 }
@@ -383,6 +423,8 @@ nextCard()
         ++gCard;
     }
     gCardReq = NULL_KEY;
+    // All at once, so nothing runs on half-read settings.
+    gRadius = gNewRadius; gIdleS = gNewIdleS; gHoldS = gNewHoldS; gTalkS = gNewTalkS;
     gPresenters = gNewPresenters;
     gMenu = gNewMenu;
     if (gMenu == []) gMenu = DEFAULT_MENU;
@@ -394,7 +436,7 @@ readCards()
     gCard = 0;
     gNewPresenters = [];
     gNewMenu = [];
-    gRadius = 15.0; gIdleS = 300; gHoldS = 60; gTalkS = 120;
+    gNewRadius = 15.0; gNewIdleS = 300; gNewHoldS = 60; gNewTalkS = 120;
     nextCard();
 }
 
@@ -403,7 +445,7 @@ string summary()
     string menu = (string)(llGetListLength(gMenu) / 2) + " datasets in the menu";
     if (llGetInventoryType("datasets") != INVENTORY_NOTECARD) menu += " (the built-in five: no \"datasets\" notecard)";
     return (string)llGetListLength(gPresenters) + " presenters, " + menu + ". At the globe means within "
-        + (string)((integer)gRadius) + " m. The live Earth returns " + (string)(gIdleS / 60) + " min after the last "
+        + (string)((integer)gRadius) + " m of its surface. The live Earth returns " + (string)(gIdleS / 60) + " min after the last "
         + "visitor leaves. A hold lasts " + (string)gHoldS + " s, and a talk ends after " + (string)(gTalkS / 60)
         + " min with no presenter here.";
 }
@@ -412,8 +454,12 @@ default
 {
     state_entry()
     {
-        gDlg = -1 - (integer)llFrand(1000000000.0);
+        gDlg = -3 - (integer)llFrand(1000000000.0);
+        gDlgSets = gDlg + 1;
+        gDlgJump = gDlg + 2;
         llListen(gDlg, "", NULL_KEY, "");
+        llListen(gDlgSets, "", NULL_KEY, "");
+        llListen(gDlgJump, "", NULL_KEY, "");
         llListen(CHAN, "", llGetOwner(), "");
         gLastSeen = unix();
         gMenu = DEFAULT_MENU;   // until the notecards have been read
@@ -442,7 +488,7 @@ default
         check();
         // Menus nobody answered.
         integer t = unix();
-        while (gCtx != [] && t - llList2Integer(gCtx, 3) > CTX_TTL) gCtx = llDeleteSubList(gCtx, 0, 3);
+        while (gCtx != [] && t - llList2Integer(gCtx, 2) > CTX_TTL) gCtx = llDeleteSubList(gCtx, 0, 2);
     }
 
     dataserver(key q, string data)
@@ -458,13 +504,18 @@ default
             else
             {
                 integer eq = llSubStringIndex(line, "=");
-                string name = llStringTrim(llGetSubString(line, 0, eq - 1), STRING_TRIM);
-                string id = llStringTrim(llGetSubString(line, eq + 1, -1), STRING_TRIM);
-                if (eq > 0 && name != "" && id != "" && llSubStringIndex(id, " ") == -1)
-                    gNewMenu += [name, id];
-                else
-                    llOwnerSay("[exhibit] The datasets notecard's line \"" + line + "\" isn't \"Name = dataset id\". "
+                string name = "";
+                string id = "";
+                // (Guarded, since a backwards range means everything outside it.)
+                if (eq > 0) name = llStringTrim(llGetSubString(line, 0, eq - 1), STRING_TRIM);
+                if (eq > 0 && eq < llStringLength(line) - 1) id = llStringTrim(llGetSubString(line, eq + 1, -1), STRING_TRIM);
+                if (name == "" || !isId(id))
+                    llOwnerSay("[exhibit] The datasets notecard's line \"" + line + "\" isn't \"Name = dataset id\", "
+                        + "with an id of letters, digits, - and _. It is left out of the menu.");
+                else if (llListFindList([BTN_PREV, BTN_NEXT, BTN_MENU], [label(name)]) != -1)
+                    llOwnerSay("[exhibit] The datasets notecard's \"" + name + "\" is the name of a menu button. "
                         + "It is left out of the menu.");
+                else gNewMenu += [name, id];
             }
         }
         ++gLine;
@@ -486,6 +537,10 @@ default
         gTitle = llJsonGetValue(str, ["title"]);
         gPaused = (integer)llJsonGetValue(str, ["paused"]);
         gTurned = (integer)llJsonGetValue(str, ["turned"]);
+        // Any change restarts the idle clock, so a choice made from beyond
+        // the radius isn't undone at the next check.
+        gLastSeen = unix();
+        gIdleSent = FALSE;
     }
 
     listen(integer ch, string name, key who, string msg)
@@ -500,7 +555,8 @@ default
             else if (cmd == "talk")
             {
                 string what = llList2String(w, 1);
-                if (what == "end") endTalk(" at the owner's request");
+                if (what == "end" && gTalk) endTalk(" at the owner's request");
+                else if (what == "end") llOwnerSay("[exhibit] No talk is on.");
                 else if (what == "start" && !gTalk) startTalk();
                 else if (gTalk) llOwnerSay("[exhibit] A talk is in progress. /" + (string)CHAN + " talk end ends it.");
                 else llOwnerSay("[exhibit] No talk. " + (string)gNear + " avatars at the globe.");
@@ -509,42 +565,43 @@ default
         }
 
         integer at = llListFindList(gCtx, [who]);
-        if (at == -1 || at % 4 != 0) return;   // no menu of theirs is open
-        string kind = llList2String(gCtx, at + 1);
-        integer page = llList2Integer(gCtx, at + 2);
-        gCtx = llDeleteSubList(gCtx, at, at + 3);
+        if (at == -1 || at % 3 != 0) return;   // no menu of theirs is open
+        integer page = llList2Integer(gCtx, at + 1);
 
-        if (msg == BTN_CLOSE) return;
-        if (msg == BTN_ABOUT) { llMessageLinked(LINK_THIS, MSG_ABOUT, "", who); return; }
-        if (msg == BTN_MENU) { mainMenu(who); return; }
-        if (kind == "main" && msg == BTN_START_TALK && isPresenter(who)) { if (!gTalk) startTalk(); return; }
-        if (kind == "main" && msg == BTN_END_TALK && isPresenter(who)) { endTalk(""); return; }
-
-        // Everything below changes the globe, so the menu's offer is
-        // checked again: a hold or a talk may have started since it opened.
-        if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
-
-        if (kind == "jump")
+        if (ch == gDlgSets)
         {
-            ask(who, "jump " + llStringTrim(msg, STRING_TRIM));
-            return;
-        }
-        if (kind == "datasets")
-        {
+            if (msg == BTN_MENU) { mainMenu(who); return; }
             if (msg == BTN_PREV) { datasetsMenu(who, page - 1); return; }
             if (msg == BTN_NEXT) { datasetsMenu(who, page + 1); return; }
-            integer count = llGetListLength(gMenu) / 2;
+            if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
             integer i;
-            for (i = page * PAGE; i < count && i < (page + 1) * PAGE; ++i)
+            for (i = 0; i < llGetListLength(gMenu); i += 2)
             {
-                if (label(llList2String(gMenu, i * 2)) == msg)
+                if (label(llList2String(gMenu, i)) == msg)
                 {
-                    ask(who, "show " + llList2String(gMenu, i * 2 + 1) + " " + llList2String(gMenu, i * 2));
+                    ask(who, "show " + llList2String(gMenu, i + 1) + " " + llList2String(gMenu, i));
                     return;
                 }
             }
             return;
         }
+        if (ch == gDlgJump)
+        {
+            if (!isPresenter(who)) return;
+            if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
+            ask(who, "jump " + llStringTrim(msg, STRING_TRIM));
+            return;
+        }
+
+        if (msg == BTN_CLOSE) return;
+        if (msg == BTN_ABOUT) { llMessageLinked(LINK_THIS, MSG_ABOUT, "", who); return; }
+        if (msg == BTN_START_TALK && isPresenter(who)) { if (!gTalk) startTalk(); return; }
+        if (msg == BTN_END_TALK && isPresenter(who)) { endTalk(""); return; }
+
+        // Everything below changes the globe, so the menu's offer is
+        // checked again: a hold or a talk may have started since it opened.
+        if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
+
         if (msg == BTN_DATASETS) { datasetsMenu(who, 0); return; }
         if (msg == BTN_PAUSE) { ask(who, "pause"); return; }
         if (msg == BTN_PLAY) { ask(who, "play"); return; }
@@ -556,8 +613,8 @@ default
         if (msg == BTN_WEST) { ask(who, "turn -" + (string)TURN); return; }
         if (msg == BTN_JUMP && isPresenter(who))
         {
-            remember(who, "jump", 0);
-            llTextBox(who, "Jump to where in the clip? Seconds, like 90, or minutes and seconds, like 1:30.", gDlg);
+            remember(who, page);
+            llTextBox(who, "Jump to where in the clip? Seconds, like 90, or minutes and seconds, like 1:30.", gDlgJump);
         }
     }
 }

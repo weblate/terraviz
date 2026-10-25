@@ -499,11 +499,11 @@ show(key who, string id, string title)
 // the reason; a visitor who chose it from the menu hears only that it
 // didn't work, since the remedy (fixing the "datasets" notecard) is the
 // owner's.
-refused(key who, string reason)
+refused(key who, string id, string reason)
 {
     if (who == llGetOwner()) { tell(who, reason + " The globe is unchanged."); return; }
     tell(who, "That dataset isn't available right now. The globe is unchanged.");
-    llOwnerSay("[exhibit] A visitor chose " + gReqId + " from the menu: " + reason);
+    llOwnerSay("[exhibit] A visitor chose " + id + " from the menu: " + reason);
 }
 
 // One command, from the owner's chat or a visitor's menu. A visitor
@@ -523,7 +523,10 @@ act(key who, integer owner, string msg)
         string dataset = arg;
         // The menu sends its own name for the dataset after the id, so a
         // title the node can't give still reads as the menu said.
-        string described = llDumpList2String(llList2List(w, 2, -1), " ");
+        // (A list of two would come back whole: llList2List's range runs
+        // backwards there, and a backwards range means everything outside it.)
+        string described = "";
+        if (llGetListLength(w) > 2) described = llDumpList2String(llList2List(w, 2, -1), " ");
         integer at = llListFindList(PRESETS, [larg]);
         // A name sits at a multiple of three; an id or description elsewhere is not one.
         if (at != -1 && at % 3 == 0)
@@ -535,7 +538,7 @@ act(key who, integer owner, string msg)
         {
             if (owner) tell(who, "\"" + arg + "\" is neither a name from /" + (string)CHAN
                 + " list nor a dataset id. Ids are letters, digits, - and _.");
-            else refused(who, "\"" + arg + "\" is not a dataset id.");
+            else refused(who, arg, "\"" + arg + "\" is not a dataset id.");
             return;
         }
         if (check(who, dataset, described) && owner) tell(who, "Asking the node about " + dataset + "...");
@@ -802,7 +805,7 @@ default
         gReq = NULL_KEY;
         if (status == 404)
         {
-            refused(gReqWho, "The node has no dataset " + gReqId + ".");
+            refused(gReqWho, gReqId, "The node has no dataset " + gReqId + ".");
             return;
         }
         string title = "";
@@ -831,7 +834,7 @@ default
                     string kind = "is in the format \"" + format + "\"";
                     if (format == "") kind = "has no format";
                     if (llSubStringIndex(format, "tour/") == 0) kind = "is a tour, which drives the full app";
-                    refused(gReqWho, gReqId + " " + kind + ". A globe shows only images and videos.");
+                    refused(gReqWho, gReqId, gReqId + " " + kind + ". A globe shows only images and videos.");
                     return;
                 }
             }

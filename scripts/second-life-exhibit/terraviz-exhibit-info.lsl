@@ -24,7 +24,8 @@
 //     "A talk is in progress", during one
 //     how to touch the globe
 //   Hover text holds 254 bytes. The title and the credit share what the
-//   other lines leave, the credit keeping at least 48 bytes, and either is
+//   other lines leave, the title keeping at least 32 bytes and the credit
+//   48 where both fit, the title's first where they don't, and either is
 //   cut with "..." when it has to be. Nothing else is cut, so the notice
 //   is never lost.
 // - "About", from the touch menu. If the globe holds a notecard named by
@@ -38,7 +39,12 @@
 // shown is this script's own: to the period's precision, the year for a
 // yearly dataset ("P1Y"), the month for a monthly one, the time for one
 // with a period under a day, and the day for the rest, all in UTC. The
-// app shows the day, in the viewer's time zone, for all of them.
+// app shows the day, in the viewer's time zone, for all of them. A day,
+// month or year is counted from the start's own, so on data stamped at
+// noon the day changes with the frame rather than at midnight between.
+// A video on Vimeo shows its range: Vimeo gives its length in whole
+// seconds, the page loops on the file's own, and a date worked out from
+// the first drifts from the picture with every loop.
 //
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
@@ -63,6 +69,8 @@ integer ABSTRACT_MAX = 2500;   // characters of an abstract kept for "About"
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
 float   TICK = 2.0;            // how often a playing clip's date is worked out again
 integer MIN_CREDIT = 48;       // bytes the credit keeps when the hover text is full
+integer MIN_TITLE = 32;        // bytes the title keeps, first, when there isn't room for both
+string  TAG_START = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/!";
 
 string  LIVE_LINE = "The live Earth: today's clouds and the real day and night";
 string  LIVE_CREDIT = "Credit: NASA Blue Marble, Black Marble";
@@ -107,6 +115,8 @@ string  gLicUrl;
 string  gStatement;
 string  gAbstract;
 integer gCut;          // a value was cut short, or the record wasn't read to the end
+integer gLastCut;      // the last field() read was cut short
+integer gCuts;         // which of the abstract (1), credit (2), licence id (4) and statement (8) were
 
 key     gRecReq;
 key     gManReq;
@@ -237,6 +247,7 @@ string range()
     string a = when(gStartDay, gStartSec);
     string b = when(gEndDay, gEndSec);
     if (a == b) return a;
+    if (gRes == RES_TIME) a = llGetSubString(a, 0, -5);   // one " UTC" says it for both
     return a + " to " + b;
 }
 
@@ -261,23 +272,36 @@ string date()
     float f = position() / gDuration;
     if (f < 0.0) f = 0.0;
     if (f > 1.0) f = 1.0;
-    float off = (float)gStartSec + f * ((float)(gEndDay - gStartDay) * 86400.0 + (float)(gEndSec - gStartSec));
+    float into = f * ((float)(gEndDay - gStartDay) * 86400.0 + (float)(gEndSec - gStartSec));
+    // Days, months and years count from the start's own, with a hair of
+    // slack so a frame landed on exactly isn't read as the one before.
+    if (gRes == RES_DAY) return when(gStartDay + llFloor(into / 86400.0 + 0.0001), 0);
+    list a = civil(gStartDay);
+    list b = civil(gEndDay);
+    integer sy = llList2Integer(a, 0);
+    if (gRes == RES_YEAR)
+        return (string)(sy + llFloor(f * (float)(llList2Integer(b, 0) - sy) + 0.0001));
+    if (gRes == RES_MONTH)
+    {
+        integer m0 = sy * 12 + llList2Integer(a, 1) - 1;
+        integer months = llList2Integer(b, 0) * 12 + llList2Integer(b, 1) - 1 - m0;
+        m0 += llFloor(f * (float)months + 0.0001);
+        return llList2String(MONTHS, m0 % 12) + " " + (string)(m0 / 12);
+    }
+    float off = (float)gStartSec + into;
     integer dd = llFloor(off / 86400.0);
     integer day = gStartDay + dd;
     integer sec = (integer)(off - (float)dd * 86400.0);
     if (sec < 0) sec = 0;
     if (sec > 86399) sec = 86399;
-    if (gRes == RES_TIME)
-    {
-        // To the period when a day holds a whole number of them, as the
-        // app snaps it, else to the minute.
-        integer step = 60;
-        if (gSnapS > 0 && 86400 % gSnapS == 0) step = gSnapS;
-        sec = (sec + step / 2) / step * step;
-        if (sec >= 86400) { sec -= 86400; ++day; }
-        if (day > gEndDay || (day == gEndDay && sec > gEndSec)) { day = gEndDay; sec = gEndSec; }
-        if (day < gStartDay || (day == gStartDay && sec < gStartSec)) { day = gStartDay; sec = gStartSec; }
-    }
+    // A time: to the period when a day holds a whole number of them, as the
+    // app snaps it, else to the minute.
+    integer step = 60;
+    if (gSnapS > 0 && 86400 % gSnapS == 0) step = gSnapS;
+    sec = (sec + step / 2) / step * step;
+    if (sec >= 86400) { sec -= 86400; ++day; }
+    if (day > gEndDay || (day == gEndDay && sec > gEndSec)) { day = gEndDay; sec = gEndSec; }
+    if (day < gStartDay || (day == gStartDay && sec < gStartSec)) { day = gStartDay; sec = gStartSec; }
     return when(day, sec);
 }
 
@@ -338,8 +362,8 @@ hover()
         integer keepC = c;
         if (keepC > MIN_CREDIT) keepC = MIN_CREDIT;
         integer keepT = avail - keepC;
-        if (keepT > t) { keepT = t; keepC = avail - t; }
-        if (keepT < 0) keepT = 0;
+        if (keepT < MIN_TITLE) keepT = MIN_TITLE;
+        if (keepT > t) keepT = t;
         title = fit(title, keepT);
         credit = fit(credit, avail - bytes(title));
     }
@@ -393,68 +417,70 @@ fetch()
 // key inside one (probingInfo's, enriched's) can be taken for a field.
 string field(string body, integer stop, string name, integer max)
 {
+    gLastCut = FALSE;
     string tag = "\"" + name + "\":\"";
     integer i = llSubStringIndex(body, tag);
     if (i == -1 || (stop != -1 && i > stop)) return "";
     i += llStringLength(tag);
     string raw = llGetSubString(body, i, i + max + 16);
-    // The closing quote is the first one not escaped by a backslash.
-    integer at = -1;
-    integer off = 0;
-    string rest = raw;
-    integer q = llSubStringIndex(rest, "\"");
-    while (q != -1 && at == -1)
-    {
-        integer k = off + q - 1;
-        integer slashes = 0;
-        while (k >= 0 && llGetSubString(raw, k, k) == "\\") { ++slashes; --k; }
-        if (slashes % 2 == 0) at = off + q;
-        else if (q + 1 >= llStringLength(rest)) q = -1;
-        else
-        {
-            rest = llGetSubString(rest, q + 1, -1);
-            off += q + 1;
-            q = llSubStringIndex(rest, "\"");
-        }
-    }
-    rest = "";
+    // The closing quote is the first one not escaped. JSON can't hold a raw
+    // tab, so two tabs stand in for each escaped backslash and then each
+    // escaped quote, which keeps every index, and the first quote left is
+    // the one that closes the value.
+    integer at = llSubStringIndex(llReplaceSubString(llReplaceSubString(raw, "\\\\", "\t\t", 0),
+        "\\\"", "\t\t", 0), "\"");
     if (at == 0) return "";
-    string more = "";
     if (at > 0 && at <= max) raw = llGetSubString(raw, 0, at - 1);
     else
     {
         // Longer than kept, or cut off by BODY_MAX: end at a space, which
-        // can't fall inside an escape, and say so. A value with no space,
-        // such as a time, is dropped rather than read cut.
+        // can't fall inside an escape. A value with no space, such as a
+        // time, is dropped rather than read cut.
         raw = llGetSubString(raw, 0, max - 1);
         integer sp = llStringLength(raw) - 1;
         while (sp > 0 && llGetSubString(raw, sp, sp) != " ") --sp;
         if (sp <= 0) return "";
         raw = llGetSubString(raw, 0, sp - 1);
-        more = "...";
+        gLastCut = TRUE;
         gCut = TRUE;
     }
     string v = llJsonGetValue("[\"" + raw + "\"]", [0]);
     if (v == JSON_INVALID) return "";
-    return v + more;
+    return v;
 }
 
 // Text from HTML, as some records' organizations and abstracts are:
 // tags go, the common entities are read, and runs of spaces fold.
 string plain(string s)
 {
+    // A tag is a < before a letter, / or !, up to its >, or to the end
+    // when a cut left it open. Any other <, as in "size < 2.5", is text.
+    string out = "";
     integer a = llSubStringIndex(s, "<");
     while (a != -1)
     {
-        integer b = llSubStringIndex(llGetSubString(s, a, -1), ">");
-        if (b == -1)
+        string next = "";
+        if (a + 1 < llStringLength(s)) next = llGetSubString(s, a + 1, a + 1);
+        if (a > 0) out += llGetSubString(s, 0, a - 1);
+        if (next == "" || llSubStringIndex(TAG_START, next) == -1)
         {
-            if (a == 0) s = "";
-            else s = llGetSubString(s, 0, a - 1);
+            out += "<";
+            s = llDeleteSubString(s, 0, a);
         }
-        else s = llInsertString(llDeleteSubString(s, a, a + b), a, " ");
+        else
+        {
+            integer b = llSubStringIndex(llGetSubString(s, a, -1), ">");
+            if (b == -1) s = "";
+            else
+            {
+                out += " ";
+                s = llDeleteSubString(s, 0, a + b);
+            }
+        }
         a = llSubStringIndex(s, "<");
     }
+    s = out + s;
+    out = "";
     s = llReplaceSubString(s, "&nbsp;", " ", 0);
     s = llReplaceSubString(s, "&nbsp", " ", 0);
     s = llReplaceSubString(s, "&quot;", "\"", 0);
@@ -463,7 +489,8 @@ string plain(string s)
     s = llReplaceSubString(s, "&gt;", ">", 0);
     s = llReplaceSubString(s, "&amp;", "&", 0);
     s = llReplaceSubString(s, "\t", " ", 0);
-    return llStringTrim(llDumpList2String(llParseString2List(s, [" "], []), " "), STRING_TRIM);
+    while (llSubStringIndex(s, "  ") != -1) s = llReplaceSubString(s, "  ", " ", 0);
+    return llStringTrim(s, STRING_TRIM);
 }
 
 // The canonical page for a dataset names its slug when it has a usable
@@ -487,17 +514,21 @@ record(string body)
     if (!whole) gCut = TRUE;
     gRef = ref(field(body, stop, "slug", 70));
     gVideo = llSubStringIndex(field(body, stop, "format", 40), "video/") == 0;
-    gAbstract = plain(field(body, stop, "abstractTxt", ABSTRACT_MAX));
+    gCuts = 0;
+    gAbstract = field(body, stop, "abstractTxt", ABSTRACT_MAX);
+    if (gLastCut) gCuts = gCuts | 1;
     gWho = field(body, stop, "attributionText", 300);
     if (gWho == "") gWho = field(body, stop, "rightsHolder", 300);
     // The organization, which comes first, is the credit only when the
     // record says nothing later: it may not be the credit a record cut
     // short would have given.
     if (gWho == "" && whole) gWho = field(body, stop, "organization", 400);
-    gWho = plain(gWho);
-    gSpdx = plain(field(body, stop, "licenseSpdx", 120));
+    if (gLastCut) gCuts = gCuts | 2;
+    gSpdx = field(body, stop, "licenseSpdx", 120);
+    if (gLastCut) gCuts = gCuts | 4;
     gLicUrl = field(body, stop, "licenseUrl", 300);
-    gStatement = plain(field(body, stop, "licenseStatement", 600));
+    gStatement = field(body, stop, "licenseStatement", 600);
+    if (gLastCut) gCuts = gCuts | 8;
     list a = instant(field(body, stop, "startTime", 40));
     list b = instant(field(body, stop, "endTime", 40));
     gDated = a != [] && b != [];
@@ -509,6 +540,18 @@ record(string body)
     }
     period(field(body, stop, "period", 40));
     gHaveRec = TRUE;
+}
+
+// The HTML out of the text a record carries, done once the record itself
+// has been let go, since it is the most this script ever holds. A value
+// cut short says so after the HTML has gone, since a cut can fall inside a
+// tag, which goes with it.
+tidy()
+{
+    gAbstract = plain(gAbstract) + llList2String(["", "..."], (gCuts & 1) != 0);
+    gWho = plain(gWho) + llList2String(["", "..."], (gCuts & 2) != 0);
+    gSpdx = plain(gSpdx) + llList2String(["", "..."], (gCuts & 4) != 0);
+    gStatement = plain(gStatement) + llList2String(["", "..."], (gCuts & 8) != 0);
 }
 
 // Chat to one visitor, in pieces that fit a chat line, cut between words.
@@ -541,9 +584,17 @@ about(key av)
     if (gDataset == "") { say(av, LIVE_ABOUT + " TerraViz: " + gNode); return; }
     if (llGetInventoryType(gDataset) == INVENTORY_NOTECARD)
     {
-        llRegionSayTo(av, 0, "Here is a notecard about " + gTitle + ".");
-        llGiveInventory(av, gDataset);
-        return;
+        // Without copy it would move to the first visitor, and without
+        // transfer it can't be given at all.
+        integer perms = llGetInventoryPermMask(gDataset, MASK_OWNER);
+        if ((perms & PERM_COPY) && (perms & PERM_TRANSFER))
+        {
+            llRegionSayTo(av, 0, "Here is a notecard about " + gTitle + ".");
+            llGiveInventory(av, gDataset);
+            return;
+        }
+        llOwnerSay("[exhibit] The notecard " + gDataset + " needs copy and transfer permission to be given. "
+            + "The visitor got the chat version instead.");
     }
     string link = gNode + "/dataset/" + gDataset;
     if (gFor != gDataset || !gHaveRec)
@@ -632,6 +683,7 @@ default
             llScriptProfiler(PROFILE_SCRIPT_MEMORY);
             record(body);
             body = "";
+            tidy();
             llScriptProfiler(PROFILE_NONE);
             if (llGetSPMaxMemory() > gPeak) gPeak = llGetSPMaxMemory();
             fetch();
@@ -642,6 +694,11 @@ default
             integer i = llSubStringIndex(body, "\"duration\":");
             if (status == 200 && i != -1) gDuration = (float)llGetSubString(body, i + 11, i + 40);
             if (gDuration < 0.0) gDuration = 0.0;
+            // Vimeo's length is whole seconds and the file's isn't (12 for
+            // a clip of 12.1 s), so a date from it drifts with every loop
+            // the page plays: unknown, and the range shows, which the
+            // plan's fallback for an unknown length is.
+            if (llSubStringIndex(body, "player.vimeo.com/") != -1) { gDuration = 0.0; gManTries = 4; }
             // A length of 0 is unknown, and can be the node's for a moment
             // while its bucket is slow, which it keeps for 15 s: so ask again,
             // then show the range.

@@ -91,7 +91,9 @@ menu that opens is theirs alone:
 **Who may act.** Outside a talk, anyone, one at a time. Whoever chooses
 something holds the globe until `hold seconds` after their last choice,
 or until they walk away from it. Anyone else who touches it is told who
-has it and when it frees up, and gets only "About".
+has it and when it frees up, and gets only "About". A menu answers for
+five minutes after it opens, and each answer is checked again against
+the hold and any talk.
 
 **Talks.** A presenter chooses Start talk, and everyone near the globe
 is told a talk is starting. Until it ends, only presenters can change
@@ -103,8 +105,9 @@ owner counts as a presenter, and can end a talk from chat.
 **The live Earth comes back** once nobody has been within `radius` of
 the globe for `idle minutes`, turned back to the owner's
 `/9 rotation`, so a visitor's turn doesn't outlast their visit. Never
-during a talk, and not the moment a talk ends either: the clock starts
-again then.
+during a talk. Every change to the globe starts the clock again, as
+does the end of a talk, so a choice made from beyond the radius isn't
+undone at once.
 
 **Turning with the mouse doesn't work yet.** A drag on the globe never
 reaches a script, for the same reason a left-click doesn't, so the menu
@@ -123,18 +126,26 @@ A talk is in progress                                              (only during 
 Right-click, Touch for more
 ```
 
-The title and the credit share what the other lines leave, the credit
-keeping at least 48 bytes, and either is cut with `...` when it must
-be: above, with both optional lines showing, the credit loses its end.
-Nothing else is ever cut, so the telemetry notice can't be lost.
+The title and the credit share what the other lines leave. The title
+keeps at least 32 bytes and the credit 48 where both fit, and the
+title's come first where they don't, as on a preview node, whose longer
+address makes the telemetry notice longer. Either is cut with `...` when
+it must be: above, with both optional lines showing, the credit loses
+its end. Nothing else is ever cut, so the telemetry notice can't be
+lost.
 
 The date is the dataset's start time plus the share of its span the
 animation has played, the same arithmetic as the app's. It is exact when paused
 and updated every couple of seconds while playing. It shows to the
 dataset's period: the year for a yearly dataset, the month for a monthly
 one, the time in UTC for one updated more often than daily, and the day
-otherwise. Until the node has said how long the clip is, and for an
-image, it shows the dataset's range instead.
+otherwise. Each is counted from the dataset's own start, so on data
+stamped at noon the day changes with the frame rather than at midnight
+in between. Until the node has said how long the clip is, and for an
+image, it shows the dataset's range instead. So does a video hosted on
+Vimeo, such as Sea temperature: the node gives its length in whole
+seconds, which isn't quite the file's, and a date worked out from it
+would drift from the picture with every loop.
 
 The credit is the record's attribution, or else its rights holder, or
 else its organization, with the licence after it. A record that names
@@ -182,7 +193,9 @@ Nighttime lights = 01KQG629957NPZN7NTW4VK6FW0
 ```
 
 That is also the menu without the notecard. A line that isn't
-`Name = id` is left out, and the owner is told which.
+`Name = id`, with an id of letters, digits, `-` and `_`, is left out,
+and so is a name that cuts to a menu button's own (`< Previous`,
+`Next >`, `Main menu`). The owner is told which.
 
 ### `settings`
 
@@ -197,7 +210,7 @@ talk minutes = 2
 
 | Setting | What it is | Allowed |
 |---|---|---|
-| `radius` | metres from the globe that count as at it | 2 to 96 |
+| `radius` | metres from the globe's surface that count as at it | 2 to 96 |
 | `idle minutes` | how long after the last visitor leaves before the live Earth comes back | 1 to 1440 |
 | `hold seconds` | how long a visitor holds the globe after their last choice | 10 to 3600 |
 | `talk minutes` | how long with no presenter at the globe before a talk ends | 1 to 120 |
@@ -211,6 +224,10 @@ If the globe holds a notecard named exactly by a dataset's id, such as
 dataset is given the notecard instead of chat. It is for the datasets an
 exhibit features, where a curator wants to say more than the abstract
 does. A script can't write a notecard, so every other dataset gets chat.
+The notecard needs copy and transfer permission for its owner: without
+copy the first visitor would take it, and without transfer it can't be
+given at all. Such a notecard is skipped, the visitor gets chat, and
+the owner is told why.
 
 ## The owner's commands
 
@@ -243,8 +260,11 @@ Nothing about a visitor reaches the node. The visitors script reads the
 region's avatar list every five seconds and keeps only how many are
 near and when someone last was. It knows the holder by key, and by
 display name to tell others who has the globe, only while the hold
-lasts. The info script tells a visitor about a dataset in their own
-chat, which no one else sees.
+lasts, and anyone with a menu open by key, for the five minutes the
+menu answers. The info script keeps the key of the last visitor who
+asked for "About", so a double press is answered once, and tells a
+visitor about a dataset in their own chat, which no one else sees.
+Nothing is kept across a reset.
 
 What each visitor's viewer loads is the output page, from the node, like
 any web page. With `/9 telemetry on` that page reports, anonymously and

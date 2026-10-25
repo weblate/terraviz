@@ -221,21 +221,48 @@ describe('second-life exhibit scripts', () => {
   })
 
   it("leave the title room in the hover text, whatever else it says", () => {
-    // The fixed lines are never cut, so they have to leave room. With
-    // telemetry on and a talk under way, a sub-daily date is the widest.
-    const node = JSON.parse(constant(globe, 'string', 'NODE')) as string
+    // The fixed lines are never cut, so they have to leave the title its
+    // floor. The worst case: a preview node, whose address is the longest
+    // the README sends anyone to, with telemetry on, a talk under way, and
+    // a sub-daily range, which shows while a clip's length is unknown.
     const string = (name: string) => JSON.parse(constant(info, 'string', name)) as string
     const hover = body(info, 'hover()')
     expect(hover).toContain('"Counts anonymous use: " + gNode + "/privacy\\n"')
-    const top = 'TerraViz globe\n' + `Counts anonymous use: ${node}/privacy\n`
-    const date = '\n30 Sep 2024, 23:50 UTC'
+    expect(hover).toContain('if (keepT < MIN_TITLE) keepT = MIN_TITLE;')
+    const preview = `https://${'a'.repeat(28)}.terraviz.pages.dev`
+    const production = JSON.parse(constant(globe, 'string', 'NODE')) as string
     const end = `\n${string('TALK_LINE')}\n${string('TOUCH_LINE')}`
-    const credit = Number(constant(info, 'integer', 'MIN_CREDIT'))
-    const title = 254 - bytes(top) - bytes(date) - bytes(end) - 1 - credit
-    expect(title).toBeGreaterThanOrEqual(40)
-    // The live Earth's lines fit whole, with nothing cut.
-    const live = top + string('LIVE_LINE') + '\n' + string('LIVE_CREDIT') + end
-    expect(bytes(live)).toBeLessThanOrEqual(254)
+    const range = '\n30 Sep 2012, 12:00 to 1 Oct 2012, 11:35 UTC'
+    expect(body(info, 'string range()')).toContain('if (gRes == RES_TIME) a = llGetSubString(a, 0, -5);')
+    const minTitle = Number(constant(info, 'integer', 'MIN_TITLE'))
+    const minCredit = Number(constant(info, 'integer', 'MIN_CREDIT'))
+    for (const node of [preview, production]) {
+      const top = 'TerraViz globe\n' + `Counts anonymous use: ${node}/privacy\n`
+      const left = 254 - bytes(top) - bytes(range) - bytes(end) - 1
+      expect(left, node).toBeGreaterThanOrEqual(minTitle)
+      // On the node the exhibit ships for, the credit keeps its floor too.
+      if (node === production) expect(left - minTitle, node).toBeGreaterThanOrEqual(minCredit)
+      // The live Earth's lines fit whole, with nothing cut.
+      const live = top + string('LIVE_LINE') + '\n' + string('LIVE_CREDIT') + end
+      expect(bytes(live), node).toBeLessThanOrEqual(254)
+    }
+  })
+
+  it("take the dataset ids the globe takes, from the notecard", () => {
+    // A line the globe would refuse is caught when the notecard is read,
+    // not when a visitor picks it.
+    expect(constant(visitors, 'string', 'ID_CHARS')).toBe(constant(globe, 'string', 'ID_CHARS'))
+    expect(constant(visitors, 'integer', 'ID_MAX')).toBe(constant(globe, 'integer', 'ID_MAX'))
+    expect(body(visitors, 'integer isId(string s)')).toBe(body(globe, 'integer isId(string s)'))
+  })
+
+  it('answer each kind of menu on its own channel', () => {
+    // So an answer from an older menu means what that menu meant.
+    expect(body(visitors, 'mainMenu(key who)')).toContain('menu(who, text, b, gDlg);')
+    expect(body(visitors, 'datasetsMenu(key who, integer page)')).toContain('menu(who, text, b, gDlgSets);')
+    expect(visitors).toContain('llTextBox(who, "Jump to where in the clip? Seconds, like 90, or minutes and seconds, like 1:30.", gDlgJump);')
+    expect(visitors).toMatch(/gDlgSets = gDlg \+ 1;\n\s+gDlgJump = gDlg \+ 2;/)
+    expect(visitors).toMatch(/gDlg = -3 - /)
   })
 })
 
