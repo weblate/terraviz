@@ -2,7 +2,8 @@
 // Copyright 2026 The Zyra Project
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { HLSService, measuredBandwidthBps, selectRendition } from './hlsService'
+import { HLSService, capLevelForWidth, measuredBandwidthBps, selectRendition } from './hlsService'
+import { until } from '../test-utils'
 
 // ---------------------------------------------------------------------------
 // Mock hls.js — we test HLSService logic, not the HLS library itself
@@ -71,6 +72,11 @@ vi.mock('hls.js', () => {
 
   return { default: MockHls }
 })
+
+// The Tier A `error` report a fatal stream error makes. Mocked so a test
+// can tell the default reporter from an injected one.
+const analyticsMock = vi.hoisted(() => ({ reportError: vi.fn() }))
+vi.mock('../analytics', () => analyticsMock)
 
 // ---------------------------------------------------------------------------
 // HLSService — property defaults and lifecycle
@@ -285,6 +291,43 @@ describe('HLSService fatal errors after load', () => {
     expect(seen).toEqual([])
   })
 
+  it('reports a terminal error as telemetry by default', async () => {
+    // Its own details string: earlier tests' reports resolve late, and
+    // must not be mistaken for this one.
+    const OWN = { fatal: true, type: 'networkError', details: 'defaultReporterCase' }
+    analyticsMock.reportError.mockClear()
+    const svc = new HLSService()
+    await loadAndSettle(svc)
+    hlsMock.fire('hlsError', OWN)
+    // Asynchronous: the analytics package is imported when a stream
+    // fails, not with this module.
+    const mine = () =>
+      analyticsMock.reportError.mock.calls.some(([, e]) => (e as Error).message === 'networkError: defaultReporterCase')
+    await until(mine, 'the error report')
+    expect(analyticsMock.reportError).toHaveBeenCalledWith('hls', new Error('networkError: defaultReporterCase'))
+  })
+
+  it('reports to the injected reporter instead, when given one', async () => {
+    // The multi-monitor output's case: it emits no telemetry.
+    analyticsMock.reportError.mockClear()
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    await loadAndSettle(svc)
+    hlsMock.fire('hlsError', { fatal: true, type: 'networkError', details: 'injectedCase' })
+    expect(reported.map(e => e.message)).toEqual(['networkError: injectedCase'])
+    // The default report is asynchronous, so "not called" needs an
+    // anchor: a service on the default reporter fails too, and once its
+    // report has arrived the injected one's would have as well. Both use
+    // details strings of their own, since earlier tests' reports can
+    // still be landing.
+    const anchor = new HLSService()
+    await loadAndSettle(anchor)
+    hlsMock.fire('hlsError', { fatal: true, type: 'mediaError', details: 'anchorCase' })
+    const messages = () => analyticsMock.reportError.mock.calls.map(([, e]) => (e as Error).message)
+    await until(() => messages().includes('mediaError: anchorCase'), 'the default report')
+    expect(messages()).not.toContain('networkError: injectedCase')
+  })
+
   it('reports a terminal media error too', async () => {
     const svc = new HLSService()
     const seen: unknown[] = []
@@ -313,7 +356,8 @@ describe('HLSService fatal errors after load', () => {
   })
 
   it('does not report a stream failure to a disposed panel', async () => {
-    // `destroy()` calls `video.load()`, which can itself fire `error`.
+    // An `error` arriving after `destroy()`, whatever raised it, belongs
+    // to a stream nobody is watching.
     const svc = new HLSService()
     const seen: unknown[] = []
     svc.onFatalError((e) => seen.push(e))
@@ -498,6 +542,85 @@ describe('HLSService native HLS path', () => {
 
     expect(seen).toEqual([])
   })
+
+  // A measured globe's telemetry is its reporter (`datasetMirror`), and
+  // this path once reached only the handler, so a native stream that
+  // died after loading sent no error row (found in review).
+  it('reports an error after load to the reporter, as hls.js reports its fatal errors', async () => {
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = await nativeVideo()
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await p
+
+    video.dispatchEvent(new Event('error'))
+    expect(reported.map(e => e.message)).toEqual(['native: nativeHlsError'])
+  })
+
+  it('leaves an error before load to the rejection', async () => {
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = await nativeVideo()
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('error'))
+
+    await expect(p).rejects.toThrow('Native HLS load failed')
+    expect(reported).toEqual([])
+  })
+
+  it('reports the single file a rejected stream fell back to, once', async () => {
+    // `datasetLoader`'s fallback on this path: the stream rejects before
+    // load and the same service and element take the MP4. Two `error`
+    // listeners then share one element, the abandoned stream's and the
+    // file's, and only the file's may speak. This pins the outcome: the
+    // abandoned stream never loaded, so it could not report even without
+    // the generation guard.
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const seen: unknown[] = []
+    svc.onFatalError((e) => seen.push(e))
+    const video = await nativeVideo()
+    const stream = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('error'))
+    await expect(stream).rejects.toThrow('Native HLS load failed')
+
+    const file = svc.loadDirect('https://example.com/v.mp4', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await file
+    video.dispatchEvent(new Event('error'))
+
+    expect(reported.map(e => e.message)).toEqual(['progressive: mp4ErrorAfterLoad'])
+    expect(seen).toEqual([{ type: 'native', details: 'mp4ErrorAfterLoad' }])
+  })
+
+  it('reports nothing for a stream disposed or replaced', async () => {
+    // The element here is the caller's, not the service's own, so
+    // `destroy()` leaves its source in place and it can still fail: the
+    // asset uploader's case. A disposed panel's telemetry must not hear
+    // that. Nor must a stream's, once the element has been handed to the
+    // next load, whose failure every earlier listener hears.
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = await nativeVideo()
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await p
+    svc.destroy()
+    video.dispatchEvent(new Event('error'))
+    expect(reported).toEqual([])
+
+    const other = await nativeVideo()
+    const first = svc.loadStream('https://example.com/a.m3u8', other)
+    other.dispatchEvent(new Event('loadedmetadata'))
+    await first
+    const second = svc.loadStream('https://example.com/b.m3u8', other)
+    other.dispatchEvent(new Event('loadedmetadata'))
+    await second
+    other.dispatchEvent(new Event('error'))
+    // One report, the current stream's, not one for each listener.
+    expect(reported.map(e => e.message)).toEqual(['native: nativeHlsError'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -540,15 +663,31 @@ describe('HLSService.loadDirect', () => {
     svc.onFatalError((e) => seen.push(e))
     expect(seen).toEqual([{ type: 'native', details: 'mp4ErrorAfterLoad' }])
   })
+
+  it('reports a failure after load, and nothing once disposed', async () => {
+    const reported: Error[] = []
+    const svc = new HLSService({ reportError: err => reported.push(err) })
+    const video = document.createElement('video')
+    const p = svc.loadDirect('https://example.com/v.mp4', video)
+    video.dispatchEvent(new Event('loadedmetadata'))
+    await p
+    video.dispatchEvent(new Event('error'))
+    expect(reported.map(e => e.message)).toEqual(['progressive: mp4ErrorAfterLoad'])
+
+    svc.destroy()
+    video.dispatchEvent(new Event('error'))
+    expect(reported).toHaveLength(1)
+  })
 })
 
 // ---------------------------------------------------------------------------
 // A rejected load is the caller's failure, not a later one
 //
 // `datasetLoader` catches a `loadStream` rejection and falls back to the
-// progressive MP4 through the *same* service and video, and `loadDirect`
-// does not tear the hls.js instance down. The abandoned stream keeps
-// emitting, and reporting that would condemn a healthy fallback.
+// progressive MP4 through the *same* service and video. `loadDirect`
+// tears the hls.js instance down on the way in, but the native path's
+// `error` listener stays on the element, and anything the abandoned
+// stream still emits must not condemn a healthy fallback.
 // ---------------------------------------------------------------------------
 
 describe('HLSService after a rejected load', () => {
@@ -953,5 +1092,66 @@ describe('HLSService.loadDirect teardown', () => {
 
     expect(logged.flat().some((x) => String(x).includes('Direct MP4 loaded'))).toBe(false)
     spy.mockRestore()
+  })
+})
+
+describe('capLevelForWidth', () => {
+  // TerraViz's own ladder for a data video (docs/SECOND_LIFE_COMPAT.md §11).
+  const WIDTHS = [1440, 2160, 4096]
+
+  it('stops at the narrowest level still as wide as the frame', () => {
+    expect(capLevelForWidth(WIDTHS, 2048)).toBe(1)
+    expect(capLevelForWidth(WIDTHS, 2160)).toBe(1)
+    expect(capLevelForWidth(WIDTHS, 1024)).toBe(0)
+    expect(capLevelForWidth(WIDTHS, 4096)).toBe(2)
+  })
+
+  it('does not cap when every level is narrower than the frame', () => {
+    expect(capLevelForWidth(WIDTHS, 8192)).toBe(-1)
+  })
+
+  // No test for unordered levels: hls.js sorts them by height before
+  // this runs, and an index cap on an unordered ladder would still let
+  // wider levels below it through. The one that stood here passed on a
+  // property the cap does not have (found in review).
+
+  it('ignores levels that state no width', () => {
+    expect(capLevelForWidth([0, NaN], 2048)).toBe(-1)
+  })
+})
+
+describe('HLSService.loadStream — maxWidth', () => {
+  const LADDER = [
+    { width: 1440, height: 720, bitrate: 4_000_000 },
+    { width: 2160, height: 1080, bitrate: 8_000_000 },
+    { width: 4096, height: 2048, bitrate: 25_000_000 },
+  ]
+
+  async function load(maxWidth: number | undefined, startingCap = -1): Promise<number> {
+    hlsMock.reset()
+    const { default: Hls } = await import('hls.js')
+    vi.mocked(Hls.isSupported).mockReturnValue(true)
+    const p = new HLSService().loadStream('https://example.com/s.m3u8', document.createElement('video'), false, maxWidth)
+    hlsMock.instance!.levels = LADDER
+    hlsMock.instance!.autoLevelCapping = startingCap
+    hlsMock.fire('hlsManifestParsed', { levels: LADDER })
+    await p
+    return hlsMock.instance!.autoLevelCapping
+  }
+
+  it('caps a 2048-wide frame at the 2160x1080 rung', async () => {
+    expect(await load(2048)).toBe(1)
+  })
+
+  it('leaves the cap alone without a frame width', async () => {
+    expect(await load(undefined)).toBe(-1)
+  })
+
+  it('leaves the cap alone when every rung is narrower than the frame', async () => {
+    expect(await load(8192)).toBe(-1)
+  })
+
+  it('keeps a tighter cap that was already set', async () => {
+    expect(await load(4096, 0)).toBe(0)
   })
 })

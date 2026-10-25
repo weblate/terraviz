@@ -7,8 +7,21 @@
 
 import Hls from 'hls.js'
 import { logger } from '../utils/logger'
-import { reportError } from '../analytics'
 import { VIDEO_PROXY_BASE } from '../config/endpoints'
+
+/**
+ * The Tier A `error` report a fatal stream error makes by default.
+ *
+ * Imported when a stream fails rather than with this module. A static
+ * import put the whole analytics package into every output window's
+ * bundle: emitter, transport and all, with `/api/ingest` in it. An output
+ * passes its own silent reporter, so none of it ever ran there, but
+ * "outputs send nothing" then rested on nobody wiring it up. The main
+ * app has the package loaded already, so the import costs it nothing.
+ */
+function reportToAnalytics(err: Error): void {
+  void import('../analytics').then(m => m.reportError('hls', err)).catch(() => {})
+}
 
 export interface VideoProxyFile {
   quality: string
@@ -162,6 +175,34 @@ export function selectRendition(
   return cheapest
 }
 
+/**
+ * The `autoLevelCapping` index that stops at the narrowest level still
+ * at least `maxWidth` wide, or -1 (no cap) when every level is narrower
+ * or no level states a width.
+ *
+ * For an output drawing into a frame of known width: anything wider is
+ * pixels the frame cannot show, and on a web output every visitor
+ * streams their own copy — at 2048 wide, TerraViz's 2160×1080 rung looks
+ * the same as its 4096×2048 one at a third of the bandwidth. hls.js caps
+ * by *index*, allowing every level at or below it, which is why this
+ * returns the narrowest qualifying level's index rather than a width.
+ *
+ * That relies on hls.js's own order: it sorts levels by height first
+ * (`level-controller`), so on a 2:1 ladder index order is width order
+ * and every level below the cap is narrower. On a tie, the first index
+ * wins, which is the cheaper variant of that size: the point is
+ * bandwidth.
+ */
+export function capLevelForWidth(widths: readonly number[], maxWidth: number): number {
+  let cap = -1
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i]
+    if (!(w >= maxWidth)) continue
+    if (cap === -1 || w < widths[cap]) cap = i
+  }
+  return cap
+}
+
 export class HLSService {
   private hls: Hls | null = null
   /**
@@ -179,6 +220,36 @@ export class HLSService {
   video: HTMLVideoElement | null = null
   private fatalErrorHandler: ((error: HlsFatalError) => void) | null = null
   private pendingFatalError: HlsFatalError | null = null
+  /**
+   * Which load the element's listeners belong to, moved on by every
+   * load and by `destroy()`. The native and progressive paths leave
+   * their `error` listener armed on purpose, and two things can still
+   * fire it for a stream nobody is watching: a later load on the same
+   * element, whose failure every earlier listener hears, and an element
+   * the caller owns (the asset uploader's), which `destroy()` does not
+   * unload and which can fail after it. Nulling the handler kept those
+   * from the handler, not from the reporter, which a measured globe's
+   * telemetry receives. A listener from a load since replaced or
+   * disposed goes quiet. `destroy()`'s own unload is not one of them:
+   * `removeAttribute('src')` then `load()` fires `abort` and `emptied`,
+   * never `error`, by the spec and as measured in Chromium (found in
+   * review).
+   */
+  private loadGeneration = 0
+  /** Where a fatal error is reported as telemetry. */
+  private readonly reportTelemetry: (err: Error) => void
+
+  /**
+   * `reportError` replaces the Tier A `error` report this service makes
+   * on a fatal error. The multi-monitor output passes one that does
+   * nothing, because an output emits no telemetry at all
+   * (`outputTelemetry.ts`): on desktop it is a capture surface, and on
+   * the web every Second Life visitor runs a copy. Everything else keeps
+   * the default.
+   */
+  constructor(opts: { reportError?: (err: Error) => void } = {}) {
+    this.reportTelemetry = opts.reportError ?? reportToAnalytics
+  }
 
   /**
    * Register a handler for fatal errors that arrive after the stream
@@ -263,10 +334,15 @@ export class HLSService {
   }
 
   /**
-   * Load an HLS stream into the video element
+   * Load an HLS stream into the video element.
+   *
+   * `maxWidth`, when given, caps the renditions at the narrowest one at
+   * least that wide (`capLevelForWidth`) — for a caller that knows how
+   * wide its frame is. Combined with the phone cap, the tighter wins.
    */
-  loadStream(hlsUrl: string, video: HTMLVideoElement, mobile = false): Promise<void> {
+  loadStream(hlsUrl: string, video: HTMLVideoElement, mobile = false, maxWidth?: number): Promise<void> {
     this.sourceUrl = hlsUrl
+    const generation = ++this.loadGeneration
     return new Promise((resolve, reject) => {
       // This promise settles on `MANIFEST_PARSED`, so anything that
       // fails later has no caller left to reject to. Route every
@@ -337,6 +413,15 @@ export class HLSService {
             }, 0)
             this.hls!.autoLevelCapping = cap
             logger.info(`[HLS] Mobile ABR capped at level ${cap} (${this.hls!.levels[cap].width}x${this.hls!.levels[cap].height}) for screen ${maxScreenDim}px`)
+          }
+
+          if (maxWidth !== undefined) {
+            const cap = capLevelForWidth(this.hls!.levels.map(l => l.width), maxWidth)
+            const current = this.hls!.autoLevelCapping
+            if (cap >= 0 && (current < 0 || cap < current)) {
+              this.hls!.autoLevelCapping = cap
+              logger.info(`[HLS] ABR capped at level ${cap} (${this.hls!.levels[cap].width}x${this.hls!.levels[cap].height}) for a ${maxWidth}px frame`)
+            }
           }
 
           succeed()
@@ -446,7 +531,7 @@ export class HLSService {
         this.hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) {
             logger.warn('[HLS] Fatal error:', data.type, data.details)
-            reportError('hls', new Error(`${data.type}: ${data.details}`))
+            this.reportTelemetry(new Error(`${data.type}: ${data.details}`))
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
               if (networkRecoveries < MAX_RECOVERIES) {
                 networkRecoveries++
@@ -506,8 +591,17 @@ export class HLSService {
         // only report of a stream that dies during playback, which is
         // the case this whole seam exists for. `destroy()` drops the
         // handler, and the element goes with it.
-        video.addEventListener('error', () => fail('native', 'nativeHlsError',
-          new Error('Native HLS load failed')))
+        //
+        // After load it goes to the reporter too, as hls.js's fatal
+        // errors and the progressive file's do. It once reached only the
+        // handler, so a page whose reporter is its telemetry (a measured
+        // globe, `datasetMirror`) sent nothing for it (found in review).
+        // Before load the rejection is the report: the caller owns it.
+        video.addEventListener('error', () => {
+          if (generation !== this.loadGeneration) return
+          if (loaded) this.reportTelemetry(new Error('native: nativeHlsError'))
+          fail('native', 'nativeHlsError', new Error('Native HLS load failed'))
+        })
       } else {
         fail('unsupported', 'hlsUnsupported', new Error('HLS is not supported in this browser'))
       }
@@ -519,6 +613,7 @@ export class HLSService {
    */
   loadDirect(mp4Url: string, video: HTMLVideoElement): Promise<void> {
     this.sourceUrl = mp4Url
+    const generation = ++this.loadGeneration
     return new Promise((resolve, reject) => {
       // Tear down any hls.js instance before taking this element over.
       //
@@ -534,8 +629,9 @@ export class HLSService {
       // three concurrent decoders (terraviz#230).
       //
       // Before the assignment, deliberately: `destroy()` detaches media,
-      // which clears `src` on the element and can raise `error` on it.
-      // Doing it first means neither can touch what we set up below.
+      // which clears `src` on the element, so it has to happen before
+      // the assignment rather than after it. (The detach fires `abort`
+      // and `emptied`, not `error`.)
       if (this.hls) {
         this.hls.destroy()
         this.hls = null
@@ -557,9 +653,10 @@ export class HLSService {
         resolve()
       }, { once: true })
       video.addEventListener('error', () => {
+        if (generation !== this.loadGeneration) return
         if (settled) {
           logger.warn('[HLS] Direct MP4 failed after load')
-          reportError('hls', new Error('progressive: mp4ErrorAfterLoad'))
+          this.reportTelemetry(new Error('progressive: mp4ErrorAfterLoad'))
           this.reportFatal({ type: 'native', details: 'mp4ErrorAfterLoad' })
           return
         }
@@ -647,9 +744,12 @@ export class HLSService {
 
   /** Tear down the HLS instance, stop playback, and remove the video element from the DOM. */
   destroy(): void {
-    // Before anything else: `video.load()` below can fire `error`, and
-    // the native paths keep their listener armed on purpose. A panel
-    // being disposed must not be told its stream failed.
+    // Before anything else: the native paths keep their `error`
+    // listener armed on purpose, and an element the caller owns keeps
+    // its source after this, so it can still fail. A panel being
+    // disposed must not be told its stream failed, and its telemetry
+    // must not hear it either (`loadGeneration`).
+    this.loadGeneration++
     this.fatalErrorHandler = null
     this.pendingFatalError = null
     if (this.hls) {
