@@ -1503,6 +1503,62 @@ can touch, and no automatic return to the live Earth after the last
 visitor leaves (`/8 earth` is the owner's, by hand). The questions those
 waited on were decided on 24 October (§7 item 4).
 
+*How the controller is built* (in
+[`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md)):
+- **Three scripts in the globe prim, talking by link messages.** A
+  script gets 64 KB in all, and a dataset record costs about 1.8 bytes
+  of it per character while held (§4.1). One script doing everything
+  would hold a record while it also holds menus, notecards and visitor
+  lists, so the work is split three ways:
+  - **globe** owns the address, the clock and the media. It is the
+    smoke-test script's core, unchanged in what it writes, and it is
+    the only script that changes what visitors see. It takes the
+    owner's chat commands, as before, and control requests from the
+    visitors script. After every change it tells the other two what
+    the globe now shows.
+  - **visitors** owns people. It turns touches into menus, keeps the
+    presenter list, runs talks and the short hold, watches who is at
+    the globe, and asks the globe to go back to the live Earth once
+    the last visitor has been gone for the idle time.
+  - **info** owns what the globe says about itself. It reads the
+    record and the manifest for each dataset. From them it keeps the
+    hover text (the title, the date, a short credit and any telemetry
+    notice, in that fixed order, cut to 254 bytes). It also gives the
+    abstract and full credit on request.
+- **What visitors can do.** A touch opens a menu for whoever touched.
+  "About" is always there, since reading changes nothing. The
+  controls are pause or play, back and forward ten seconds, start
+  over, a dataset, and the live Earth. They are offered when that
+  visitor may act: outside a talk, nobody else holds the globe;
+  during one, they are a presenter. Presenters also get "Start talk"
+  and "End talk", and "Jump to", which takes a time. A visitor
+  doesn't change the rate, the rotation, the width or the telemetry,
+  which stay the owner's, in chat.
+- **Notecards in the globe, all optional, re-read when they change:**
+  - `presenters`: one username a line. A legacy name such as "Eric
+    Hackathorn" is read as its username. A display name never is.
+  - `datasets`: the menu, one `Name = id` a line. Without it the menu
+    offers the smoke-test script's five.
+  - `settings`: the four numbers, as `name = value` lines:
+    - `radius`: the distance that counts as at the globe, in metres
+      (15);
+    - `idle minutes`: how long after the last visitor leaves before
+      the live Earth comes back (5);
+    - `hold seconds`: how long the short hold lasts after a visitor's
+      last action (60);
+    - `talk minutes`: how long with no presenter at the globe before a
+      talk ends (2).
+  - a notecard named by a dataset's id, given to a visitor who asks
+    about that dataset in place of the chat abstract.
+- **Who is at the globe** comes from the region's avatar list and each
+  avatar's distance, every five seconds. That costs less than a sensor
+  and isn't capped at 16 avatars. Nothing about a visitor leaves the
+  object: no name or key reaches the node.
+- **Left out for now:** a stand beside the globe for left-clicks. It
+  waits on the left-click test, and until then visitors right-click
+  and choose Touch, which the viewer's source says always reaches the
+  script. Rate control for visitors is also left out.
+
 **Phase 3 — the resolved-hero endpoint** (Option A), when someone wants
 a "Right now" kiosk.
 
