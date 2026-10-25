@@ -534,7 +534,7 @@ they all come along, because it is the real app.
 
 | Option | What you get | Status after testing | Who can see it |
 |---|---|---|---|
-| **E. The full app on a flat panel** *(new)* | The real TerraViz, interactive, measurement tools included | **Works today**, no TerraViz changes | Anyone with a viewer that runs it — not yet confirmed with a second avatar |
+| **E. The full app on a flat panel** *(new)* | The real TerraViz, interactive, measurement tools included | **Works today**, no TerraViz changes; typing confirmed in Firestorm | Anyone with a viewer that runs it — not yet confirmed with a second avatar |
 | **C. A live globe from the output page** *(reshaped)* | A correctly wrapped, live Earth on a sphere | **Idle Earth works today.** Datasets need one TerraViz change (§7) | Same as E |
 | **A. Scripts talk to the server** | Links out, event boards, kiosks | **Verified.** One small endpoint worth adding | Everyone |
 | **B. Flipbook globe** | An animated globe from uploaded frames | **Mapping verified.** Uploads cost L$ | Everyone, likely phones too |
@@ -561,6 +561,55 @@ What to know:
   (`PRIM_MEDIA_PERMS_INTERACT`): owner, group or anyone.
 - **Every visitor needs WebGL 2 in their viewer**, and pays for the
   rendering on their own machine.
+- **Typing works.** Eric typed into the full app at
+  `terraviz.zyra-project.org` on a flat panel in Firestorm 7.2.4 on
+  24 October, which is what search and Orbit need. That was the first
+  time anyone typed into the app in-world.
+- **A navigation is shared, though, and that is the panel's one
+  catch.** If a visitor does something that loads a *different page*,
+  such as the Privacy page, the blog or "Meet Orbit", their viewer
+  sends the new address to the region. Every viewer near the panel then
+  follows it, reloading at that page and losing whatever its visitor
+  was doing (`mediaNavigated`, §11). This is from the viewer's source
+  and not yet seen in-world. Loading a dataset only rewrites the app's
+  own address (`pushState` in `main.ts` and `datasetLoader.ts`) rather
+  than navigating, so it is expected not to spread, but that is
+  unconfirmed too. Both are one check with a second avatar: the first
+  clicks the Privacy link, then loads a dataset, and the second watches
+  their own panel.
+- **The panel runs the full app's telemetry**, Essential on by default,
+  unlike a globe, which reports nothing unless its owner turns it on.
+  The concern the privacy review raised for globes applies here too: a
+  venue matching its own log of avatar arrivals to `session_start`'s
+  locale, OS and screen. It is worth settling before a public
+  installation.
+
+**Setting up a self-serve kiosk.** A face showing the app's homepage,
+with no script, is a kiosk: every visitor explores on their own. The
+face's Media Settings should then be:
+- **Permissions → Interact: Anyone**, so visitors can click and type.
+- **Permissions → Control bar: Owner only.** Otherwise anyone can type
+  a new address into the media bar, and it goes to everyone.
+- **Security → whitelist on**, with `terraviz.zyra-project.org` only.
+  A click on an outside link, such as a dataset's source, then can't
+  move everyone's panel off-site.
+- **General: Auto play and Auto scale on.** Auto zoom is a choice: on a
+  large panel it pulls each visitor's camera in when they click.
+- **An optional reset.** A few lines of LSL can read the face's current
+  address every minute or so and, after a few idle minutes away from
+  the homepage, put the homepage back, so one visitor's click on the
+  Privacy page doesn't stay there for the next.
+
+**A panel everyone shares** is not something the homepage can do,
+since nothing inside the app is shared between viewers. The shared path
+is the one Phase 1 built: the output page steered by a script. It
+doesn't need a sphere. On a flat 2:1 face it draws the same picture as
+a world map, in step for every visitor and driven by the same address.
+The globe script's spin and its texture recipe for spheres don't apply
+to a flat face, so a flat-panel mode is a small addition to the Phase 2
+controller. An exhibit can have both: the shared globe for the room,
+and a kiosk panel beside it where visitors explore and ask Orbit on
+their own.
 
 ### Option C — a live globe from the output page
 
@@ -1512,8 +1561,11 @@ Numbering is kept from the first version, so a reference like
       - **Still open** for the official Linden Lab viewer and the phone
         app, each of which needs its own run.
 11. **Does a second avatar see the app and the output page?** It
-    should — they come from TerraViz's site, not from a script — but
-    nobody else was there to look.
+    should — they come from TerraViz's site, not from a script.
+    **Answered for the output page** on 24 October: a second avatar at
+    the globe saw what the first did (§7 status note). **Still open for
+    the app on a flat panel**, together with whether one visitor's
+    navigation moves the other's panel (§6 Option E).
 12. **How long does the full app run with a video playing?** It ran;
     it wasn't timed, and it wasn't tried on a flat panel (§4.5).
 13. **How many globes can stand in one field?** **Answered from the
