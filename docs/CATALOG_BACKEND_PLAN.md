@@ -925,6 +925,23 @@ and an optional MP4 fallback. `datasetLoader.ts` swaps its current
 `dash` (we don't use it) and minus `files[]` for restricted videos
 where signed-URL semantics make a long-lived MP4 link a leak.
 
+A video manifest's `duration` is the clip's length in seconds, as a
+number that is never negative and often has a fraction. **0 means
+unknown**, and a reader must treat it that way. A reader has to
+expect 0 from:
+- a `stream:` asset or a single file;
+- an older node;
+- a node whose bucket could not be read just then, which makes the 0
+  temporary.
+
+For a bundle the node hosts itself (`r2:` HLS) it is the bundle's own
+playlists' `#EXTINF`s summed, to the microsecond
+(`functions/api/v1/_lib/hls-duration.ts`). For `vimeo:` it is Vimeo's
+figure. Browsers ignore it, since a player reads the length from the
+playlist. A Second Life globe's script uses it to turn a clip position
+into a date ([`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7
+item 4).
+
 #### Cutover bridge
 
 For Phase 1 a `vimeo:` `data_ref` resolves through the existing

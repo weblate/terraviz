@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Zyra Project
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   MAX_PLAYLIST_BYTES,
+  MEMO_MAX_ENTRIES,
+  MEMO_TTL_MS,
   firstVariantUri,
   isMasterPlaylist,
   mediaPlaylistDuration,
   readHlsDuration,
   resolvePlaylistKey,
+  type HlsDurationMemo,
   type PlaylistBucket,
 } from './hls-duration'
 import { buildMasterPlaylist, buildVariantPlaylist } from '../../../../cli/lib/hls-incremental'
 
-// The fixtures are written by the node's own incremental writer, so a
+// The incremental fixtures are written by the node's own writer, so a
 // change to what it emits fails here rather than in a globe's hover text.
 const SEGMENTS = [
   { hex: 'a'.repeat(64), extinf: 6 },
@@ -25,6 +28,19 @@ const MASTER = buildMasterPlaylist([
   { id: 'stream_0', bandwidth: 27_700_000, width: 4096, height: 2048, codecs: 'avc1.640033' },
   { id: 'stream_1', bandwidth: 9_000_000, width: 2160, height: 1080, codecs: 'avc1.640028' },
 ])
+
+/** The shape of ffmpeg's master for a full encode, as production served
+ *  it for Hurricane Season 2024: a blank line after every address. */
+const FFMPEG_MASTER = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-STREAM-INF:BANDWIDTH=27711200,RESOLUTION=4096x2048,CODECS="avc1.4d4033,mp4a.40.2"',
+  'stream_0/playlist.m3u8',
+  '',
+  '#EXT-X-STREAM-INF:BANDWIDTH=9011200,RESOLUTION=2160x1080,CODECS="avc1.4d4032,mp4a.40.2"',
+  'stream_1/playlist.m3u8',
+  '',
+].join('\n')
 
 /** What ffmpeg's HLS muxer writes for a full encode (`-hls_playlist_type vod`). */
 const FFMPEG_VARIANT = [
@@ -41,6 +57,10 @@ const FFMPEG_VARIANT = [
   '',
 ].join('\n')
 
+const BOM = String.fromCharCode(0xfeff)
+const MASTER_KEY = 'videos/DS1/01UPLOAD/master.m3u8'
+const VARIANT_KEY = 'videos/DS1/01UPLOAD/stream_0/playlist.m3u8'
+
 function bucket(objects: Record<string, string>, reads: string[] = []): PlaylistBucket {
   return {
     async get(key) {
@@ -52,9 +72,14 @@ function bucket(objects: Record<string, string>, reads: string[] = []): Playlist
   }
 }
 
+/** A fresh memo, so no test sees another's readings. */
+function memo(): HlsDurationMemo {
+  return new Map()
+}
+
 describe('mediaPlaylistDuration', () => {
-  it('sums the writer’s #EXTINFs, to the millisecond', () => {
-    expect(mediaPlaylistDuration(VARIANT)).toBe(15.967)
+  it('sums the writer’s #EXTINFs, to the microsecond the playlist is written in', () => {
+    expect(mediaPlaylistDuration(VARIANT)).toBe(15.966667)
   })
 
   it('reads ffmpeg’s own VOD playlist', () => {
@@ -62,7 +87,7 @@ describe('mediaPlaylistDuration', () => {
   })
 
   it('accepts CRLF line ends and a byte-order mark', () => {
-    expect(mediaPlaylistDuration('﻿' + FFMPEG_VARIANT.replace(/\n/g, '\r\n'))).toBe(6.2)
+    expect(mediaPlaylistDuration(BOM + FFMPEG_VARIANT.replace(/\n/g, '\r\n'))).toBe(6.2)
   })
 
   it('says nothing without #EXT-X-ENDLIST: a live window’s total is not the clip’s', () => {
@@ -78,14 +103,31 @@ describe('mediaPlaylistDuration', () => {
     expect(mediaPlaylistDuration('')).toBeNull()
   })
 
-  it('refuses the whole playlist over one #EXTINF that is not a number', () => {
-    for (const bad of ['#EXTINF:,', '#EXTINF:abc,', '#EXTINF:-1,', '#EXTINF:Infinity,', '#EXTINF:NaN,']) {
-      expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('#EXTINF:0.200000,', bad)), bad).toBeNull()
+  it('refuses the whole playlist over one #EXTINF that is not a plain decimal', () => {
+    for (const bad of ['', 'abc', '-1', 'Infinity', 'NaN', '0x10', '1e3', '.5', '5.', ' ']) {
+      const text = FFMPEG_VARIANT.replace('#EXTINF:0.200000,', `#EXTINF:${bad},`)
+      expect(mediaPlaylistDuration(text), JSON.stringify(bad)).toBeNull()
     }
   })
 
-  it('accepts an #EXTINF with no title separator', () => {
+  it('accepts a whole number, and an #EXTINF with no title separator', () => {
+    expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('#EXTINF:0.200000,', '#EXTINF:1,'))).toBe(7)
     expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('#EXTINF:0.200000,', '#EXTINF:0.2'))).toBe(6.2)
+  })
+
+  it('accepts a zero-length segment among others', () => {
+    expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('#EXTINF:0.200000,', '#EXTINF:0,'))).toBe(6)
+  })
+
+  it('refuses an #EXTINF no segment follows, as a player would not count it', () => {
+    const dangling = FFMPEG_VARIANT.replace('#EXT-X-ENDLIST', '#EXTINF:100.000000,\n#EXT-X-ENDLIST')
+    expect(mediaPlaylistDuration(dangling)).toBeNull()
+    const doubled = FFMPEG_VARIANT.replace('#EXTINF:6.000000,', '#EXTINF:100.000000,\n#EXTINF:6.000000,')
+    expect(mediaPlaylistDuration(doubled)).toBeNull()
+  })
+
+  it('refuses a segment with no #EXTINF before it', () => {
+    expect(mediaPlaylistDuration(FFMPEG_VARIANT.replace('segment_001.ts', 'segment_001.ts\nextra.ts'))).toBeNull()
   })
 
   it('refuses a playlist with no segments, or a total of zero', () => {
@@ -96,10 +138,12 @@ describe('mediaPlaylistDuration', () => {
 })
 
 describe('isMasterPlaylist and firstVariantUri', () => {
-  it('reads the writer’s master', () => {
+  it('reads both writers’ masters', () => {
     expect(isMasterPlaylist(MASTER)).toBe(true)
+    expect(isMasterPlaylist(FFMPEG_MASTER)).toBe(true)
     expect(isMasterPlaylist(VARIANT)).toBe(false)
     expect(firstVariantUri(MASTER)).toBe('stream_0/playlist.m3u8')
+    expect(firstVariantUri(FFMPEG_MASTER)).toBe('stream_0/playlist.m3u8')
   })
 
   it('skips blank lines after the tag, and finds no variant behind another tag', () => {
@@ -116,63 +160,109 @@ describe('isMasterPlaylist and firstVariantUri', () => {
 })
 
 describe('resolvePlaylistKey', () => {
-  const master = 'videos/DS1/01UPLOAD/master.m3u8'
-
-  it('resolves a relative address beside the master', () => {
-    expect(resolvePlaylistKey(master, 'stream_0/playlist.m3u8')).toBe('videos/DS1/01UPLOAD/stream_0/playlist.m3u8')
-    expect(resolvePlaylistKey(master, './stream_0/playlist.m3u8')).toBe('videos/DS1/01UPLOAD/stream_0/playlist.m3u8')
-    expect(resolvePlaylistKey(master, '../shared/p.m3u8')).toBe('videos/DS1/shared/p.m3u8')
-    expect(resolvePlaylistKey(master, 'my%20stream/p.m3u8')).toBe('videos/DS1/01UPLOAD/my stream/p.m3u8')
+  it('resolves a plain path below the master', () => {
+    expect(resolvePlaylistKey(MASTER_KEY, 'stream_0/playlist.m3u8')).toBe(VARIANT_KEY)
+    expect(resolvePlaylistKey(MASTER_KEY, './stream_0/playlist.m3u8')).toBe(VARIANT_KEY)
+    expect(resolvePlaylistKey(MASTER_KEY, 'my%20stream/p.m3u8')).toBe('videos/DS1/01UPLOAD/my stream/p.m3u8')
+    expect(resolvePlaylistKey('master.m3u8', 'stream_0/playlist.m3u8')).toBe('stream_0/playlist.m3u8')
   })
 
-  it('refuses what the bucket cannot hold under that key', () => {
+  it('refuses anything outside the master’s own folder, or not a key at all', () => {
     for (const uri of [
       '',
+      '.',
+      './',
       '/videos/DS1/p.m3u8',
       'https://cdn.example.com/p.m3u8',
       'data:application/x-mpegurl,abc',
       'p.m3u8?token=1',
       'p.m3u8#t=1',
       '%E0%A4%A.m3u8',
-      '../../../../p.m3u8',
+      '../shared/p.m3u8',
+      'stream_0/../../DS2/p.m3u8',
+      '%2e%2e/DS2/p.m3u8',
     ]) {
-      expect(resolvePlaylistKey(master, uri), uri).toBeNull()
+      expect(resolvePlaylistKey(MASTER_KEY, uri), uri).toBeNull()
     }
   })
 })
 
 describe('readHlsDuration', () => {
-  const masterKey = 'videos/DS1/01UPLOAD/master.m3u8'
-  const variantKey = 'videos/DS1/01UPLOAD/stream_0/playlist.m3u8'
-
-  it('reads the master, then its first variant', async () => {
+  it('reads the master and its conventional first variant together', async () => {
     const reads: string[] = []
-    expect(await readHlsDuration(bucket({ [masterKey]: MASTER, [variantKey]: VARIANT }, reads), masterKey)).toBe(15.967)
-    expect(reads).toEqual([masterKey, variantKey])
+    const r = await readHlsDuration(bucket({ [MASTER_KEY]: MASTER, [VARIANT_KEY]: VARIANT }, reads), MASTER_KEY, { memo: memo() })
+    expect(r).toEqual({ seconds: 15.966667, settled: true })
+    expect(reads.sort()).toEqual([MASTER_KEY, VARIANT_KEY].sort())
+  })
+
+  it('starts both reads before either answers', async () => {
+    const started: string[] = []
+    const gated: PlaylistBucket = {
+      get(key) {
+        started.push(key)
+        // Neither read answers until both have been asked for.
+        return new Promise(resolve => {
+          const check = () => (started.length === 2 ? resolve(answer(key)) : setTimeout(check, 1))
+          check()
+        })
+      },
+    }
+    function answer(key: string) {
+      const text = key === MASTER_KEY ? FFMPEG_MASTER : FFMPEG_VARIANT
+      return { size: text.length, text: async () => text }
+    }
+    const r = await readHlsDuration(gated, MASTER_KEY, { memo: memo(), budgetMs: 1000 })
+    expect(r).toEqual({ seconds: 6.2, settled: true })
+  })
+
+  it('reads the variant the master names when it is not the conventional one', async () => {
+    const reads: string[] = []
+    const master = MASTER.replace('stream_0/playlist.m3u8', 'hi/index.m3u8')
+    const objects = { [MASTER_KEY]: master, 'videos/DS1/01UPLOAD/hi/index.m3u8': FFMPEG_VARIANT, [VARIANT_KEY]: VARIANT }
+    const r = await readHlsDuration(bucket(objects, reads), MASTER_KEY, { memo: memo() })
+    expect(r.seconds).toBe(6.2)
+    expect(reads).toContain('videos/DS1/01UPLOAD/hi/index.m3u8')
   })
 
   it('reads a media playlist named directly, in one read', async () => {
     const reads: string[] = []
-    expect(await readHlsDuration(bucket({ [variantKey]: FFMPEG_VARIANT }, reads), variantKey)).toBe(6.2)
-    expect(reads).toEqual([variantKey])
+    const r = await readHlsDuration(bucket({ [VARIANT_KEY]: FFMPEG_VARIANT }, reads), VARIANT_KEY, { memo: memo() })
+    expect(r).toEqual({ seconds: 6.2, settled: true })
+    expect(reads).toEqual([VARIANT_KEY])
   })
 
-  it('is 0 with no binding, or a master or variant that is not there', async () => {
-    expect(await readHlsDuration(undefined, masterKey)).toBe(0)
-    expect(await readHlsDuration(bucket({}), masterKey)).toBe(0)
-    expect(await readHlsDuration(bucket({ [masterKey]: MASTER }), masterKey)).toBe(0)
+  it('is a settled 0 with no binding, or a master or variant that is not there', async () => {
+    expect(await readHlsDuration(undefined, MASTER_KEY, { memo: memo() })).toEqual({ seconds: 0, settled: true })
+    expect(await readHlsDuration(bucket({}), MASTER_KEY, { memo: memo() })).toEqual({ seconds: 0, settled: true })
+    expect(await readHlsDuration(bucket({ [MASTER_KEY]: MASTER }), MASTER_KEY, { memo: memo() })).toEqual({
+      seconds: 0,
+      settled: true,
+    })
   })
 
-  it('is 0 for a variant that cannot state its length', async () => {
+  it('is a settled 0 for a variant that cannot state its length', async () => {
     const live = VARIANT.replace('#EXT-X-ENDLIST', '')
-    expect(await readHlsDuration(bucket({ [masterKey]: MASTER, [variantKey]: live }), masterKey)).toBe(0)
+    const r = await readHlsDuration(bucket({ [MASTER_KEY]: MASTER, [VARIANT_KEY]: live }), MASTER_KEY, { memo: memo() })
+    expect(r).toEqual({ seconds: 0, settled: true })
   })
 
-  it('is 0, and reads no further, for a variant address outside the bucket', async () => {
+  it('is 0, and reads nothing the master didn’t name, for a variant outside its folder', async () => {
     const reads: string[] = []
     const master = MASTER.replace('stream_0/playlist.m3u8', 'https://cdn.example.com/p.m3u8')
-    expect(await readHlsDuration(bucket({ [masterKey]: master }, reads), masterKey)).toBe(0)
-    expect(reads).toEqual([masterKey])
+    const r = await readHlsDuration(bucket({ [MASTER_KEY]: master }, reads), MASTER_KEY, { memo: memo() })
+    expect(r.seconds).toBe(0)
+    expect(reads.filter(k => k !== VARIANT_KEY)).toEqual([MASTER_KEY])
+  })
+
+  it('reads a playlist of exactly the size limit, and not one byte over', async () => {
+    const sized = (size: number): PlaylistBucket => ({
+      async get(key) {
+        const text = key === VARIANT_KEY ? FFMPEG_VARIANT : MASTER
+        return { size: key === VARIANT_KEY ? size : text.length, text: async () => text }
+      },
+    })
+    expect((await readHlsDuration(sized(MAX_PLAYLIST_BYTES), MASTER_KEY, { memo: memo() })).seconds).toBe(6.2)
+    expect((await readHlsDuration(sized(MAX_PLAYLIST_BYTES + 1), MASTER_KEY, { memo: memo() })).seconds).toBe(0)
   })
 
   it('does not read a playlist over the size limit, and frees its body', async () => {
@@ -192,16 +282,110 @@ describe('readHlsDuration', () => {
         }
       },
     }
-    expect(await readHlsDuration(oversized, masterKey)).toBe(0)
+    expect(await readHlsDuration(oversized, VARIANT_KEY, { memo: memo() })).toEqual({ seconds: 0, settled: true })
     expect(cancelled).toBe(true)
   })
 
-  it('is 0, never a throw, when the bucket fails', async () => {
+  it('is an unsettled 0, never a throw, when the bucket fails', async () => {
     const failing: PlaylistBucket = {
       async get() {
         throw new Error('R2 unavailable')
       },
     }
-    await expect(readHlsDuration(failing, masterKey)).resolves.toBe(0)
+    await expect(readHlsDuration(failing, MASTER_KEY, { memo: memo() })).resolves.toEqual({ seconds: 0, settled: false })
+  })
+
+  it('is unsettled when only the conventional variant’s read fails, once the master names it', async () => {
+    const flaky: PlaylistBucket = {
+      async get(key) {
+        if (key === VARIANT_KEY) throw new Error('R2 unavailable')
+        return { size: MASTER.length, text: async () => MASTER }
+      },
+    }
+    expect(await readHlsDuration(flaky, MASTER_KEY, { memo: memo() })).toEqual({ seconds: 0, settled: false })
+  })
+
+  it('ignores a failed guess the master does not name', async () => {
+    const master = MASTER.replace('stream_0/playlist.m3u8', 'hi/index.m3u8')
+    const flaky: PlaylistBucket = {
+      async get(key) {
+        if (key === VARIANT_KEY) throw new Error('R2 unavailable')
+        const text = key === MASTER_KEY ? master : FFMPEG_VARIANT
+        return { size: text.length, text: async () => text }
+      },
+    }
+    expect(await readHlsDuration(flaky, MASTER_KEY, { memo: memo() })).toEqual({ seconds: 6.2, settled: true })
+  })
+
+  it('gives up at the time limit with an unsettled 0, and remembers the reading when it lands', async () => {
+    vi.useFakeTimers()
+    try {
+      let release: () => void = () => {}
+      const gate = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const slow: PlaylistBucket = {
+        async get(key) {
+          await gate
+          const text = key === MASTER_KEY ? MASTER : VARIANT
+          return { size: text.length, text: async () => text }
+        },
+      }
+      const m = memo()
+      const pending = readHlsDuration(slow, MASTER_KEY, { memo: m, budgetMs: 500 })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await pending).toEqual({ seconds: 0, settled: false })
+      expect(m.get(MASTER_KEY)).toBeUndefined()
+
+      release()
+      await vi.runAllTimersAsync()
+      expect(m.get(MASTER_KEY)?.reading).toEqual({ seconds: 15.966667, settled: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('remembers a settled reading for the memo’s lifetime, and reads again after', async () => {
+    const reads: string[] = []
+    const b = bucket({ [MASTER_KEY]: MASTER, [VARIANT_KEY]: VARIANT }, reads)
+    const m = memo()
+    let now = 1_000_000
+    const nowMs = () => now
+    await readHlsDuration(b, MASTER_KEY, { memo: m, nowMs })
+    const afterFirst = reads.length
+    now += MEMO_TTL_MS - 1
+    expect((await readHlsDuration(b, MASTER_KEY, { memo: m, nowMs })).seconds).toBe(15.966667)
+    expect(reads.length).toBe(afterFirst)
+    now += 1
+    await readHlsDuration(b, MASTER_KEY, { memo: m, nowMs })
+    expect(reads.length).toBe(afterFirst * 2)
+  })
+
+  it('does not remember an unsettled reading', async () => {
+    let fail = true
+    const sometimes: PlaylistBucket = {
+      async get(key) {
+        if (fail) throw new Error('R2 unavailable')
+        const text = key === MASTER_KEY ? MASTER : VARIANT
+        return { size: text.length, text: async () => text }
+      },
+    }
+    const m = memo()
+    expect((await readHlsDuration(sometimes, MASTER_KEY, { memo: m })).settled).toBe(false)
+    fail = false
+    expect(await readHlsDuration(sometimes, MASTER_KEY, { memo: m })).toEqual({ seconds: 15.966667, settled: true })
+  })
+
+  it('forgets the oldest reading past its size', async () => {
+    const m = memo()
+    const b = bucket(
+      Object.fromEntries(
+        Array.from({ length: MEMO_MAX_ENTRIES + 1 }, (_, i) => [`v/${i}/stream_0/playlist.m3u8`, FFMPEG_VARIANT]),
+      ),
+    )
+    for (let i = 0; i <= MEMO_MAX_ENTRIES; i++) await readHlsDuration(b, `v/${i}/stream_0/playlist.m3u8`, { memo: m })
+    expect(m.size).toBe(MEMO_MAX_ENTRIES)
+    expect(m.get('v/0/stream_0/playlist.m3u8')).toBeUndefined()
+    expect(m.get(`v/${MEMO_MAX_ENTRIES}/stream_0/playlist.m3u8`)).toBeDefined()
   })
 })

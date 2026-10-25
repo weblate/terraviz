@@ -439,10 +439,45 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     const body = await readJson<{ duration: number; hls: string }>(res)
     expect(body.duration).toBe(10.5)
     expect(body.hls).toBe('https://video.example.com/videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8')
-    expect(reads).toEqual([
+    // The master and its conventional first variant, read together.
+    expect([...reads].sort()).toEqual([
       'videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8',
       'videos/DS000AAAAAAAAAAAAAAAAAAAAA/stream_0/playlist.m3u8',
     ])
+    // A settled reading keeps the endpoint's usual caching.
+    expect(res.headers.get('cache-control')).toContain('max-age=')
+  })
+
+  it('still answers 200 with duration 0 when R2 fails, and is not cached', async () => {
+    const sqlite = seedFixtures({ count: 1 })
+    sqlite
+      .prepare(
+        // A key no other test reads, since settled readings are
+        // remembered per isolate.
+        `UPDATE datasets SET
+            data_ref = 'r2:videos/DS000AAAAAAAAAAAAAAAAAAAAA/01FAILING/master.m3u8',
+            format = 'video/mp4'
+         WHERE slug = 'dataset-0'`,
+      )
+      .run()
+    const CATALOG_R2 = {
+      async get() {
+        throw new Error('R2 unavailable')
+      },
+    } as unknown as R2Bucket
+    const env = {
+      CATALOG_DB: asD1(sqlite),
+      CATALOG_KV: makeKV(),
+      R2_PUBLIC_BASE: 'https://video.example.com',
+      CATALOG_R2,
+    }
+    const ctx = makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } })
+    const res = await onRequestGet(ctx)
+    expect(res.status).toBe(200)
+    const body = await readJson<{ duration: number; hls: string }>(res)
+    expect(body.duration).toBe(0)
+    expect(body.hls).toContain('01FAILING/master.m3u8')
+    expect(res.headers.get('cache-control')).toBe('no-store')
   })
 
   it('falls back to single-file MP4 for r2: video data_refs that do not end in .m3u8', async () => {

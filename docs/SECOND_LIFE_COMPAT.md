@@ -807,18 +807,22 @@ The work, smallest first:
    - **List presenters by username, not display name.** A display name
      can be changed, and two avatars can share one, so a visitor could
      take a presenter's display name and get control.
-   - **The date needs the clip's length, and the wire doesn't always
+   - **The date needs the clip's length, and the wire didn't always
      carry it.** The record has a start and an end time, but the
-     manifest reports a duration of 0 for videos the node hosts itself.
-     Without the length a script can't turn a position into a date.
-     Phase 2 does both of these:
-     - add a duration to the manifest, an additive v1 change for the
-       Federation reviewer. *Done for `r2:` HLS bundles, which is what
-       the node hosts itself:* the manifest now reads the length from
-       the bundle's own playlists (`functions/api/v1/_lib/hls-duration.ts`).
+     manifest reported a duration of 0 for videos the node hosts
+     itself. Without the length a script can't turn a position into a
+     date. Phase 2 does both of these:
+     - fill in the manifest's `duration`. The Federation reviewer
+       classed it as a behaviour change, since the field already
+       existed, and approved it. *Done for `r2:` HLS bundles, which is
+       what the node hosts itself:* the manifest now reads the length
+       from the bundle's own playlists
+       (`functions/api/v1/_lib/hls-duration.ts`), and 0 still means
+       unknown (`CATALOG_BACKEND_PLAN.md` beside the manifest's shape).
        Hurricane Season 2024 reads 183 s, the same on all three
        renditions. `vimeo:` already carried Vimeo's figure. `stream:`
-       and single files still report 0, which means unknown;
+       and single files still report 0, and any reading can be 0 for
+       a moment when the bucket is slow;
      - show the dataset's date range when the exact date can't be
        worked out, which covers those.
    - **The slow-link behaviour is page work, not the controller's.** It
@@ -1366,7 +1370,9 @@ yet.
     duration, used both where the target wraps (`clockTargetS`) and
     where the error is measured round the loop (`loopView`). The
     manifest now carries that number for the node's own bundles (item
-    4 above), so the page can read it alongside the stream.
+    4 above), to the microsecond, so the page can read it alongside the
+    stream. A page using it still needs the element's own length
+    whenever the manifest says 0.
   - **A copy that fell back to a video's single file stays on it.**
     Its stream is not tried again once the file has loaded, and the clock
     wraps on each element's own length. If the file and the stream differ
