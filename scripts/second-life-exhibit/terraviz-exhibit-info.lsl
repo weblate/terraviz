@@ -59,7 +59,7 @@ integer CHAN = 9;
 
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
-integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
+integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
 // How much of a record is read, in bytes. Every field this script uses
@@ -751,8 +751,18 @@ default
         else if (req == gManReq)
         {
             gManReq = NULL_KEY;
+            // A failure (a 503, or Second Life's 499 for a timeout) says
+            // nothing about whose manifest it is, so it is asked again on
+            // the schedule below rather than judged by the id check.
+            if (status != 200)
+            {
+                if (gManTries < 4) later(16 << (gManTries - 1));
+                hover();
+                pace();
+                return;
+            }
             integer i = llSubStringIndex(body, "\"duration\":");
-            if (status == 200 && i != -1) gDuration = (float)llGetSubString(body, i + 11, i + 40);
+            if (i != -1) gDuration = (float)llGetSubString(body, i + 11, i + 40);
             if (gDuration < 0.0) gDuration = 0.0;
             // Only a length the node read from its own bundle is exact. A
             // manifest it passes on from Vimeo carries Vimeo's own id, and

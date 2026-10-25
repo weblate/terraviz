@@ -103,7 +103,11 @@ is told a talk is starting. Until it ends, only presenters can change
 the globe, and the floating text says a talk is on. It ends when a
 presenter chooses End talk, or once no presenter has been at the globe
 for `talk minutes`, so a presenter who logs off doesn't lock it. The
-owner counts as a presenter, and can end a talk from chat.
+owner counts as a presenter, and can end a talk from chat. A dataset a
+visitor chose just before the talk started, which the globe was still
+checking with the node, is set aside and they're told so, rather than
+landing on the talk. So is one chosen while somebody else paused or
+moved the clip on the globe.
 
 **The live Earth comes back** once nobody has been within `radius` of
 the globe for `idle minutes`, turned back to the owner's
@@ -118,7 +122,8 @@ about the globe's poles, in the page's address. A tilt tips the sphere
 itself, which the region shows every viewer at the same angle, so the
 poles stop being straight up. A tilt ends any spin, and the owner's
 `/9 spin` waits until the globe is upright; the idle return brings the
-owner's spin back.
+owner's spin back, also when a visitor has already stood the globe
+upright again.
 
 The tilt is a stopgap. The plan is to turn the picture instead, so the
 sphere stays upright and a pole comes to the front with zoom alongside
@@ -166,7 +171,9 @@ seconds, which isn't quite the stream's, and a date worked out from it
 would drift from the picture with every loop. Only the node knows a
 dataset is on Vimeo; the script trusts a length only from a manifest
 carrying the dataset's own id, which the node writes into every
-manifest it builds and Vimeo's don't carry.
+manifest it builds and Vimeo's don't carry. A manifest the node fails
+to send, an error or a timeout, is asked for again, up to four tries in
+all, as is a length the node reports as 0.
 
 The credit is the record's attribution, or else its rights holder, or
 else its organization, with the licence after it. A record that names

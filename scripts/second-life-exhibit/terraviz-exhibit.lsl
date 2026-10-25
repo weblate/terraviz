@@ -99,6 +99,7 @@ integer UPRIGHT_ON_START = TRUE; // FALSE for a mesh globe with its own mapping
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
 integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
+integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
 
 // Shared media is capped at 2048 pixels a side (indra/llprimitive/
 // llmediaentry.h); a script asking for more gets a bounds error.
@@ -156,6 +157,7 @@ key     gReq;           // the dataset check in flight, if any
 string  gReqId;         // the id it checks
 string  gReqTitle;      // a name to fall back on for its title
 key     gReqWho;        // who asked: the owner, a visitor, or NULL_KEY
+integer gTalk;          // a talk is on, as the visitors script last said
 
 help()
 {
@@ -358,13 +360,16 @@ restore(list s)
 
 // Tells the other two scripts what the globe shows. The info script times
 // the date from the clip's anchor, so it gets the anchor itself rather
-// than a position that would be stale on arrival.
+// than a position that would be stale on arrival. "turned" is anything
+// the idle return puts back: the owner's rotation, an upright sphere, and
+// the owner's spin, which a tilt ends and Upright again doesn't restart.
 broadcast()
 {
     llMessageLinked(LINK_THIS, MSG_STATE, llList2Json(JSON_OBJECT, [
         "dataset", gDataset, "title", gTitle,
         "pos", gPos, "atS", gAtS, "atMs", gAtMs, "rate", gRate, "paused", gPaused,
-        "telemetry", gTelemetry, "turned", gRotation != gHome || gTilted, "node", NODE]), NULL_KEY);
+        "telemetry", gTelemetry, "turned", gRotation != gHome || gTilted || gSpin != gOwnerSpin,
+        "node", NODE]), NULL_KEY);
 }
 
 // Puts the current state on the face, every setting every time: a face
@@ -557,6 +562,19 @@ integer check(key who, string id, string described)
     return TRUE;
 }
 
+// A choice still waiting on the node, set aside because the globe has
+// moved on since: a talk started, which takes the globe from whoever
+// held it, or someone else changed it. Landing late, the choice would
+// undo what came after it, and for someone who may no longer act.
+drop(string why)
+{
+    if (gReq == NULL_KEY) return;
+    key who = gReqWho;
+    gReq = NULL_KEY;
+    gReqWho = NULL_KEY;
+    if (who != NULL_KEY) tell(who, "Your choice of " + shorten(gReqTitle) + " was set aside: " + why);
+}
+
 show(key who, string id, string title)
 {
     list saved = snapshot();
@@ -653,6 +671,9 @@ act(key who, integer owner, string msg)
             tell(who, "The live Earth follows the real clock, so there is nothing to " + cmd + ". Show a dataset first.");
             return;
         }
+        // Someone else acting on the clip on the globe comes after a
+        // choice still waiting on the node, and the later of the two wins.
+        if (who != gReqWho) drop("someone else changed the globe first.");
     }
     if (cmd == "pause")
     {
@@ -933,6 +954,16 @@ default
     link_message(integer sender, integer n, string str, key id)
     {
         if (n == MSG_HELLO) { broadcast(); return; }
+        if (n == MSG_TALK)
+        {
+            // Only the start of a talk, not the visitors script saying it
+            // again after a reset. The presenter who started it keeps a
+            // choice of their own.
+            integer talk = str == "1";
+            if (talk && !gTalk && id != gReqWho) drop("a talk started before the node answered.");
+            gTalk = talk;
+            return;
+        }
         if (n != MSG_CONTROL) return;
         // A visitor's own request, or one the scripts made (NULL_KEY). The
         // owner using the menu is still the owner.

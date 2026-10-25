@@ -157,8 +157,10 @@ describe('second-life exhibit scripts', () => {
     // The owner's spin, ended by a visitor's tilt, comes back with the rest.
     expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(/if \(gOwnerSpin != 0\.0 && gSpin == 0\.0 && !gTilted\)/)
     // A tilted sphere counts as turned, so the idle return comes for it,
-    // and a spin, about the region's vertical, waits until it is level.
-    expect(body(globe, 'broadcast()')).toContain('"turned", gRotation != gHome || gTilted,')
+    // and so does an owner's spin a tilt ended, which Upright again doesn't
+    // restart (found in review); a spin, about the region's vertical, waits
+    // until it is level.
+    expect(body(globe, 'broadcast()')).toContain('"turned", gRotation != gHome || gTilted || gSpin != gOwnerSpin,')
     expect(body(globe, 'act(key who, integer owner, string msg)')).toContain('if (gTilted) { tell(who, "Not while the globe is tilted')
     const turn = body(visitors, 'turnMenu(key who)')
     expect(turn).toContain('[BTN_NORTH, BTN_SOUTH, BTN_LEVEL, BTN_WEST, BTN_EAST, BTN_MENU], gDlgTurn);')
@@ -167,11 +169,38 @@ describe('second-life exhibit scripts', () => {
     expect(visitors).toContain('else if (msg == BTN_LEVEL) ask(who, "level");')
   })
 
+  it('set aside a dataset choice the globe has moved on from', () => {
+    // A choice waits on the node. A talk starting in that time takes the
+    // globe from whoever chose, so their choice must not land on the talk;
+    // nor may it undo someone else acting on the clip meanwhile (both
+    // found in review).
+    const drop = body(globe, 'drop(string why)')
+    expect(drop).toContain('gReq = NULL_KEY;')
+    expect(drop).toContain('gReqWho = NULL_KEY;')
+    // The presenter who starts a talk is named with it, and keeps a choice
+    // of their own; a talk said again after a reset is not a start.
+    for (const call of all(visitors, /\bstartTalk\(([^)]*)\);/g)) expect(call).toBe('who')
+    expect(body(visitors, 'startTalk(key who)')).toContain('llMessageLinked(LINK_THIS, MSG_TALK, "1", who);')
+    expect(globe).toContain('if (talk && !gTalk && id != gReqWho) drop(')
+    const act = body(globe, 'act(key who, integer owner, string msg)')
+    const playback = act.slice(act.indexOf('if (cmd == "pause" || cmd == "play"'), act.indexOf('if (cmd == "pause")\n'))
+    expect(playback).toContain('if (who != gReqWho) drop(')
+    // Past the live Earth's refusal, which changes nothing.
+    expect(playback.indexOf('if (who != gReqWho) drop(')).toBeGreaterThan(playback.indexOf('return;'))
+  })
+
   it("trust a clip's length only from a manifest the node built itself", () => {
     // A Vimeo manifest carries Vimeo's own id and whole-second length,
     // which the page's loop drifts from; the node writes the dataset's id
     // into every manifest it builds (functions/api/v1/datasets/[id]/manifest.ts).
     expect(info).toContain('if (mid != gDataset || llSubStringIndex(llToLower(body), "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }')
+    // A failed request carries no id, so it is retried before that check
+    // can read it as someone else's manifest and give up (found in review).
+    const answered = info.slice(info.indexOf('else if (req == gManReq)'))
+    const failed = answered.indexOf('if (status != 200)')
+    expect(failed).toBeGreaterThan(-1)
+    expect(failed).toBeLessThan(answered.indexOf('mid != gDataset'))
+    expect(answered.slice(failed, answered.indexOf('mid != gDataset'))).toContain('if (gManTries < 4) later(16 << (gManTries - 1));')
     const manifest = read('../../functions/api/v1/datasets/[id]/manifest.ts')
     expect(manifest.match(/^\s+id: row\.id,$/gm)?.length).toBeGreaterThanOrEqual(2)
     expect(manifest).toMatch(/externalVideoManifest\(row\.id,/)

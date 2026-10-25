@@ -67,7 +67,7 @@ integer CHAN = 9;
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
 integer MSG_CONTROL = 271002;  // visitors to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
-integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
+integer MSG_TALK    = 271004;  // visitors to info and globe: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
 // The settings, and what the "settings" notecard may set them to.
@@ -350,12 +350,14 @@ datasetsMenu(key who, integer page)
     menu(who, text, b, gDlgSets);
 }
 
-startTalk()
+// The presenter who started it goes with the message, so the globe keeps
+// a dataset choice of theirs still waiting on the node.
+startTalk(key who)
 {
     gTalk = TRUE;
     gTalkSeen = unix();
     release();
-    llMessageLinked(LINK_THIS, MSG_TALK, "1", NULL_KEY);
+    llMessageLinked(LINK_THIS, MSG_TALK, "1", who);
     llSay(0, "A talk is starting at this globe. Until it ends, its presenters change what it shows.");
 }
 
@@ -585,7 +587,7 @@ default
                 string what = llList2String(w, 1);
                 if (what == "end" && gTalk) endTalk(" at the owner's request");
                 else if (what == "end") llOwnerSay("[exhibit] No talk is on.");
-                else if (what == "start" && !gTalk) startTalk();
+                else if (what == "start" && !gTalk) startTalk(who);
                 else if (gTalk) llOwnerSay("[exhibit] A talk is in progress. /" + (string)CHAN + " talk end ends it.");
                 else llOwnerSay("[exhibit] No talk. " + (string)gNear + " avatars at the globe.");
             }
@@ -636,7 +638,7 @@ default
 
         if (msg == BTN_CLOSE) return;
         if (msg == BTN_ABOUT) { llMessageLinked(LINK_THIS, MSG_ABOUT, "", who); return; }
-        if (msg == BTN_START_TALK && isPresenter(who)) { if (!gTalk) startTalk(); return; }
+        if (msg == BTN_START_TALK && isPresenter(who)) { if (!gTalk) startTalk(who); return; }
         if (msg == BTN_END_TALK && isPresenter(who)) { endTalk(""); return; }
 
         // Everything below changes the globe, so the menu's offer is
