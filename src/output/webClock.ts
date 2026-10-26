@@ -53,7 +53,7 @@
  * element's `duration`, which holds that number only until the stream has
  * buffered to its end and then becomes the latest end of every track:
  * measured in Chromium, 21 to 40 ms past it on the node's bundles
- * carrying AAC, and a microsecond under it on Vimeo's (found in review,
+ * carrying AAC, and within 6 µs of it on Vimeo's (found in review,
  * October 2026). Wrapped on `duration`, a copy changed its period once
  * its last segment arrived, copies on different engines looped on
  * different periods and drifted apart by the difference every loop since
@@ -128,7 +128,7 @@ function usable(seconds: number | null | undefined): seconds is number {
 
 /** The period a clip loops on: the one every copy agrees on, when the
  *  stream states it, or else the element's own length. */
-export function loopPeriodS(video: SyncTarget, periodS: number | null | undefined): number {
+function loopPeriodS(video: SyncTarget, periodS: number | null | undefined): number {
   return usable(periodS) ? periodS : video.duration
 }
 

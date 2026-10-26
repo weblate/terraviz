@@ -864,7 +864,7 @@ The work, smallest first:
        the playlist's total** (`HLSService.playlistDurationS`, the
        maintainer's decision, 26 October 2026), which is the same for
        every copy whatever the tracks, and the card sends that sum.
-       That also closes "Each copy loops on its own idea of the clip's
+       That also closes "Each copy looped on its own idea of the clip's
        length" below. Second Life's browser is an older Chromium, which
        nobody has measured. `stream:` and single files still report 0, and any
        reading can be 0 for a moment when the bucket, the video proxy
@@ -1442,9 +1442,9 @@ yet.
   - **A lower rendition**, around 1024×512 at 1.5–2 Mbps, would suit
     1024-wide faces and slow links. Data-encoded datasets have one
     rendition by design, so they would always need buffering or stepping.
-- **Found in review and not yet done:**
-  - **Each copy looped on its own idea of the clip's length.** *Done
-    26 October 2026.* With hls.js, `duration` is the playlist's total
+- **Found in review and done since:**
+  - **Each copy looped on its own idea of the clip's length**, done
+    26 October 2026. With hls.js, `duration` is the playlist's total
     until the stream ends, then the furthest buffered end across
     tracks, so it could differ between copies, and on one copy before
     and after its last segment. Copies then wrapped on different
@@ -1459,6 +1459,7 @@ yet.
     (`loopView`), and the card sends the same sum. A copy playing HLS
     natively, with no hls.js to ask, still loops on its element's own
     length.
+- **Found in review and not yet done:**
   - **A copy that fell back to a video's single file stays on it.**
     Its stream is not tried again once the file has loaded, and that
     copy's clock wraps on the file's own length, since a file states no

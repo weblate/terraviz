@@ -474,7 +474,6 @@ describe('readHlsDuration', () => {
   })
 })
 
-
 // What Vimeo served for the real-time sea surface temperature in October
 // 2026, the signatures shortened: the player's address answers 302 with
 // the CDN's, whose master names its variants by relative paths with a
@@ -775,6 +774,21 @@ describe('readVimeoDuration', () => {
       resetHlsDurationsForTests()
       expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 12.1, settled: true })
     }
+    // A media playlist that can't state its length is refused, and says so.
+    resetHlsDurationsForTests()
+    const live = vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response(VIMEO_VARIANT.replace('#EXT-X-ENDLIST', '')) })
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(live) })).toEqual({ seconds: 0, settled: true })
+    expect(logged()).toMatch(/a media playlist whose length cannot be stated/)
+  })
+
+  it('names a refused host in a log line cut short, whatever its length', async () => {
+    const long = `https://${'a'.repeat(200_000)}.example/v.m3u8`
+    const master = VIMEO_MASTER.replace(VIMEO_MASTER.split('\n')[3], long)
+    const fetchImpl = vimeo(vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response(master) }))
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
+    const text = logged()
+    expect(text).toMatch(/https:\/\/a{64} is not one of Vimeo's hosts/)
+    expect(text.length).toBeLessThan(1000)
   })
 
   it('is a settled 0 for a stream with no address', async () => {

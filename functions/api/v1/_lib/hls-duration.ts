@@ -55,11 +55,11 @@
  *   remembered after the response has gone.
  *
  * **0 means unknown, and anything uncertain is unknown.** No binding, a
- * missing or oversized playlist, a variant
- * outside the master's own folder, a playlist with no `#EXT-X-ENDLIST`
- * (a live window, whose total is not the clip's), an `#EXTINF` that is
- * not a plain decimal or that no segment follows, a segment no `#EXTINF`
- * comes before, an R2 error or the time limit all give 0.
+ * missing or oversized playlist, a variant outside the master's own
+ * folder, a playlist with no `#EXT-X-ENDLIST` (a live window, whose
+ * total is not the clip's), an `#EXTINF` that is not a plain decimal or
+ * that no segment follows, a segment no `#EXTINF` comes before, an R2
+ * error or the time limit all give 0.
  * That is what the manifest reported before, so a reader is never worse
  * off than it was, and none of it costs the manifest itself. The last
  * two are reported as not `settled`, so the manifest is cached only
@@ -72,8 +72,8 @@
  * out from the first drifts from the picture with every loop. Nothing
  * here promises Vimeo's renditions agree, and a copy of the page loops on
  * whichever it loads first, so **every variant is read**, at once, and
- * they must all be one length to the microsecond. Because the addresses come from
- * outside, every one read must be HTTPS at the default port with no
+ * they must all be one length to the microsecond. Because the addresses
+ * come from outside, every one read must be HTTPS at the default port with no
  * credentials, on Vimeo's player or its CDN (`REMOTE_PLAYLIST_HOST`);
  * redirects are followed one hop at a time so each is checked before it
  * is asked; a body is counted as it arrives, so none is read past the
@@ -87,8 +87,8 @@
  * answers 200 with something that isn't a playlist, and the time limit
  * read as not `settled`; only the proxy's 404, a video that is gone, and
  * everything refused are a settled 0. Every one is logged with why, but
- * never with an address's path or query, which are signed, nor with any
- * of a playlist's own text.
+ * never with an address's path or query, which are signed, and with a
+ * host cut to 64 characters.
  *
  * **A failure is remembered briefly** (`UNSETTLED_TTL_MS`, on both
  * paths), so a source that is failing isn't asked again by every request
@@ -331,6 +331,12 @@ interface RemoteRead {
   fetches: number
 }
 
+/** A host as a log line names it: cut short, since an address read from
+ *  outside can name one of any length. Never its path or query. */
+function hostOf(url: URL): string {
+  return url.hostname.slice(0, 64)
+}
+
 async function discard(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => {})
 }
@@ -383,7 +389,7 @@ async function fetchPlaylist(read: RemoteRead, address: URL): Promise<{ text: st
   let url = address
   for (let hop = 0; ; hop++) {
     if (!allowedRemote(url)) {
-      read.refuse(`${url.protocol}//${url.hostname}${url.port ? ':' + url.port : ''} is not one of Vimeo's hosts, or names a port or credentials`)
+      read.refuse(`${url.protocol.slice(0, 16)}//${hostOf(url)}${url.port ? ':' + url.port : ''} is not one of Vimeo's hosts, or names a port or credentials`)
       return null
     }
     if (read.fetches >= MAX_REMOTE_FETCHES) {
@@ -396,13 +402,13 @@ async function fetchPlaylist(read: RemoteRead, address: URL): Promise<{ text: st
       await discard(res)
       const location = res.headers.get('location')
       if (location === null || hop >= MAX_REMOTE_REDIRECTS) {
-        read.refuse(location === null ? `${url.hostname} redirected nowhere` : `more than ${MAX_REMOTE_REDIRECTS} redirects`)
+        read.refuse(location === null ? `${hostOf(url)} redirected nowhere` : `more than ${MAX_REMOTE_REDIRECTS} redirects`)
         return null
       }
       try {
         url = new URL(location, url)
       } catch {
-        read.refuse(`${url.hostname} redirected to an address that is not one`)
+        read.refuse(`${hostOf(url)} redirected to an address that is not one`)
         return null
       }
       continue
@@ -412,14 +418,14 @@ async function fetchPlaylist(read: RemoteRead, address: URL): Promise<{ text: st
     // likely a CDN's miss, or a signature gone stale, than gone for good.
     if (res.status !== 200) {
       await discard(res)
-      throw new RemoteFailure(`${url.hostname} answered ${res.status}`)
+      throw new RemoteFailure(`${hostOf(url)} answered ${res.status}`)
     }
     const text = await boundedText(res)
     if (text === null) {
-      read.refuse(`a playlist from ${url.hostname} over ${MAX_PLAYLIST_BYTES} bytes`)
+      read.refuse(`a playlist from ${hostOf(url)} over ${MAX_PLAYLIST_BYTES} bytes`)
       return null
     }
-    if (playlistLines(text) === null) throw new RemoteFailure(`${url.hostname} answered 200 with something that isn't a playlist`)
+    if (playlistLines(text) === null) throw new RemoteFailure(`${hostOf(url)} answered 200 with something that isn't a playlist`)
     return { text, url }
   }
 }
@@ -553,10 +559,9 @@ function remember(memo: HlsDurationMemo, key: string, reading: HlsDurationReadin
 }
 
 /**
- * The length in seconds of the HLS asset whose master playlist is `key`
- * in `bucket`, 0 when it cannot be stated (a media playlist named
- * directly always is). Never throws, and never takes much longer than
- * `budgetMs`.
+ * The length in seconds of the HLS asset whose master (or media)
+ * playlist is `key` in `bucket`, 0 when it cannot be stated. Never
+ * throws, and never takes much longer than `budgetMs`.
  */
 export async function readHlsDuration(
   bucket: PlaylistBucket | undefined,

@@ -262,6 +262,41 @@ describe('HLSService.playlistDurationS', () => {
     expect(svc.playlistDurationS()).toBe(143.76667199999997)
   })
 
+  it('passes over a level that states no length, so a later one can', async () => {
+    const svc = new HLSService()
+    const p = svc.loadStream('https://example.com/s.m3u8', document.createElement('video'))
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await p
+    hlsMock.fire('hlsLevelLoaded', level(0))
+    hlsMock.fire('hlsLevelLoaded', level(Number.NaN))
+    expect(svc.playlistDurationS()).toBeNull()
+    hlsMock.fire('hlsLevelLoaded', level(12.1))
+    expect(svc.playlistDurationS()).toBe(12.1)
+  })
+
+  it('takes nothing from a stream it has since replaced', async () => {
+    const svc = new HLSService()
+    const video = document.createElement('video')
+    const first = svc.loadStream('https://example.com/a.m3u8', video)
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await first
+    const stale = hlsMock.handlers.get('hlsLevelLoaded')!
+    void svc.loadStream('https://example.com/b.m3u8', video)
+    stale('hlsLevelLoaded', level(99))
+    expect(svc.playlistDurationS()).toBeNull()
+  })
+
+  it('is null on the single-file path, whose length only the element knows', async () => {
+    const svc = new HLSService()
+    const video = document.createElement('video')
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await p
+    hlsMock.fire('hlsLevelLoaded', level(12.1))
+    void svc.loadDirect('https://example.com/s.mp4', video).catch(() => {})
+    expect(svc.playlistDurationS()).toBeNull()
+  })
+
   it('is null for a live playlist, whose total is a window', async () => {
     const svc = new HLSService()
     const p = svc.loadStream('https://example.com/s.m3u8', document.createElement('video'))

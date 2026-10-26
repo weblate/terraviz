@@ -762,8 +762,10 @@ export class HLSService {
    * paths, where only the element knows.
    *
    * Every copy of a stream reads the same number, whichever rendition it
-   * plays, since TerraViz's encoders and Vimeo write the same `#EXTINF`s
-   * on every one. The element's `duration` does not hold still: it is
+   * loads first, wherever the renditions agree: TerraViz's encoders write
+   * the same `#EXTINF`s on every one, and the exhibit's card checks that
+   * Vimeo's do (it sends no length where they don't). Nothing here
+   * compares them. The element's `duration` does not hold still: it is
    * this number until the stream has buffered to its end, and then the
    * latest end of every track, which measured 21 to 40 ms past it on the
    * node's bundles carrying AAC. A web output therefore loops on this

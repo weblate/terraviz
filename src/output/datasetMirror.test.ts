@@ -457,6 +457,9 @@ describe('createDefaultMediaLoader', () => {
           // handed over the moment someone does.
           if (opts.heldFatal) handler?.({ type: 'networkError', details: 'fragLoadError' })
         }
+        playlistDurationS(): number | null {
+          return 12.1
+        }
         destroy(): void {}
       },
     }))
@@ -484,6 +487,17 @@ describe('createDefaultMediaLoader', () => {
     } as never)
 
     expect(counts.played()).toBe(1)
+  })
+
+  it('hands on the length the stream\'s playlist states, which a web output loops on', async () => {
+    mockHls()
+    const { createDefaultMediaLoader } = await import('./datasetMirror')
+    const source = await createDefaultMediaLoader().load({
+      kind: 'video',
+      url: 'https://cdn.example/a.m3u8',
+      overlay: { datasetId: 'd', datasetTitle: 'D' },
+    } as never)
+    expect(source.loopS?.()).toBe(12.1)
   })
 
   // The playhead belongs to `outputSync`, which decides play/pause from

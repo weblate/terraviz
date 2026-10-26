@@ -183,7 +183,7 @@ the node reads from the stream's own playlists, its own HLS bundle's or
 a Vimeo stream's, such as Sea temperature's: Vimeo's API gives whole
 seconds, which isn't quite the stream's, and a date worked out from it
 would drift from the picture with every loop. Every visitor's copy of
-the page loops on that same length, whichever rendition it plays. A
+the page loops on that same length, read from the stream it plays. A
 video with no playlist to read, a single file, shows its range. When
 the node couldn't read
 the length in time, the card says when to ask again, and the info

@@ -183,6 +183,14 @@ describe('createWebClockSteer', () => {
       expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(0, 6), seeked: false })
     })
 
+    it('seeks a playing copy to the target on the period, not the element\'s length', () => {
+      // Wrapped on 16.04 the seek would land 20 ms short, half the gap.
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 7 })
+      expect(steer.steer(v, clock({ positionS: 10, atUnixS: AT }), LOADED_AT, LOADED_AT, 16).seeked).toBe(true)
+      expect(v.currentTime).toBeCloseTo(10, 3)
+    })
+
     it('seeks and holds a paused copy on the period', () => {
       const { steer } = harness()
       const v = video({ duration: 16.04, currentTime: 3, paused: true })
