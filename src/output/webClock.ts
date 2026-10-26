@@ -122,8 +122,9 @@ export const SEAM_LEAD_INITIAL_S = 0.1
  *  was a stall, or steering stopping (a hidden tab) while the element was
  *  frozen, not the restart, and is thrown away: leading by it would put
  *  the copy that far ahead. A shorter stop with the element frozen is
- *  timed as the turn, and costs at most one seam, since the lead is
- *  capped (`SEAM_LEAD_MAX_CLIP_S`) and the next turn is timed again. */
+ *  timed as the turn, and usually costs one seam: the lead is capped
+ *  (`SEAM_LEAD_MAX_CLIP_S`) and the next turn is timed again, unless that
+ *  reading is dropped too. */
 export const SEAM_LEAD_MAX_S = 0.5
 
 /** The furthest a turn leads into the clip, in the clip's own seconds,
@@ -131,11 +132,14 @@ export const SEAM_LEAD_MAX_S = 0.5
  *  a segment, at its start, so a turn landing x seconds in decodes from 0
  *  to x first: at 4x a landing 0.7 s in stood 184 ms and one 2.1 s in
  *  349, where the restart at 0 stood about 100, and since a longer stall
- *  led deeper the lead fed itself, freezing a copy for 22% of the time at
- *  4x and never settling at 12.8x (found in review, in Chromium on the
- *  real streams). A quarter second decodes in about 30 ms, and leaves
- *  rate 1 as it was, where the stall itself is 50 to 250 ms. What the
- *  lead does not cover is the trim's, inside the settle window.
+ *  led deeper the lead fed itself, freezing Ocean Circulation for 22% of
+ *  the time at 4x, against 11% before there was a lead (found in review,
+ *  in Chromium on the real streams). A quarter second decodes in about
+ *  30 ms, and binds at rate 1 only on a turn that stood longer than
+ *  250 ms, the top of the measured range. What the lead does not cover is
+ *  left to the law: trimmed inside the settle window, and not seeked while
+ *  the seek-cost floor, which the turn's own stall raises, stays above
+ *  it. At 12.8x on a 4.3 s loop nothing keeps sync, capped or not.
  *
  *  It must stay under `SETTLING_SEEK_THRESHOLD_S`, and a test holds it
  *  there. A turn lands ahead by its lead until the stall eats into it,
@@ -166,8 +170,9 @@ function usable(seconds: number | null | undefined): seconds is number {
   return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
 }
 
-/** The period a clip loops on: the one every copy agrees on, when the
- *  stream states it, or else the element's own length. */
+/** The period a clip loops on: the stream's playlist total, when it
+ *  states one (copies agree on it wherever the renditions do), or else
+ *  the element's own length. */
 function loopPeriodS(video: SyncTarget, periodS: number | null | undefined): number {
   return usable(periodS) ? periodS : video.duration
 }
@@ -291,8 +296,8 @@ export interface WebClockSteer {
    * Steer `video` toward the clock. Called every frame, like the
    * desktop steering it reuses. `nowMs` is wall-clock time and
    * `readAtMs` when this copy read the clock (see `clockTargetS`).
-   * `periodS` is the length every copy loops on, when the stream states
-   * one (`loopPeriodS`); without it the element's own length is used.
+   * `periodS` is the stream's playlist total, when it states one
+   * (`loopPeriodS`); without it the element's own length is used.
    */
   steer(video: SyncTarget | null, clock: WebClock, nowMs: number, readAtMs: number, periodS?: number | null): SyncOutcome
 }
@@ -373,10 +378,14 @@ export function createWebClockSteer(
           // Past the element's own end as well as the period's: an element
           // shorter than its stated period would otherwise land on its end,
           // stop there, and be turned again every frame (found in review).
-          // That holds the turn to one seek. A shortfall of more than a
-          // frame still costs seeks while the target is past the element's
-          // end, since the law seeks there and the engine stops it on its
-          // end; real streams fall short by microseconds (Vimeo's by 6 µs).
+          // That holds the turn to one seek. While the target is between
+          // the element's end and the period, a shortfall under about the
+          // law's seek threshold lands early and is trimmed; a longer one
+          // alternates the clip's first and last frames, the law seeking
+          // toward a target the engine stops at the element's end and this
+          // turning it back, until the target wraps (found in review, in
+          // simulation). Real streams fall short by microseconds (Vimeo's
+          // by 6 µs).
           const end = Math.min(d, video.duration) - END_AS_START_S
           const landingS = landing > end ? 0 : landing
           video.currentTime = landingS

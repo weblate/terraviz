@@ -369,8 +369,8 @@ describe('createWebClockSteer', () => {
       advance(2_000)
       v.currentTime = 0.05
       expect(steer.steer(v, clock({ positionS: 1.8, atUnixS: AT }), LOADED_AT, LOADED_AT, 16).seeked).toBe(true)
-      // Timed from the turn's landing, 2.1 s with 1.77 s played would read
-      // as a turn that stood still 330 ms, and lead the next seam by it.
+      // Timed from the turn's landing (0.12), 2.1 s with 1.78 s played would
+      // read as a turn that stood still 320 ms, and lead the next seam by it.
       advance(100)
       v.currentTime = 1.9
       steer.steer(v, clock({ positionS: 1.9, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
@@ -461,15 +461,17 @@ describe('createWebClockSteer', () => {
       ;(v as { seeking: boolean }).seeking = false
       // Served and not yet playing on: ahead, but inside what the law trims.
       expect(steer.steer(v, at(0.094), LOADED_AT, LOADED_AT, 16).seeked).toBe(false)
-      // Playing on 32 ms later, so it stood still for 32.
-      advance(32)
+      // Playing on 68 ms after it was served: 100 ms since the turn, 32 of
+      // them playing, so it stood still for 68. Timed until it was served,
+      // as if the frames after a seek moved at once, the turn reads 32.
+      advance(68)
       v.playbackRate = 2
       v.currentTime = landing + 0.064
-      steer.steer(v, at(0.158), LOADED_AT, LOADED_AT, 16)
+      steer.steer(v, at(0.23), LOADED_AT, LOADED_AT, 16)
 
       v.currentTime = 16.03
       steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
-      expect(v.currentTime).toBeCloseTo(0.03 + 0.032 * 2, 6)
+      expect(v.currentTime).toBeCloseTo(0.03 + 0.068 * 2, 6)
     })
 
     it('lands a turn that would fall within a hair of the period at the start', () => {

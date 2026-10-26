@@ -862,8 +862,10 @@ The work, smallest first:
        node's 119 bundles, 13 of them dated, 12 of those with a silent
        track. Rather than give those no length, **the page now loops on
        the playlist's total** (`HLSService.playlistDurationS`, the
-       maintainer's decision, 26 October 2026), which is the same for
-       every copy whatever the tracks, and the card sends that sum.
+       maintainer's decision, 26 October 2026), which is one number for
+       every copy whatever the tracks, wherever the renditions agree, and
+       the card sends that sum for the node's own bundles and the Vimeo
+       streams it has checked.
        That also closes "Each copy looped on its own idea of the clip's
        length" below. Second Life's browser is an older Chromium, which
        nobody has measured. `stream:` and single files still report 0, and any
@@ -1456,7 +1458,8 @@ yet.
     total, held from the first level hls.js loads
     (`HLSService.playlistDurationS`), both where the target wraps
     (`clockTargetS`) and where the error is measured round the loop
-    (`loopView`), and the card sends the same sum. A copy playing HLS
+    (`loopView`), and the card sends the same sum for the node's own
+    bundles and the Vimeo streams it has checked. A copy playing HLS
     natively, with no hls.js to ask, still loops on its element's own
     length.
   - **The loop's seam cost each copy a restart nobody timed**, done the
@@ -1485,8 +1488,12 @@ yet.
     the time with a median lag of 228 ms (11% and 365 ms before the lead,
     22% and 78 ms with it uncapped), so it trades a little of each; COVID
     from 18% to 5%; Vimeo 3 to 4% (6 to 10% uncapped) with a median lag
-    of 26 to 32 ms; rate 1 unchanged. Nothing keeps sync at 12.8x on a 4.3 s loop,
-    capped or not.
+    of 26 to 32 ms. At rate 1 the cap binds only on a turn that stands
+    longer than 250 ms; Drought at 1x read 12% frozen before and 8%
+    after, one run each, so whether it changes rate 1 is not settled.
+    Nothing keeps sync at 12.8x on a 4.3 s loop, capped or not, and the
+    grammar now says how close copies stay depends on the clip's length
+    and the rate.
 - **Found in review and not yet done:**
   - **A copy that fell back to a video's single file stays on it.**
     Its stream is not tried again once the file has loaded, and that

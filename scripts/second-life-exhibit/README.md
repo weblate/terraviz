@@ -295,8 +295,13 @@ the info script reads its card next, and if the node has no such
 dataset, or it is a tour or one the page can't show, it tells you, tells whoever chose it from the
 menu that it can't be shown, and puts the globe back on the live Earth,
 unless someone has chosen another since. (The globe script runs too close to its 64 KB to hold the
-node's reply; see Things that will trip you up.) The owner can always
-act, and doesn't take the hold. Besides those:
+node's reply; see Things that will trip you up.) `/9 rate` takes up to
+12.8, but on a short clip a high rate keeps visitors' copies apart:
+each pass round the clip restarts the video, and a clip of a few
+seconds at 12.8 restarts several times a second, so copies never
+settle ([the grammar's clock](../../docs/EMBED_URL_GRAMMAR.md) says
+why). The owner can always act, and doesn't take the hold. Besides
+those:
 
 | Command | What it does |
 |---|---|
