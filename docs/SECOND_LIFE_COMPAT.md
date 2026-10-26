@@ -1765,13 +1765,17 @@ driven by its owner in chat, with none of the visitor controls.
       (found in the second review): a line of `1. 1. 1. ...` nests a
       list per marker and took 89 ms in 3,072 characters, `>>>...`
       overflowed the parser's stack, and unmatched emphasis is
-      quadratic. So a line's block markers past eight are flattened,
-      a source with more than 128 inline delimiters is read as HTML
-      alone (the most in any abstract on the node was 4), and so is
-      one the parser throws on. Every hostile shape found now reads in
-      a few milliseconds, and no real abstract reads differently. A
-      Markdown autolink, `<https://...>`, is kept as its address. A
-      licence's address goes in the ASCII form `URL` writes.
+      quadratic. So a line's block markers past eight are flattened
+      (a list marker only with the space Markdown requires after it,
+      so "1.2.3.4" stays text), a source with more than 128 inline
+      delimiters is read as HTML alone (the most in any abstract on
+      the node was 4), and so is one the parser throws on. The worst
+      hostile shape found now parses in about 10 ms, against 690
+      before, and no real abstract reads differently. A Markdown
+      autolink, `<https://...>`, is kept as its address. A licence's
+      address must pass the node's own `isSafeLicenseUrl` (no
+      credentials, white space, controls or backslashes), and goes in
+      the ASCII form `URL` writes.
     - A dataset that isn't public is a 404 with the node's envelope,
       `error: "not_found"`, the only 404 a script acts on. The card
       reads its own row, so it is as current as the dataset's record: a

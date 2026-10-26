@@ -682,9 +682,13 @@ default
     {
         if (c & CHANGED_OWNER) llResetScript();
         // A region restart drops a request in flight, which then never
-        // answers, so it is asked again.
+        // answers, so it is asked again; and the timer is set again, for a
+        // retry only scheduled or a clip's moving date.
         if (c & CHANGED_REGION_START)
-            if (gReq) { gReq = NULL_KEY; later(10); pace(); }
+        {
+            if (gReq) { gReq = NULL_KEY; later(10); }
+            pace();
+        }
     }
 
     link_message(integer sender, integer n, string str, key id)

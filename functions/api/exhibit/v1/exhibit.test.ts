@@ -228,8 +228,13 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
   })
 
   it('passes over a credit that is all markup past the source bound', async () => {
-    const sqlite = setup([{ id: ULID(1), attribution_text: '<img src="x">'.repeat(1000), organization: 'NOAA' }])
+    const sqlite = setup([
+      { id: ULID(1), attribution_text: '<img src="x">'.repeat(1000), organization: 'NOAA' },
+      // With nothing found, a field passed over leaves no mark either.
+      { id: ULID(2), organization: '<img src="x">'.repeat(1000) },
+    ])
     expect((await card(sqlite, ULID(1))).body.credit).toBe('NOAA')
+    expect((await card(sqlite, ULID(2))).body).toMatchObject({ credit: '', truncated: false })
   })
 
   it('answers an abstract Markdown can\'t parse, or would parse slowly, with its text', async () => {
@@ -250,9 +255,13 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect((await card(sqlite, ULID(5))).body.abstract.startsWith('Ocean heat.')).toBe(true)
   })
 
-  it('keeps a Markdown autolink as its address', async () => {
-    const sqlite = setup([{ id: ULID(1), abstract: 'Data at <https://www.ncei.noaa.gov/products> or <help@noaa.gov>.' }])
+  it('keeps a Markdown autolink as its address, and a tag holding one as a tag', async () => {
+    const sqlite = setup([
+      { id: ULID(1), abstract: 'Data at <https://www.ncei.noaa.gov/products> or <help@noaa.gov>.' },
+      { id: ULID(2), abstract: '<!--contact:foo@bar.com-->Sea ice <a/href="mailto:x@y.org">by month</a>.' },
+    ])
     expect((await card(sqlite, ULID(1))).body.abstract).toBe('Data at https://www.ncei.noaa.gov/products or help@noaa.gov.')
+    expect((await card(sqlite, ULID(2))).body.abstract).toBe('Sea ice by month.')
   })
 
   it('reads a title and a credit as text, and only the abstract as Markdown', async () => {
@@ -307,21 +316,26 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
         id: ULID(1), start_time: 'September 2017', end_time: '2017-09-25', period: 'every 15 minutes',
         license_spdx: 'CC-BY-4.0<script>', license_url: 'javascript:alert(1)',
       },
-      // An address with a character a script can't hold, or that isn't
-      // ASCII, goes in the ASCII form URL writes, which says the same.
+      // An address the node's own check calls unsafe is left out, rather
+      // than repaired by URL into one that reads differently: a control
+      // character, white space, a backslash, or credentials, which in chat
+      // read as noaa.gov and go to evil.com.
       { id: ULID(2), license_url: 'https://x.org/\u0001a' },
-      { id: ULID(3), license_url: 'https://x.org/\ufdd0' },
-      { id: ULID(4), license_url: 'https://例え.jp/ライセンス' },
-      { id: ULID(5), license_url: 'not a url' },
+      { id: ULID(3), license_url: 'https://creativecommons.org/licenses/by/4.0/ "CC BY"' },
+      { id: ULID(4), license_url: 'https://x.org\\licence' },
+      { id: ULID(5), license_url: 'https://user:pw@noaa.gov@evil.com/' },
+      { id: ULID(6), license_url: 'not a url' },
+      // A safe one that isn't ASCII goes in the ASCII form URL writes.
+      { id: ULID(7), license_url: 'https://例え.jp/ライセンス' },
+      { id: ULID(8), license_url: 'https://x.org/\ufdd0' },
     ])
     const { body } = await card(sqlite, ULID(1))
     expect(body).toMatchObject({ startTime: '', endTime: '', period: '', license: '', licenseText: '' })
-    expect((await card(sqlite, ULID(2))).body.licenseText).toBe('https://x.org/%01a')
-    expect((await card(sqlite, ULID(3))).body.licenseText).toBe('https://x.org/%EF%B7%90')
-    expect((await card(sqlite, ULID(4))).body.licenseText).toBe(
+    for (const n of [2, 3, 4, 5, 6]) expect((await card(sqlite, ULID(n))).body.licenseText, String(n)).toBe('')
+    expect((await card(sqlite, ULID(7))).body.licenseText).toBe(
       'https://xn--r8jz45g.jp/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9',
     )
-    expect((await card(sqlite, ULID(5))).body.licenseText).toBe('')
+    expect((await card(sqlite, ULID(8))).body.licenseText).toBe('https://x.org/%EF%B7%90')
   })
 
   it('keeps an instant to the millisecond, as many digits as the validators allow', async () => {

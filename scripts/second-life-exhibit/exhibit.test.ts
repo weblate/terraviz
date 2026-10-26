@@ -274,8 +274,14 @@ describe('second-life exhibit scripts', () => {
     expect(reply).toContain('if (status != 200) later(30);')
     const timer = info.slice(info.indexOf('    timer()'), info.indexOf('    listen('))
     expect(timer).toMatch(/if \(gRetryAt && llGetUnixTime\(\) >= gRetryAt\)\n\s+\{\n\s+gRetryAt = 0;\n\s+fetch\(\);/)
-    // A region restart drops a request in flight: it is asked again.
-    expect(info).toMatch(/if \(c & CHANGED_REGION_START\)\n\s+if \(gReq\) \{ gReq = NULL_KEY; later\(10\); pace\(\); \}/)
+    // The timer runs while a retry waits, a retry is the earliest asked
+    // for, and every dataset starts with its tries unspent.
+    expect(body(info, 'pace()')).toContain('if (moving || gRetryAt) llSetTimerEvent(TICK);')
+    expect(body(info, 'later(integer s)')).toMatch(/integer at = llGetUnixTime\(\) \+ s;\n\s+if \(gRetryAt == 0 \|\| at < gRetryAt\) gRetryAt = at;/)
+    expect(body(info, 'forget()')).toMatch(/gTries = 0;\n\s+gRetryAt = 0;\n\s+gReq = NULL_KEY;/)
+    // A region restart drops a request in flight, which is asked again,
+    // and sets the timer again whatever was waiting on it.
+    expect(info).toMatch(/if \(c & CHANGED_REGION_START\)\n\s+\{\n\s+if \(gReq\) \{ gReq = NULL_KEY; later\(10\); \}\n\s+pace\(\);\n\s+\}/)
     // A card of exactly the budget can't read as cut.
     expect(fetch).toContain('HTTP_BODY_MAXLENGTH, CARD_MAX + 1]')
   })

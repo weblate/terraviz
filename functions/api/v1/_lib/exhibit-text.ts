@@ -90,10 +90,10 @@ export const MARKDOWN_NESTING_MAX = 8
  *  in any abstract on the node in October 2026 was 4. */
 export const MARKDOWN_DELIMITERS_MAX = 128
 const INLINE_DELIMITERS = /[*_`[\]!~]/g
-const DEEP_NESTING = new RegExp(
-  `^([ \\t]*(?:(?:>|\\d{1,9}[.)]|[-*+])[ \\t]*){${MARKDOWN_NESTING_MAX}})(?:(?:>|\\d{1,9}[.)]|[-*+])[ \\t]*)+`,
-  'gm',
-)
+// A quote marker, or a list marker with the space or tab after it that
+// Markdown requires, so "1.2.3.4" and "+-----+" stay text.
+const BLOCK_MARKER = '(?:>[ \\t]*|(?:\\d{1,9}[.)]|[-*+])[ \\t]+)'
+const DEEP_NESTING = new RegExp(`^([ \\t]*${BLOCK_MARKER}{${MARKDOWN_NESTING_MAX}})${BLOCK_MARKER}+`, 'gm')
 
 /** A value's UTF-8 bytes as `JSON.stringify` writes it, without its quotes. */
 export function jsonBytes(value: string): number {
@@ -107,7 +107,8 @@ function htmlToText(s: string): string {
   for (let i = 1; i < parts.length; i++) {
     let p = parts[i]
     // A Markdown autolink, `<https://...>` or `<help@noaa.gov>`, is text.
-    const auto = p.match(/^((?:https?:\/\/|mailto:)[^\s<>]+|[^\s<>@/]+@[^\s<>@]+)>/)
+    // Not a comment or a declaration, though one holds an address.
+    const auto = p.match(/^((?:https?:\/\/|mailto:)[^\s<>]+|[^\s<>@/!][^\s<>@/]*@[^\s<>@]+)>/)
     if (auto) {
       out.push(auto[1], p.slice(auto[0].length))
       continue
@@ -201,8 +202,8 @@ function markdownToHtml(source: string): string {
 
 /**
  * HTML, or with `markdown` Markdown too, as plain text a script can hold,
- * and whether the source was cut for length (`SOURCE_MAX`), in which case
- * the text ends `...`. For Markdown the HTML rules run before the parse as
+ * and whether the source was cut for length (`SOURCE_MAX`, or
+ * `MARKDOWN_SOURCE_MAX` for Markdown), in which case the text ends `...`. For Markdown the HTML rules run before the parse as
  * well as after: the catalog cuts some fields mid-tag (an organization
  * ending `<a href="https://visibl`), which Markdown would escape into text
  * where the script's rules drop a tag left open.
@@ -235,11 +236,11 @@ export function cutProse(text: string, cap: number): { text: string; cut: boolea
   if (jsonBytes(text) <= cap) return { text, cut: false }
   if (cap < 4) return { text: '', cut: text !== '' }
   // Every UTF-16 unit costs at least a byte as sent, so nothing past the
-  // first `cap` of them can be in the result: segment only those, less the
-  // last grapheme, which the slice may have split.
+  // first `cap` of them can be in the result: segment only a head a little
+  // longer. A grapheme the slice split ends past the cap, so no prefix
+  // that fits can hold it.
   const head = text.length > cap + 64 ? text.slice(0, cap + 64) : text
   const parts = Array.from(graphemes.segment(head), g => g.segment)
-  if (head !== text) parts.pop()
   // The longest prefix whose cut form fits, found by halving.
   let lo = 0
   let hi = parts.length

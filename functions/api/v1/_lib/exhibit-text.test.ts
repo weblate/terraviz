@@ -53,6 +53,22 @@ describe('exhibitPlainText', () => {
     expect((seen.match(/1\./g) ?? []).length).toBe(8)
   })
 
+  it('flattens only markers Markdown would read as markers', () => {
+    // A list marker needs the space or tab after it, so these are text,
+    // as they are to the parser itself.
+    for (const text of ['1.2.3.4.5.6.7.8.9.10 is the section', '+------+------+', '1)2)3)4)5)6)7)8)9)10) steps']) {
+      expect(exhibitPlainText(text, { markdown: true }), text).toBe(text)
+    }
+  })
+
+  it('skips the parse for a source delimited past the limit', () => {
+    const parse = vi.spyOn(marked, 'parse')
+    exhibitProse('*a _b '.repeat(600), { markdown: true })
+    expect(parse).not.toHaveBeenCalled()
+    exhibitProse('A **bold** claim.', { markdown: true })
+    expect(parse).toHaveBeenCalledTimes(1)
+  })
+
   it('reads a source the parser throws on as HTML alone', () => {
     vi.spyOn(marked, 'parse').mockImplementation(() => { throw new RangeError('Maximum call stack size exceeded') })
     expect(exhibitProse('<p>Ocean **heat**</p>', { markdown: true })).toEqual({ text: 'Ocean **heat**', cut: false })

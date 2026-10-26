@@ -56,6 +56,7 @@ import {
 } from './catalog-store'
 import { parseDataRef } from './data-ref'
 import { readHlsDuration, type HlsDurationReading } from './hls-duration'
+import { isSafeLicenseUrl } from './metadata-readiness'
 import { canonicalTag, cutProse, exhibitPlainText, exhibitProse, jsonBytes, machineValue } from './exhibit-text'
 import { SLUG_RE } from './validators'
 import type { CatalogEnv } from './env'
@@ -313,11 +314,13 @@ const SPDX = /^[A-Za-z0-9.+\-() ]+$/
 /** Printable ASCII only, without the quote, angle brackets or backslash. */
 const ADDRESS = /^https?:\/\/[\x21\x23-\x3b\x3d\x3f-\x5b\x5d-\x7e]+$/
 
-/** An address in the ASCII form `URL` writes it, a punycode host and a
- *  percent-encoded path, which says the same thing; else "". */
+/** A safe address (`isSafeLicenseUrl`, the node's own check: no
+ *  credentials, white space, controls or backslashes, which `URL` would
+ *  otherwise repair into something that reads differently) in the ASCII
+ *  form `URL` writes it, a punycode host and a percent-encoded path; else "". */
 function asciiAddress(value: string | null | undefined): string {
   const raw = value?.trim()
-  if (!raw) return ''
+  if (!raw || !isSafeLicenseUrl(raw)) return ''
   try {
     return new URL(raw).href
   } catch {
@@ -345,8 +348,8 @@ export function buildCard(entry: ListEntry, length: HlsDurationReading): Exhibit
   // The first of these with any text once the HTML is out, read in turn.
   let who = { text: '', cut: false }
   for (const field of [row.attribution_text, row.rights_holder, row.organization]) {
-    who = exhibitProse(field)
-    if (who.text !== '') break
+    const prose = exhibitProse(field)
+    if (prose.text !== '') { who = prose; break }
   }
   const credit = fit(who, CARD_CAPS.credit)
   // The licence's address is whole or left out, and the statement gets the

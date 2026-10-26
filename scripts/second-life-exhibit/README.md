@@ -54,9 +54,9 @@ notecards and the visitor list would run out.
   card, a reply of at most 2 KB that the node writes for this exhibit
   (`/api/exhibit/v1/datasets/<id>`). A node that predates the cards
   answers with the app's page instead, as does any node while its
-  Functions are down. The info script asks again a minute later, and
-  after four tries the floating text shows titles alone, "About" gives
-  the dataset's page, and the info script tells you once.
+  Functions are down. The floating text then shows the title alone and
+  "About" gives the dataset's page. The info script asks again a minute
+  later, and after four tries tells you once.
 
 ## Setting it up
 
