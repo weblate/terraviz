@@ -54,7 +54,8 @@ notecards and the visitor list would run out.
   card, a reply of at most 2 KB that the node writes for this exhibit
   (`/api/exhibit/v1/datasets/<id>`). A node that predates the cards
   answers with the app's page instead, as does any node while its
-  Functions are down. The floating text then shows the title alone and
+  Functions are down; Second Life refuses a page where JSON was asked
+  for, with its own HTTP 415. The floating text then shows the title alone and
   "About" gives the dataset's page. The info script asks again a minute
   later, and after four tries tells you once.
 

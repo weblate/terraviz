@@ -752,6 +752,11 @@ default
         // no such dataset: anything between here and the node can answer 404.
         if (status == 404)
             if (llJsonGetValue(body, ["error"]) == "not_found") { unshowable("isn't a dataset on the node"); pace(); return; }
+        // Second Life answers a reply that isn't the JSON asked for with
+        // its own 415 rather than handing it over (found in-world): the
+        // app's page from a node with no cards, or from one whose
+        // Functions are down. That is no card, as card() treats it.
+        if (status == 415) { card("", TRUE); hover(); pace(); return; }
         // A failure (a 503, or Second Life's 499 for a timeout) is asked
         // again, as many times as TRIES allows, and the owner is told,
         // once, with the status, when the last fails too.

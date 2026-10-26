@@ -1929,7 +1929,10 @@ driven by its owner in chat, with none of the visitor controls.
     3. Phase 4b's buttons, with the owner's chat commands moved to a
        fourth script to give the globe script room.
   - **The node and the scripts go together.** A TerraViz node without
-    these reads answers them with the app's page and a 200, not JSON.
+    these reads answers them with the app's page and a 200, not JSON,
+    which Second Life refuses with its own HTTP 415, since the script
+    asks for JSON (found in-world, 26 October). The script takes a 415
+    as no card.
     A node whose Functions are down, a spent daily quota among the
     causes, answers the same way, so the info script asks again a
     minute later, and once its four tries are spent shows the title

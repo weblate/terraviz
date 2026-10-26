@@ -286,6 +286,12 @@ describe('second-life exhibit scripts', () => {
     // A failure is asked again; the timer is what asks.
     const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
     expect(reply).toMatch(/if \(status != 200\)\n\s+\{\n\s+if \(gTries < TRIES\) later\(30\);\n\s+else if \(!gToldNode\)/)
+    // Second Life's 415, for a reply that isn't the JSON asked for (an
+    // older node's page, found in-world), is no card: asked again, then
+    // the owner is told the node sent none.
+    expect(reply).toMatch(/if \(status == 415\) \{ card\("", TRUE\); hover\(\); pace\(\); return; \}/)
+    expect(reply.indexOf('if (status == 415)')).toBeLessThan(reply.indexOf('if (status != 200)'))
+    expect(info).toContain('HTTP_ACCEPT, "application/json"')
     // Once the tries are spent the owner is told, with the status, rather
     // than the globe going quiet.
     expect(reply).toContain('" tries (HTTP " + (string)status + "). The hover text shows the title alone."')
