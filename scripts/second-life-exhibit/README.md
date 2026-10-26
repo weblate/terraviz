@@ -282,7 +282,7 @@ The probe kit's README describes each, under
 also sets where the globe goes back to once visitors leave, and
 `/9 show` shows the dataset at once rather than asking the node first:
 the info script reads its card next, and if the node has no such
-dataset, or it is a tour, it tells you, tells whoever chose it from the
+dataset, or it is a tour or one the page can't show, it tells you, tells whoever chose it from the
 menu that it can't be shown, and puts the globe back on the live Earth,
 unless someone has chosen another since. (The globe script runs too close to its 64 KB to hold the
 node's reply; see Things that will trip you up.) The owner can always
@@ -403,7 +403,7 @@ each avatar used, and what steps 2 and 9 showed.
   step 9 of the smoke test does. About 6 KB at each script's busiest is
   all there was, so code added to any of them needs measuring again.
 - **The info script checks a choice after it is shown.** For a second or
-  two, a dataset the node doesn't have, or a tour, is in every visitor's
+  two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With
   telemetry on, each page still in its first minute reports that
   failure, and with `/9 steer query` each reloads twice. The info script

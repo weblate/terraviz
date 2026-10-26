@@ -511,10 +511,15 @@ card(string b, integer cut)
         gToldNode = TRUE;
         return;
     }
-    // The kinds are an open set: a video or an image is shown, and any
-    // other is one the page can't show.
+    // The node says whether the page can show it, which the kind alone
+    // doesn't: a video it can't reach is a video. The kinds are an open
+    // set, and this script shows only the two it knows.
     if (kind == "tour") { unshowable("is a tour, which drives the full app rather than a globe"); return; }
-    if (kind != "video" && kind != "image") { unshowable("is a kind of dataset (" + kind + ") the page can't show"); return; }
+    if (llJsonGetValue(b, ["showable"]) != JSON_TRUE || (kind != "video" && kind != "image"))
+    {
+        unshowable("is a dataset (" + kind + ") the page can't show");
+        return;
+    }
     gChose = NULL_KEY;   // it can be shown, so nobody needs telling
     gVideo = kind == "video";
     gPage = value(b, "page");

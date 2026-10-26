@@ -195,14 +195,16 @@ describe('second-life exhibit scripts', () => {
     const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
     expect(reply).toMatch(/if \(req != gReq\) return;\n\s+gReq = NULL_KEY;/)
     expect(reply).toMatch(/if \(status == 404\)\n\s+if \(llJsonGetValue\(body, \["error"\]\) == "not_found"\) \{ unshowable\(/)
-    // The kinds are an open set: only a video or an image is shown, so a
-    // kind a later node adds is refused rather than shown.
+    // Shown only when the node says the page can show it, and only a kind
+    // this script knows: the kinds are an open set, so one a later node
+    // adds is refused rather than shown.
     const card = body(info, 'card(string b, integer cut)')
+    const gate = 'if (llJsonGetValue(b, ["showable"]) != JSON_TRUE || (kind != "video" && kind != "image"))'
     expect(card).toContain('if (kind == "tour") { unshowable(')
-    expect(card).toContain('if (kind != "video" && kind != "image") { unshowable(')
+    expect(card).toMatch(/if \(llJsonGetValue\(b, \["showable"\]\) != JSON_TRUE \|\| \(kind != "video" && kind != "image"\)\)\n\s+\{\n\s+unshowable\(/)
     // The chooser is kept only until the node has answered about their
     // choice, and the README's account of what the scripts keep says so.
-    expect(card.indexOf('gChose = NULL_KEY;')).toBeGreaterThan(card.indexOf('if (kind != "video" && kind != "image")'))
+    expect(card.indexOf('gChose = NULL_KEY;')).toBeGreaterThan(card.indexOf(gate))
     expect(unshowable).toContain('gChose = NULL_KEY;')
     expect(readme).toContain('the key of whoever chose the dataset showing, until the node has said')
     // The globe names the chooser of a new dataset in the broadcast that
@@ -268,7 +270,7 @@ describe('second-life exhibit scripts', () => {
     const card = body(info, 'card(string b, integer cut)')
     const read = [...all(card, /value\(b, "(\w+)"\)/g), ...all(card, /llJsonGetValue\(b, \["(\w+)"\]\)/g)]
     expect(new Set(read)).toEqual(new Set([
-      'kind', 'page', 'credit', 'license', 'licenseText', 'truncated', 'abstract',
+      'kind', 'showable', 'page', 'credit', 'license', 'licenseText', 'truncated', 'abstract',
       'startTime', 'endTime', 'period', 'exactDuration', 'retry',
     ]))
     for (const name of read) expect(Object.keys(shape), name).toContain(name)
@@ -280,6 +282,7 @@ describe('second-life exhibit scripts', () => {
     expect(card).toContain('integer retry = (integer)value(b, "retry");')
     expect(typeof shape.truncated).toBe('boolean')
     expect(card).toContain('gCut = llJsonGetValue(b, ["truncated"]) == JSON_TRUE;')
+    expect(typeof shape.showable).toBe('boolean')
     // The card's page is a path on the node, as its dataset link.
     expect(card).toContain('if (llGetSubString(gPage, 0, 0) != "/") gPage = "/dataset/" + gDataset;')
     // A length the node didn't settle is asked for again when it says.
