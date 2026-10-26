@@ -288,7 +288,11 @@ describe('second-life exhibit scripts', () => {
     expect(reply).toMatch(/if \(status != 200\)\n\s+\{\n\s+if \(gTries < TRIES\) later\(30\);\n\s+else if \(!gToldNode && !gHaveRec\)\n\s+\{\n\s+llOwnerSay\([^;]+;\n\s+gToldNode = TRUE;/)
     // A card read before the failure (a retry's) still stands, so neither
     // message is sent over it: both say the hover text shows titles alone.
-    expect(body(info, 'card(string b, integer cut)')).toContain('if (!gToldNode && !gHaveRec)')
+    // The latch is set only with the message, or a silent pass would keep
+    // the owner from hearing of the next dataset that gets no card.
+    expect(body(info, 'card(string b, integer cut)')).toMatch(
+      /\n\s+if \(!gToldNode && !gHaveRec\)\n\s+\{\n\s+llOwnerSay\([^;]+;\n\s+gToldNode = TRUE;\n\s+\}\n\s+return;/,
+    )
     // The owner is told once a node, not once a script's life.
     const state = info.slice(info.indexOf('        if (n != MSG_STATE) return;'), info.indexOf('    http_response(key req'))
     expect(state).toMatch(/string node = llJsonGetValue\(str, \["node"\]\);\n\s+if \(node != gNode\) gToldNode = FALSE;\n\s+gNode = node;/)

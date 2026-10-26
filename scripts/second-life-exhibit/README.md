@@ -189,8 +189,9 @@ which runs a frame or two past the picture's length. When the node couldn't read
 the length in time, the card says when to ask again, and the info
 script does. A card the node fails to send, an error or a
 timeout, is asked for again too, up to four tries in all. If none of
-them brings a card, the owner is told once for that node, with the
-status, and the hover text shows the title alone.
+them brings a card, the owner is told once for that node (with the
+HTTP status, when there was one), and the hover text shows the title
+alone.
 
 The credit is the dataset's attribution, or else its rights holder, or
 else its organization, with the licence after it. A dataset that names

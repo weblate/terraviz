@@ -521,12 +521,15 @@ card(string b, integer cut)
     if (cut || kind == JSON_INVALID)
     {
         if (gTries < TRIES) { later(60); return; }
-        // A card already read stands (a retry's), so there is nothing to tell.
+        // A card already read stands (a retry's), so there is nothing to
+        // tell, and the owner is still to be told of the next that fails.
         if (!gToldNode && !gHaveRec)
+        {
             llOwnerSay("[exhibit] " + gNode + " sent no dataset card. A node older than the exhibit's reads has "
                 + "none, and one whose Functions are down sends its page instead. The hover text shows titles "
                 + "alone, and About gives the dataset's page.");
-        gToldNode = TRUE;
+            gToldNode = TRUE;
+        }
         return;
     }
     // The node says whether the page can show it, which the kind alone
