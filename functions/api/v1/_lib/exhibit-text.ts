@@ -27,9 +27,17 @@
  * through. Titles and credits are plain text in the app, and read as
  * Markdown "1. Hurricane Maria" would lose its number.
  *
- * **A long source is cut first** (`SOURCE_MAX`), at a word, so the parse
- * costs a bounded share of a Worker's CPU whatever a publisher wrote; the
- * text it gives is marked cut and ends `...`.
+ * **A long source is cut first**, at a word, so the parse costs a bounded
+ * share of a Worker's CPU whatever a publisher wrote: `SOURCE_MAX` for
+ * text, and the smaller `MARKDOWN_SOURCE_MAX` for Markdown, whose parse
+ * grows faster than its input. The text it gives is marked cut and ends
+ * `...`. Length alone doesn't bound a Markdown parse, so two shapes no
+ * real abstract has are taken out first (`markdownToHtml`): a line's run
+ * of block markers past `MARKDOWN_NESTING_MAX` (`1. 1. 1. ...` nests a
+ * list per marker, 89 ms in 3,072 characters, and `>>>...` overflows the
+ * parser's stack), and more inline delimiters than
+ * `MARKDOWN_DELIMITERS_MAX` (unmatched emphasis is quadratic), which read
+ * as HTML alone. So does a source the parser throws on.
  *
  * **Budgets are counted as sent** (`jsonBytes`): a value's UTF-8 bytes
  * once `JSON.stringify` has escaped it, without its quotes, since that is
@@ -66,6 +74,27 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
  */
 export const SOURCE_MAX = 8192
 
+/**
+ * Characters of a source read as Markdown at most. On the node in October
+ * 2026 the first 3,072 characters of every longer abstract gave at least
+ * 2,844 bytes of text, more than a card holds, and a hostile 3,072 parse
+ * in about 7 ms where 8,192 took 40.
+ */
+export const MARKDOWN_SOURCE_MAX = 3072
+
+/** Block markers kept at the start of a line: quotes and lists nested
+ *  past this are flattened. No abstract on the node nests at all. */
+export const MARKDOWN_NESTING_MAX = 8
+
+/** Inline delimiters past which a source isn't read as Markdown. The most
+ *  in any abstract on the node in October 2026 was 4. */
+export const MARKDOWN_DELIMITERS_MAX = 128
+const INLINE_DELIMITERS = /[*_`[\]!~]/g
+const DEEP_NESTING = new RegExp(
+  `^([ \\t]*(?:(?:>|\\d{1,9}[.)]|[-*+])[ \\t]*){${MARKDOWN_NESTING_MAX}})(?:(?:>|\\d{1,9}[.)]|[-*+])[ \\t]*)+`,
+  'gm',
+)
+
 /** A value's UTF-8 bytes as `JSON.stringify` writes it, without its quotes. */
 export function jsonBytes(value: string): number {
   return encoder.encode(JSON.stringify(value)).byteLength - 2
@@ -77,6 +106,12 @@ function htmlToText(s: string): string {
   const out: string[] = [parts[0]]
   for (let i = 1; i < parts.length; i++) {
     let p = parts[i]
+    // A Markdown autolink, `<https://...>` or `<help@noaa.gov>`, is text.
+    const auto = p.match(/^((?:https?:\/\/|mailto:)[^\s<>]+|[^\s<>@/]+@[^\s<>@]+)>/)
+    if (auto) {
+      out.push(auto[1], p.slice(auto[0].length))
+      continue
+    }
     if (p === '' || !/^[A-Za-z/!]/.test(p)) {
       out.push('<' + p)
       continue
@@ -140,15 +175,28 @@ function scriptSafe(s: string): string {
   return out
 }
 
-/** `s` cut to `SOURCE_MAX` characters at a word, and whether it was. */
-function boundedSource(s: string): { source: string; cut: boolean } {
-  if (s.length <= SOURCE_MAX) return { source: s, cut: false }
-  let end = SOURCE_MAX
+/** `s` cut to `max` characters at a word, and whether anything but
+ *  white space was cut: a title padded with spaces isn't cut. */
+function boundedSource(s: string, max: number): { source: string; cut: boolean } {
+  if (s.length <= max) return { source: s, cut: false }
+  let end = max
   // Never half of a surrogate pair.
   if (/[\ud800-\udbff]/.test(s[end - 1])) end -= 1
   const space = s.lastIndexOf(' ', end)
   if (space > end / 2) end = space
-  return { source: s.slice(0, end), cut: true }
+  return { source: s.slice(0, end), cut: /\S/.test(s.slice(end)) }
+}
+
+function markdownToHtml(source: string): string {
+  const prepared = closeEntities(htmlToText(source)).replace(DEEP_NESTING, '$1')
+  if ((prepared.match(INLINE_DELIMITERS)?.length ?? 0) > MARKDOWN_DELIMITERS_MAX) return source
+  try {
+    return marked.parse(prepared, { async: false, gfm: true }) as string
+  } catch {
+    // Read as HTML alone. (marked's `silent` would hand back its error
+    // message as the HTML.)
+    return source
+  }
 }
 
 /**
@@ -164,12 +212,11 @@ export function exhibitProse(
   options: { markdown?: boolean } = {},
 ): { text: string; cut: boolean } {
   if (!value) return { text: '', cut: false }
-  const { source, cut } = boundedSource(value)
-  const html = options.markdown
-    ? marked.parse(closeEntities(htmlToText(source)), { async: false, gfm: true }) as string
-    : source
+  const { source, cut } = boundedSource(value, options.markdown ? MARKDOWN_SOURCE_MAX : SOURCE_MAX)
+  const html = options.markdown ? markdownToHtml(source) : source
   let text = scriptSafe(decodeEntities(htmlToText(html))).replace(/ {2,}/g, ' ').trim()
-  if (cut) text = `${text}...`
+  // Nothing left but the cut says nothing: "" rather than "...".
+  if (cut && text !== '') text = `${text}...`
   return { text, cut }
 }
 
@@ -187,7 +234,12 @@ export function exhibitPlainText(value: string | null | undefined, options: { ma
 export function cutProse(text: string, cap: number): { text: string; cut: boolean } {
   if (jsonBytes(text) <= cap) return { text, cut: false }
   if (cap < 4) return { text: '', cut: text !== '' }
-  const parts = Array.from(graphemes.segment(text), g => g.segment)
+  // Every UTF-16 unit costs at least a byte as sent, so nothing past the
+  // first `cap` of them can be in the result: segment only those, less the
+  // last grapheme, which the slice may have split.
+  const head = text.length > cap + 64 ? text.slice(0, cap + 64) : text
+  const parts = Array.from(graphemes.segment(head), g => g.segment)
+  if (head !== text) parts.pop()
   // The longest prefix whose cut form fits, found by halving.
   let lo = 0
   let hi = parts.length
@@ -210,10 +262,13 @@ export function machineValue(value: string | null | undefined, pattern: RegExp, 
 }
 
 /**
- * A tag as the exhibit reads list and match it: NFC, with what a script
- * can't hold dropped, and trimmed. Never cut, since it is the key a script
- * sends back.
+ * A tag as the exhibit reads list and match it: with what a script can't
+ * hold dropped, then NFC, and trimmed. Never cut, since it is the key a
+ * script sends back. Normalized last, so the form is its own canonical
+ * form: a control character dropped from between a letter and its accent
+ * would otherwise leave a pair NFC had not composed, and the tag a script
+ * was given would match nothing when sent back.
  */
 export function canonicalTag(tag: string): string {
-  return scriptSafe(tag.normalize('NFC')).replace(/ {2,}/g, ' ').trim()
+  return scriptSafe(tag).normalize('NFC').replace(/ {2,}/g, ' ').trim()
 }

@@ -42,9 +42,10 @@
  * Only a list already read is shared, since a Worker can't hand one
  * request's I/O to another: requests that miss together each read. A
  * failed read keeps the last good list for up to `LIST_STALE_MS`. So two
- * pages from different isolates can come from lists a minute apart, and a
- * retracted dataset can stay in pages for a minute. A card reads its own
- * row (`findPublicRow`), so it is as current as the dataset's record.
+ * pages from different isolates can come from lists a minute apart, or
+ * while reads fail up to `LIST_STALE_MS` apart, and a retracted dataset
+ * can stay in pages that long. A card reads its own row (`findPublicRow`),
+ * so it is as current as the dataset's record.
  */
 
 import {
@@ -100,8 +101,17 @@ export const PAGE_CAPS = { id: 26, title: 48, tag: TAG_CAP, number: 6 } as const
 
 /** How long one isolate keeps its list. */
 export const LIST_TTL_MS = 60_000
-/** How long a list stays in use while reading a new one fails. */
-export const LIST_STALE_MS = 10 * 60_000
+/** How long a list stays in use while reading a new one fails: the five
+ *  minutes `/api/v1/catalog` already lets a client serve a stale copy
+ *  (`stale-while-revalidate=300`), since a dataset withdrawn meanwhile can
+ *  stay in pages that long. */
+export const LIST_STALE_MS = 5 * 60_000
+
+/** Bytes of `PAGE_BUDGET` held back for the menu's change signal, a short
+ *  hash of the matching list (`,"list":"<8 hex>"`), which is to ship with
+ *  the first menu script (`docs/SECOND_LIFE_COMPAT.md`). Nothing else may
+ *  spend them. */
+export const PAGE_RESERVED = 18
 
 /** Seconds a script waits before asking again for a length that didn't settle. */
 export const RETRY_SECONDS = 15
@@ -246,8 +256,9 @@ export function resetExhibitListForTests(): void {
 /**
  * The isolate's list, read again once it is `LIST_TTL_MS` old. Only a list
  * already read is shared. When a read fails, the last good list answers
- * for up to `LIST_STALE_MS`, and while it does no read is tried again
- * for another `LIST_TTL_MS`, so an outage costs one read a minute.
+ * for up to `LIST_STALE_MS`, and while it does no read is tried again for
+ * another `LIST_TTL_MS`, so an outage costs an isolate holding a list one
+ * read a minute. One holding none reads on every request, and fails each.
  */
 export async function exhibitList(db: D1Database, nowMs: number = Date.now()): Promise<ListEntry[]> {
   if (cached && nowMs - cached.atMs < LIST_TTL_MS) return cached.list
@@ -261,6 +272,9 @@ export async function exhibitList(db: D1Database, nowMs: number = Date.now()): P
   } catch (error) {
     if (!usable) throw error
     failedAtMs = nowMs
+    console.warn('[exhibit] list read failed; answering from one read',
+      Math.round((nowMs - (cached?.atMs ?? nowMs)) / 1000), 's ago',
+      error instanceof Error ? error.message : 'UnknownError')
     return usable
   }
 }
@@ -298,6 +312,18 @@ const ISO_DURATION = /^P(?!$)(\d+(\.\d+)?Y)?(\d+(\.\d+)?M)?(\d+(\.\d+)?W)?(\d+(\
 const SPDX = /^[A-Za-z0-9.+\-() ]+$/
 /** Printable ASCII only, without the quote, angle brackets or backslash. */
 const ADDRESS = /^https?:\/\/[\x21\x23-\x3b\x3d\x3f-\x5b\x5d-\x7e]+$/
+
+/** An address in the ASCII form `URL` writes it, a punycode host and a
+ *  percent-encoded path, which says the same thing; else "". */
+function asciiAddress(value: string | null | undefined): string {
+  const raw = value?.trim()
+  if (!raw) return ''
+  try {
+    return new URL(raw).href
+  } catch {
+    return ''
+  }
+}
 const ID = /^[A-Za-z0-9_-]+$/
 
 /** The dataset's page in the main app, as `src/utils/datasetUrl.ts` builds it. */
@@ -316,14 +342,16 @@ export function buildCard(entry: ListEntry, length: HlsDurationReading): Exhibit
   }
 
   const title = fit(exhibitProse(row.title), CARD_CAPS.title)
-  // The first of these with any text once the HTML is out.
-  const who = [row.attribution_text, row.rights_holder, row.organization]
-    .map(v => exhibitProse(v))
-    .find(p => p.text !== '') ?? { text: '', cut: false }
+  // The first of these with any text once the HTML is out, read in turn.
+  let who = { text: '', cut: false }
+  for (const field of [row.attribution_text, row.rights_holder, row.organization]) {
+    who = exhibitProse(field)
+    if (who.text !== '') break
+  }
   const credit = fit(who, CARD_CAPS.credit)
   // The licence's address is whole or left out, and the statement gets the
   // rest: dropped whole when it has none, which counts as a cut.
-  const address = machineValue(row.license_url?.trim(), ADDRESS, CARD_CAPS.licenseText)
+  const address = machineValue(asciiAddress(row.license_url), ADDRESS, CARD_CAPS.licenseText)
   const statementCap = address ? CARD_CAPS.licenseText - jsonBytes(address) - 1 : CARD_CAPS.licenseText
   const statement = exhibitProse(row.license_statement)
   const statementText = fit(statement, Math.max(statementCap, 0))
@@ -460,6 +488,8 @@ export function parsePageQuery(params: URLSearchParams): PageQuery | { message: 
   const raw = params.get('tag') ?? ''
   if (raw.length > 200) return { message: '`tag` must be at most 200 characters.' }
   const tag = raw === '' ? '' : canonicalTag(raw)
+  // Only spaces or control characters: not a tag, and not the whole menu.
+  if (raw !== '' && tag === '') return { message: '`tag` must name a tag.' }
   if (jsonBytes(tag) > TAG_CAP) return { message: `\`tag\` must be at most ${TAG_CAP} bytes.` }
   const offset = integerParam(params.get('offset'), 0, PAGE_MAX_OFFSET, 0)
   if (offset === null) return { message: `\`offset\` must be a whole number from 0 to ${PAGE_MAX_OFFSET}.` }

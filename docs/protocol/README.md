@@ -94,10 +94,11 @@ SCHEMA_BASE_URL=https://terraviz.example.org/schema/v1 npm run gen:protocol-sche
   twelve text and time fields from before `createdAt`, within the first
   9,000 bytes in the earliest copies and 3,072 in later ones, and a
   video manifest's `duration` and, in all but the earliest, its `id`,
-  which they take as the dataset's only for a manifest the node built
-  from its own bundle: a Vimeo row's manifest carries Vimeo's id. Those
-  reads are of the manifest's first 1,024 to 4,096 bytes. Pointed at a
-  node that orders keys differently, they can miss fields.
+  trusting the duration only when that id is the dataset's, which a
+  Vimeo row's manifest replaces with Vimeo's. Those reads are of the
+  manifest's first 1,024 to 4,096 bytes. Pointed at a node that orders
+  keys differently, they can miss fields. They read under `/api/v1/`,
+  so they will meet that prefix's 410 one day whatever is pinned.
   [`dataset-serializer.test.ts`](../../functions/api/v1/_lib/dataset-serializer.test.ts)
   and
   [`exhibit.test.ts`](../../scripts/second-life-exhibit/exhibit.test.ts)
@@ -111,7 +112,8 @@ SCHEMA_BASE_URL=https://terraviz.example.org/schema/v1 npm run gen:protocol-sche
   and `GET /api/exhibit/v1/tags`, small replies within byte budgets
   they state, with their own contract for scripts already rezzed:
   additive only, no field changes meaning, a breaking change gets a
-  new path, `/api/exhibit/v2/`. Their version is their own, outside
+  new path, `/api/exhibit/v2/`, and `/api/exhibit/v1/` stays. Their
+  version is their own, outside
   `/api/v1/`, so the 410 this protocol's `/api/v1/` answers once a
   later major version has run its window never reaches a script that
   can't be updated ([`exhibit-reads.ts`](../../functions/api/v1/_lib/exhibit-reads.ts),

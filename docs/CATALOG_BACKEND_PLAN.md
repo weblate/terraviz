@@ -657,6 +657,12 @@ Stream on day one.
 All routes live under `functions/api/v1/**`. The `/v1/` prefix is
 load-bearing: the federation protocol pins it, and we will add `/v2/`
 side-by-side rather than mutate `/v1/` once peers start consuming it.
+One exception, by design: the exhibit reads in the table below live
+under `functions/api/exhibit/v1/`, versioned on their own, so the
+protocol's eventual 410 on `/api/v1/` never reaches a script in Second
+Life that can't be updated. Their shared code stays in
+`functions/api/v1/_lib/`, which a `/v1/` retirement must therefore
+keep.
 
 ### Public read API (anonymous)
 
@@ -671,7 +677,7 @@ side-by-side rather than mutate `/v1/` once peers start consuming it.
 | `GET /api/v1/tours/{id}/assets/{key}` | Tour overlay assets (images, audio) — proxied/signed from R2. |
 | `GET /api/v1/search?q=...` | Public full-text search against title / abstract / keywords. Phase 1a uses D1 LIKE; Phase 1b swaps in Vectorize semantic search behind the same URL once the embedding pipeline lands (see "Docent integration"). The docent's `search_datasets` LLM tool is a separate, server-internal call site against the same Vectorize index — not exposed under this URL. |
 | `GET /.well-known/terraviz.json` | Service discovery. Returns node identity, public key, supported `/v1/` endpoints, federation policy. |
-| `GET /api/exhibit/v1/datasets/{id}`, `GET /api/exhibit/v1/datasets`, `GET /api/exhibit/v1/tags` | The exhibit reads: a dataset's card, a page of a menu, and the categories, each inside a byte budget it states (2,048, 1,024 and 2,048 bytes), for callers that can afford little, of which the Second Life exhibit globe is the first. Convenience reads of nodes running this codebase, not part of the federation protocol, with their own contract for scripts already rezzed: additive only, no field changes meaning, a breaking change gets a new path (`/api/exhibit/v2/`). Versioned outside `/api/v1/` so the protocol's eventual 410 on that prefix never reaches a script that can't be updated. Design in [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §9 Phase 2, rules in `functions/api/v1/_lib/exhibit-reads.ts`. |
+| `GET /api/exhibit/v1/datasets/{id}`, `GET /api/exhibit/v1/datasets`, `GET /api/exhibit/v1/tags` | The exhibit reads: a dataset's card, a page of a menu, and the categories, each inside a byte budget it states (2,048, 1,024 and 2,048 bytes), for callers that can afford little, of which the Second Life exhibit globe is the first. Convenience reads of nodes running this codebase, not part of the federation protocol, with their own contract for scripts already rezzed: additive only, no field changes meaning, a breaking change gets a new path (`/api/exhibit/v2/`) and `/api/exhibit/v1/` stays. Versioned outside `/api/v1/` so the protocol's eventual 410 on that prefix never reaches a script that can't be updated. Design in [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §9 Phase 2, rules in `functions/api/v1/_lib/exhibit-reads.ts`. |
 
 `Dataset` on the wire is the existing TypeScript shape plus a small
 additive set:

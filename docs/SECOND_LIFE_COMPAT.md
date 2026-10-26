@@ -1722,8 +1722,9 @@ driven by its owner in chat, with none of the visitor controls.
     - `exactDuration` is the clip's exact length in seconds, from the
       node's own reading of an HLS bundle's playlist, or 0 when the
       node has no exact length. That is always so for a video on
-      Vimeo: only the node knows a row is on Vimeo, and the script now
-      guesses it from the manifest's text. `retry` is 15 when the
+      Vimeo: only the node knows a row is on Vimeo, and the info script
+      used to guess it from the manifest's text. It isn't read for a
+      row the page can't show. `retry` is 15 when the
       length read didn't settle (an R2 error, or the read's time
       limit), and 0 otherwise. It means ask again after that many
       seconds, and such a card is never kept by a cache, which could
@@ -1758,9 +1759,19 @@ driven by its owner in chat, with none of the visitor controls.
       SOS ones HTML; `marked` is already a dependency): titles and
       credits are text in the app, and read as Markdown "1. Hurricane
       Maria" loses its number (found in review). A source past 8,192
-      characters is cut at a word before it is read, so the parse
-      costs a bounded share of a Worker's CPU, and the text says it was
-      cut.
+      characters, or 3,072 for Markdown, is cut at a word before it is
+      read, so the parse costs a bounded share of a Worker's CPU, and
+      the text says it was cut. Length alone didn't bound Markdown
+      (found in the second review): a line of `1. 1. 1. ...` nests a
+      list per marker and took 89 ms in 3,072 characters, `>>>...`
+      overflowed the parser's stack, and unmatched emphasis is
+      quadratic. So a line's block markers past eight are flattened,
+      a source with more than 128 inline delimiters is read as HTML
+      alone (the most in any abstract on the node was 4), and so is
+      one the parser throws on. Every hostile shape found now reads in
+      a few milliseconds, and no real abstract reads differently. A
+      Markdown autolink, `<https://...>`, is kept as its address. A
+      licence's address goes in the ASCII form `URL` writes.
     - A dataset that isn't public is a 404 with the node's envelope,
       `error: "not_found"`, the only 404 a script acts on. The card
       reads its own row, so it is as current as the dataset's record: a
@@ -1780,7 +1791,8 @@ driven by its owner in chat, with none of the visitor controls.
       malformed one is a 400 `invalid_request`, an offset past `total`
       gives no datasets, and an unknown tag gives `total: 0`. A tag
       longer than the tags read ever lists is a 400, since an echo it
-      had to leave out would look like the unfiltered menu. A repeated
+      had to leave out would look like the unfiltered menu, and so is
+      one of nothing but spaces or control characters. A repeated
       key's first value counts, and a key the node doesn't know is
       ignored, so a later script's query reads on an older node.
     - `limit` runs from 1 to 9, defaulting to 9, frozen. A row whose id
@@ -1792,7 +1804,9 @@ driven by its owner in chat, with none of the visitor controls.
   - **`GET /api/exhibit/v1/tags`, the categories:** `{ tags: [{ tag,
     count }], more }`.
     - A tag is never cut, since it is the key a script sends back. Its
-      canonical form is NFC, trimmed, with control characters dropped.
+      canonical form drops control characters, then is NFC and trimmed;
+      normalized last, so it is its own canonical form, and a tag the
+      script was given matches when sent back.
       Tags are grouped and matched by it, and one whose canonical form
       is empty, longer than 40 bytes, or holds a character beyond the
       Basic Multilingual Plane is left out: whether Second Life carries
@@ -1822,15 +1836,18 @@ driven by its owner in chat, with none of the visitor controls.
       past validation that gave an 83 KB page, and tags of control
       characters.
     - A field added later must fit inside the same budget.
-    - A script sets `HTTP_BODY_MAXLENGTH` to the budget of what it
-      asks for. A node that breaks its promise, an older fork, or an
-      error page then costs no script more than that, and
-      `HTTP_BODY_TRUNCATED` tells the info script to tell the owner.
+    - A script sets `HTTP_BODY_MAXLENGTH` to one byte more than the
+      budget of what it asks for, so a reply of exactly the budget
+      can't read as cut, whichever way Second Life counts the limit. A
+      node that breaks its promise, an older fork, or an error page
+      then costs no script more than that, and `HTTP_BODY_TRUNCATED`
+      says it wasn't a card.
     - Anything that fails while answering, a D1 error or a spent
       quota among them, is a 503 `unavailable` in the node's envelope,
       never the platform's own page, which is neither JSON nor within
-      a budget. A method other than GET or HEAD is a 405
-      `method_not_allowed`.
+      a budget. A read asked with a method other than GET or HEAD is
+      a 405 `method_not_allowed`; any other path under `/api/exhibit/`
+      is `no_such_route` for every method.
   - **JSON, not plain lines.** A small reply that arrives whole reads
     with one `llJsonGetValue` a field, and Second Life decodes the
     escapes. A field can be added without moving the others. What sank
@@ -1847,13 +1864,20 @@ driven by its owner in chat, with none of the visitor controls.
       every request waiting on it if the one that started it ends
       (`orbit-gate.ts` says so; found in review), and requests that
       miss together each read. A failed read keeps the last good list
-      for up to ten minutes, trying again once a minute.
-    - So a retracted dataset can stay in pages for up to a minute, and
-      pages from different isolates can come from lists a minute
-      apart, so a page can skip or repeat a row. The menu, when it is
-      built, should learn to notice: the API review suggested an
-      additive `list` field, a short hash of the page's list, which a
-      script seeing it change between pages can start over on.
+      for up to five minutes, the stale copy `/api/v1/catalog` already
+      allows a client (`stale-while-revalidate=300`), trying again once
+      a minute and logging that it did.
+    - So a retracted dataset can stay in pages for up to a minute, or
+      five while reads fail, and pages from different isolates can come
+      from lists as far apart, so a page can skip or repeat a row. Its
+      card is a 404 at once, and the output page refuses it. The menu
+      should learn to notice the change, and the API review set three
+      conditions for the field that will say so: a `list`, a short hash
+      of the matching datasets' ids in order rather than the page's
+      alone; 18 bytes of the page's budget held for it now
+      (`PAGE_RESERVED`), which nothing else may spend; and shipped
+      before or with the first menu script, since a rezzed one can't
+      learn it later.
     - Cloudflare doesn't store a Function's reply at its edge, so
       `Cache-Control` saves the node nothing; it is for browsers:
       `public, max-age=60`, and `no-store` for a card with a `retry`
@@ -1874,11 +1898,12 @@ driven by its owner in chat, with none of the visitor controls.
     matches nothing answers a JSON 404, `no_such_route`, as
     `stac/[[path]].ts` does for its own, so a later script asking a
     read this node lacks gets an answer rather than the app's page.
-  - **The record read doesn't retire with the card.** Copies of
-    today's info script read the record and the manifest by position.
-    The record's key order stays pinned while they may exist, the
-    manifest's leading keys get pinned too, and `docs/protocol/README.md`
-    says so when the card ships.
+  - **The record read doesn't retire with the card.** Copies of the
+    info script from before the card read the record and the manifest
+    by position, under `/api/v1/`. The record's key order and the
+    manifest's leading keys stay pinned while they may exist
+    (`docs/protocol/README.md` says so), though those copies will meet
+    the protocol's `/api/v1/` 410 one day whatever is pinned.
   - **In the scripts, in three steps:**
     1. The info script reads the card in place of the record and the
        manifest: one request, or a second after a `retry`, about 4 KB
@@ -1895,9 +1920,12 @@ driven by its owner in chat, with none of the visitor controls.
        fourth script to give the globe script room.
   - **The node and the scripts go together.** A TerraViz node without
     these reads answers them with the app's page and a 200, not JSON.
-    The info script then shows the title alone and tells the owner once
-    that the node needs updating. There is no fallback to the record
-    read, since its code is what the info script sheds.
+    A node whose Functions are down, a spent daily quota among the
+    causes, answers the same way, so the info script asks again a
+    minute later, and once its four tries are spent shows the title
+    alone and tells the owner once. There is no fallback to the record
+    read, since its code is what the info script sheds. A request a
+    region restart dropped is asked again.
 - **Who is at the globe** comes from the region's avatar list and each
   avatar's distance from the globe's surface, every five seconds. That costs less than a sensor
   and isn't capped at 16 avatars. Nothing about a visitor leaves the

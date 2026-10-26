@@ -9,18 +9,23 @@
  * Pages answers an unknown path with. A Second Life script can't see a
  * reply's Content-Type, so a later script asking this node for a read it
  * lacks would otherwise take the app's HTML for an answer. As
- * `stac/[[path]].ts` does for its own paths. A method other than GET or
- * HEAD, which a real read falls through to here with, is a 405
- * `method_not_allowed`.
+ * `stac/[[path]].ts` does for its own paths. A real read asked with a
+ * method other than GET or HEAD falls through to here, and is a 405
+ * `method_not_allowed`; any other path is `no_such_route` for every
+ * method, so a later script's POST to a read this node lacks is told so.
  */
 
 import { exhibitError } from '../v1/_lib/exhibit-reads'
 
+/** The reads this node has, as Pages matches them (case aside). */
+const READS = /^\/api\/exhibit\/v1\/(datasets(\/[^/]+)?|tags)\/?$/i
+
 export const onRequest: PagesFunction = async context => {
   // A real read asked with another method falls through to here too, and
-  // isn't a read the node lacks.
+  // isn't a read the node lacks. Any other path is, whatever the method.
   const method = context.request.method
-  if (method !== 'GET' && method !== 'HEAD') {
+  const real = READS.test(new URL(context.request.url).pathname)
+  if (real && method !== 'GET' && method !== 'HEAD') {
     const res = exhibitError(405, 'method_not_allowed', 'The exhibit reads answer GET.')
     res.headers.set('Allow', 'GET, HEAD')
     return res

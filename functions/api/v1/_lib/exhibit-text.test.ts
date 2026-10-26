@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Zyra Project
 
-import { describe, expect, it } from 'vitest'
-import { canonicalTag, cutProse, exhibitPlainText, exhibitProse, jsonBytes, machineValue, SOURCE_MAX } from './exhibit-text'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { marked } from 'marked'
+import {
+  canonicalTag, cutProse, exhibitPlainText, exhibitProse, jsonBytes, machineValue, MARKDOWN_SOURCE_MAX, SOURCE_MAX,
+} from './exhibit-text'
 
 describe('exhibitPlainText', () => {
   it('takes Markdown out, keeping the words, only where it is asked to', () => {
@@ -28,11 +31,48 @@ describe('exhibitPlainText', () => {
 
   it('cuts a long source at a word before reading it, and says so', () => {
     const long = 'word '.repeat(SOURCE_MAX)
-    const { text, cut } = exhibitProse(long, { markdown: true })
-    expect(cut).toBe(true)
-    expect(text.endsWith('word...')).toBe(true)
-    expect(text.length).toBeLessThanOrEqual(SOURCE_MAX + 3)
+    for (const [markdown, max] of [[false, SOURCE_MAX], [true, MARKDOWN_SOURCE_MAX]] as const) {
+      const { text, cut } = exhibitProse(long, { markdown })
+      expect(cut).toBe(true)
+      expect(text.endsWith('word...')).toBe(true)
+      expect(text.length).toBeLessThanOrEqual(max + 3)
+    }
     expect(exhibitProse('short').cut).toBe(false)
+    // White space past the bound isn't a cut.
+    expect(exhibitProse(`Title${' '.repeat(SOURCE_MAX)}`)).toEqual({ text: 'Title', cut: false })
+    // Nor is a cut that leaves no text a "...".
+    expect(exhibitProse('<b>'.repeat(SOURCE_MAX))).toEqual({ text: '', cut: true })
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('flattens a line\'s block markers past the limit before the parse sees them', () => {
+    const parse = vi.spyOn(marked, 'parse')
+    exhibitProse('1. '.repeat(1024), { markdown: true })
+    const seen = parse.mock.calls[0][0] as string
+    expect((seen.match(/1\./g) ?? []).length).toBe(8)
+  })
+
+  it('reads a source the parser throws on as HTML alone', () => {
+    vi.spyOn(marked, 'parse').mockImplementation(() => { throw new RangeError('Maximum call stack size exceeded') })
+    expect(exhibitProse('<p>Ocean **heat**</p>', { markdown: true })).toEqual({ text: 'Ocean **heat**', cut: false })
+  })
+
+  it('reads Markdown nested or delimited past any abstract without the costly parse', () => {
+    // These overflowed the parser's stack or took 40 to 690 ms. Nesting
+    // past the limit is flattened, so what is left parses as a shallow
+    // list or quote; delimiters past the limit skip the parse, so the text
+    // comes back as written.
+    for (const unit of ['>', '1. ', '* - + ', '> 1. ']) {
+      expect(() => exhibitProse(unit.repeat(Math.ceil(MARKDOWN_SOURCE_MAX / unit.length)), { markdown: true }), unit)
+        .not.toThrow()
+    }
+    for (const unit of ['*a _b ', '![](', '`a']) {
+      const { text } = exhibitProse(unit.repeat(Math.ceil(MARKDOWN_SOURCE_MAX / unit.length)), { markdown: true })
+      expect(text.startsWith(unit.trim() + (unit.endsWith(' ') ? ' ' : '') + unit.trim()), unit).toBe(true)
+    }
+    // A few delimiters, as real abstracts have, are still read as Markdown.
+    expect(exhibitPlainText('1. One\n2. **Two** [link](https://x)', { markdown: true })).toBe('One Two link')
   })
 
   it('takes HTML out by the info script\'s rules: inline tags join words, others break them', () => {
@@ -89,6 +129,14 @@ describe('cutProse', () => {
     }
   })
 
+  it('cuts a long text as a short one would, reading only its head', () => {
+    // 100 characters, under the head it reads (the cap and 64 more), so
+    // this one is read whole.
+    const short = 'word '.repeat(20)
+    expect(cutProse(short, 48).text).toBe('word word word word word word word word word...')
+    expect(cutProse('word '.repeat(100_000), 48)).toEqual(cutProse(short, 48))
+  })
+
   it('never splits a character in two, nor a grapheme', () => {
     expect(cutProse('😀'.repeat(30), 21).text).toBe('😀😀😀😀...')
     // An accent written as its own code point stays on its letter.
@@ -120,5 +168,14 @@ describe('canonicalTag', () => {
     expect(canonicalTag('Snow\u0000 and  Ice')).toBe('Snow and Ice')
     const long = 'a'.repeat(200)
     expect(canonicalTag(long)).toBe(long)
+  })
+
+  it('is its own canonical form', () => {
+    // A control character dropped from between a letter and its accent
+    // leaves a pair: NFC runs last, so the result composes.
+    expect(canonicalTag('Ne\u0001\u0301ve')).toBe('Néve')
+    for (const t of ['Ne\u0001\u0301ve', ' Snow\u0000 and  Ice ', 'e\u0301', 'A\ufdd0\u0301']) {
+      expect(canonicalTag(canonicalTag(t)), JSON.stringify(t)).toBe(canonicalTag(t))
+    }
   })
 })

@@ -26,6 +26,8 @@ import {
   PAGE_BUDGET,
   PAGE_CAPS,
   PAGE_MAX_OFFSET,
+  PAGE_RESERVED,
+  buildTags,
   resetExhibitListForTests,
   TAG_CAP,
   TAGS_BUDGET,
@@ -220,6 +222,39 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect((await card(sqlite, ULID(4))).body.credit).toBe('O')
   })
 
+  it('marks nothing cut for a title padded with spaces past the source bound', async () => {
+    const sqlite = setup([{ id: ULID(1), title: `Hurricane Maria${' '.repeat(9000)}` }])
+    expect((await card(sqlite, ULID(1))).body).toMatchObject({ title: 'Hurricane Maria', truncated: false })
+  })
+
+  it('passes over a credit that is all markup past the source bound', async () => {
+    const sqlite = setup([{ id: ULID(1), attribution_text: '<img src="x">'.repeat(1000), organization: 'NOAA' }])
+    expect((await card(sqlite, ULID(1))).body.credit).toBe('NOAA')
+  })
+
+  it('answers an abstract Markdown can\'t parse, or would parse slowly, with its text', async () => {
+    const sqlite = setup([
+      // Each overflowed the parser's stack, or took 40 to 690 ms.
+      { id: ULID(1), abstract: '>'.repeat(3072) },
+      { id: ULID(2), abstract: '&gt;'.repeat(4000) },
+      { id: ULID(3), abstract: '1. '.repeat(1024) },
+      { id: ULID(4), abstract: '*a _b '.repeat(1365) },
+      { id: ULID(5), abstract: 'Ocean heat. ' + '> '.repeat(1500) },
+    ])
+    for (const n of [1, 2, 3, 4, 5]) {
+      const { status, text } = await card(sqlite, ULID(n))
+      expect(status, String(n)).toBe(200)
+      expect(bytesOf(text), String(n)).toBeLessThanOrEqual(2048)
+    }
+    expect((await card(sqlite, ULID(4))).body.abstract.startsWith('*a _b *a _b')).toBe(true)
+    expect((await card(sqlite, ULID(5))).body.abstract.startsWith('Ocean heat.')).toBe(true)
+  })
+
+  it('keeps a Markdown autolink as its address', async () => {
+    const sqlite = setup([{ id: ULID(1), abstract: 'Data at <https://www.ncei.noaa.gov/products> or <help@noaa.gov>.' }])
+    expect((await card(sqlite, ULID(1))).body.abstract).toBe('Data at https://www.ncei.noaa.gov/products or help@noaa.gov.')
+  })
+
   it('reads a title and a credit as text, and only the abstract as Markdown', async () => {
     const sqlite = setup([
       { id: ULID(1), title: '1. Hurricane Maria', organization: '# of fires per day', abstract: '1. One\n2. **Two**' },
@@ -272,14 +307,21 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
         id: ULID(1), start_time: 'September 2017', end_time: '2017-09-25', period: 'every 15 minutes',
         license_spdx: 'CC-BY-4.0<script>', license_url: 'javascript:alert(1)',
       },
-      // An address with a character a script can't hold, or that isn't ASCII.
+      // An address with a character a script can't hold, or that isn't
+      // ASCII, goes in the ASCII form URL writes, which says the same.
       { id: ULID(2), license_url: 'https://x.org/\u0001a' },
       { id: ULID(3), license_url: 'https://x.org/\ufdd0' },
-      { id: ULID(4), license_url: 'https://x.org/é' },
+      { id: ULID(4), license_url: 'https://例え.jp/ライセンス' },
+      { id: ULID(5), license_url: 'not a url' },
     ])
     const { body } = await card(sqlite, ULID(1))
     expect(body).toMatchObject({ startTime: '', endTime: '', period: '', license: '', licenseText: '' })
-    for (const id of [ULID(2), ULID(3), ULID(4)]) expect((await card(sqlite, id)).body.licenseText, id).toBe('')
+    expect((await card(sqlite, ULID(2))).body.licenseText).toBe('https://x.org/%01a')
+    expect((await card(sqlite, ULID(3))).body.licenseText).toBe('https://x.org/%EF%B7%90')
+    expect((await card(sqlite, ULID(4))).body.licenseText).toBe(
+      'https://xn--r8jz45g.jp/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9',
+    )
+    expect((await card(sqlite, ULID(5))).body.licenseText).toBe('')
   })
 
   it('keeps an instant to the millisecond, as many digits as the validators allow', async () => {
@@ -300,6 +342,23 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect(body.exactDuration).toBeCloseTo(6.2, 6)
     expect(body.retry).toBe(0)
     expect(waitUntil).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads no length for a row the page can\'t show', async () => {
+    // The manifest reads the format as written, so this one isn't shown.
+    const sqlite = setup([{ id: ULID(1), format: 'Video/MP4', data_ref: 'r2:videos/DS/U/master.m3u8' }])
+    const waitUntil = vi.fn()
+    const { body } = await call<ExhibitCard>(getCard as never, sqlite, `/api/exhibit/v1/datasets/${ULID(1)}`, {
+      params: { id: ULID(1) }, env: { CATALOG_R2: bucket('ok') }, waitUntil,
+    })
+    expect(body).toMatchObject({ showable: false, exactDuration: 0, retry: 0 })
+    expect(waitUntil).not.toHaveBeenCalled()
+  })
+
+  it('reads the id percent-decoded, as llEscapeURL sends one with - or _', async () => {
+    const sqlite = setup([{ id: 'LEGACY-ID_1' }])
+    expect((await card(sqlite, 'LEGACY%2DID%5F1')).body.id).toBe('LEGACY-ID_1')
+    expect((await card(sqlite, 'LEGACY%2')).status).toBe(404)
   })
 
   it('says 0 for a video on Vimeo, which never has an exact length', async () => {
@@ -505,6 +564,8 @@ describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
       // A tag longer than the tags read ever lists: a 400, not a page
       // that would echo nothing and look unfiltered.
       `?tag=${'x'.repeat(TAG_CAP + 1)}`, `?tag=${encodeURIComponent('海'.repeat(14))}`,
+      // Nothing but spaces or a control character: not the whole menu.
+      '?tag=%20%20', '?tag=%01',
     ]
     for (const query of queries) {
       const { status, body, res } = await page(sqlite, query)
@@ -551,7 +612,10 @@ describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
       total: n, offset: n, limit: n, tag: 'x'.repeat(PAGE_CAPS.tag),
       datasets: Array.from({ length: 9 }, () => ({ id: 'x'.repeat(PAGE_CAPS.id), title: 'x'.repeat(PAGE_CAPS.title) })),
     }
-    expect(byteLength(worst)).toBeLessThanOrEqual(PAGE_BUDGET)
+    // With room held back for the menu's change signal, which is to ship
+    // with the first menu script.
+    expect(byteLength(worst) + PAGE_RESERVED).toBeLessThanOrEqual(PAGE_BUDGET)
+    expect(PAGE_RESERVED).toBe(Buffer.byteLength(',"list":"0123abcd"'))
     expect(String(PAGE_MAX_OFFSET).length).toBeLessThanOrEqual(PAGE_CAPS.number)
   })
 
@@ -583,6 +647,7 @@ describe('GET /api/exhibit/v1/tags, the categories', () => {
       { id: ULID(2), tags: ['Secret'], hidden: true },
       { id: ULID(3), tags: ['Draft'], published: false },
       { id: ULID(4), tags: ['Private'], visibility: 'private' },
+      { id: ULID(5), tags: ['Withdrawn'], retracted: true },
     ])
     expect((await tags(sqlite)).body.tags.map(t => t.tag)).toEqual(['Water'])
     expect((await page(sqlite, '?tag=Secret')).body.total).toBe(0)
@@ -620,6 +685,28 @@ describe('GET /api/exhibit/v1/tags, the categories', () => {
     expect(body.tags.map(t => t.tag.slice(0, 2))).toEqual(body.tags.map((_, i) => String(i).padStart(2, '0')))
     for (const t of body.tags) expect(t.tag.endsWith('海'.repeat(12))).toBe(true)
     expect(body.tags.some(t => t.tag.startsWith('x') || t.tag.startsWith('Rain'))).toBe(false)
+  })
+
+  it('lists a tag in the form a page matches, a control character between letter and accent included', async () => {
+    const sqlite = setup([{ id: ULID(1), tags: ['Ne\u0001\u0301ve'] }])
+    const listed = (await tags(sqlite)).body.tags
+    expect(listed).toEqual([{ tag: 'Néve', count: 1 }])
+    expect((await page(sqlite, `?tag=${encodeURIComponent(listed[0].tag)}`)).body.total).toBe(1)
+  })
+
+  it('drops whole tags until the reply fits, measured with the longer value of more', () => {
+    // Caps keep a real list from needing it, so it is driven directly: 29
+    // tags of 46 characters and one of 62 come to 2,049 bytes with
+    // `more: false` and 2,048 with `true`.
+    const tagsOf = Array.from({ length: 30 }, (_, i) => `${String(i).padStart(2, '0')}${'t'.repeat(i === 29 ? 60 : 44)}`)
+    const list = tagsOf.map((tag, i) => ({
+      row: { id: ULID(i + 1) }, kind: 'video', showable: true, tags: [tag],
+    })) as unknown as Parameters<typeof buildTags>[0]
+    expect(byteLength({ tags: tagsOf.map(tag => ({ tag, count: 1 })), more: false })).toBe(2049)
+    const got = buildTags(list)
+    expect(byteLength(got)).toBeLessThanOrEqual(TAGS_BUDGET)
+    expect(got).toMatchObject({ more: true })
+    expect(got.tags).toHaveLength(29)
   })
 
   it('leaves out a tag over the cap or beyond the BMP, which a page could not be asked for', async () => {
@@ -737,11 +824,22 @@ describe('anything else under /api/exhibit/', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-store')
   })
 
-  it('is a 405 for another method, which a real read falls through to here with', async () => {
-    const { status, body, res } = await other('POST')
-    expect(status).toBe(405)
-    expect(body.error).toBe('method_not_allowed')
-    expect(res.headers.get('Allow')).toBe('GET, HEAD')
+  it('is a 405 for another method on a real read, which falls through to here', async () => {
+    for (const path of ['/api/exhibit/v1/tags', '/api/exhibit/v1/datasets', `/api/exhibit/v1/datasets/${ULID(1)}`, '/api/exhibit/V1/Tags/']) {
+      const { status, body, res } = await call<{ error: string }>(noSuchRoute as never, null, path, { method: 'POST' })
+      expect(status, path).toBe(405)
+      expect(body.error).toBe('method_not_allowed')
+      expect(res.headers.get('Allow')).toBe('GET, HEAD')
+    }
+  })
+
+  it('is no_such_route for every method on a path the node lacks', async () => {
+    // So a later script's POST to a read this node doesn't have is told so.
+    for (const path of ['/api/exhibit/nope', '/api/exhibit/v2/datasets', '/api/exhibit/v1/datasets/a/b']) {
+      const { status, body } = await call<{ error: string }>(noSuchRoute as never, null, path, { method: 'POST' })
+      expect(status, path).toBe(404)
+      expect(body.error).toBe('no_such_route')
+    }
   })
 })
 
