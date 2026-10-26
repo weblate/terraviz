@@ -838,7 +838,10 @@ The work, smallest first:
        through on the rest. The fix belongs on the node: report 0
        for `vimeo:`, or sum the Vimeo playlist as `hls-duration.ts`
        sums the node's own, which would give those datasets a moving
-       date. `stream:`
+       date. The exhibit's card took the first on 26 October: its
+       `exactDuration` is 0 for `vimeo:`, and the info script reads
+       the card rather than the manifest (Phase 2's "The exhibit's own
+       reads from the node"). `stream:`
        and single files still report 0, and any reading can be 0 for
        a moment when the bucket is slow, which the manifest caches for
        15 s rather than five minutes;
@@ -1596,7 +1599,9 @@ driven by its owner in chat, with none of the visitor controls.
     the globe, and asks the globe to go back to the live Earth once
     the last visitor has been gone for the idle time.
   - **info** owns what the globe says about itself. It reads the
-    record and the manifest for each dataset. From them it keeps the
+    node's card for each dataset (the record and the manifest until
+    26 October; "The exhibit's own reads from the node" below). From it
+    it keeps the
     hover text (the title, the date, any telemetry notice and a short
     credit, in that fixed order, in 254 bytes: §7 item 4
     has the shortening rule). It also gives the abstract and full credit on
@@ -1651,7 +1656,9 @@ driven by its owner in chat, with none of the visitor controls.
     about that dataset in place of the chat abstract.
 - **The exhibit's own reads from the node** (designed 25 October and
   revised after the API review the same day; the node's half built 26
-  October in `functions/api/v1/exhibit/`, the scripts' not yet). The
+  October in `functions/api/v1/exhibit/`, and the info script moved
+  onto the card the same day, not yet measured in-world; the menu not
+  yet). The
   scripts have about 6 KB to spare at their busiest (§9 Phase 2's
   status note), and every web reply lands in every script in the prim
   with a handler for one. Two of the node's replies don't fit that:
@@ -1823,7 +1830,8 @@ driven by its owner in chat, with none of the visitor controls.
     1. The info script reads the card in place of the record and the
        manifest: one request, or a second after a `retry`, about 4 KB
        held where the record took 6, and no JSON or HTML code of its
-       own.
+       own. Done 26 October, 185 lines shorter; `/9 memory` in-world is
+       still to measure.
     2. The menu. The info script stays the only script with an
        `http_response`. It reads pages for the visitors script and
        relays their ids and titles. A link message reaches every
