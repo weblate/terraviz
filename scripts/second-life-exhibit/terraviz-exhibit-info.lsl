@@ -108,7 +108,7 @@ integer gTalk;
 string  gFor;          // the dataset the fields below describe
 integer gHaveRec;      // its card has been read
 string  gPage;         // the dataset's page, a path on the node, as "/dataset/<slug>"
-string  gCardTitle;    // the dataset's title, for one the globe has no name for
+string  gCardTitle;    // the card's title, kept for every card, used when the globe's title is the bare id
 integer gVideo;
 integer gDated;
 integer gStartDay;     // days since 1970, and seconds into that day
@@ -370,10 +370,11 @@ string fit(string s, integer max)
     return llStringTrim(s, STRING_TRIM_TAIL) + "...";
 }
 
-// What the dataset is called: the menu's or the notecard's name, or the
-// card's title for one shown by its id alone (/9 show <id>), which the
-// globe then names by the id, and which means nothing to a visitor.
-string name()
+// What the dataset is called: the name the globe was given (the menu's,
+// a notecard's, a preset's, or one typed after /9 show <id>), or the
+// card's title for one shown by its id alone, which the globe then names
+// by the id, and which means nothing to a visitor.
+string called()
 {
     if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;
     return gTitle;
@@ -381,7 +382,7 @@ string name()
 
 hover()
 {
-    string title = name();
+    string title = called();
     string credit = LIVE_CREDIT;
     string stamp = "";
     if (gDataset == "") title = LIVE_LINE;
@@ -612,7 +613,7 @@ about(key av)
     gLastAboutAt = t;
 
     if (gDataset == "") { say(av, LIVE_ABOUT + " TerraViz: " + gNode); return; }
-    string title = name();
+    string title = called();
     if (llGetInventoryType(gDataset) == INVENTORY_NOTECARD)
     {
         // Without copy it would move to the first visitor, and without

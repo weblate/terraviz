@@ -267,11 +267,11 @@ describe('second-life exhibit scripts', () => {
     // means nothing to a visitor (found in-world, 26 October). A menu's,
     // a notecard's or a preset's name is the owner's choice and stays.
     expect(body(globe, 'show(key who, string id, string title)')).toContain('if (gTitle == "") gTitle = id;')
-    const name = body(info, 'string name()')
+    const name = body(info, 'string called()')
     expect(name).toContain('if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;')
-    expect(body(info, 'hover()')).toContain('string title = name();')
+    expect(body(info, 'hover()')).toContain('string title = called();')
     const about = body(info, 'about(key av)')
-    expect(about).toContain('string title = name();')
+    expect(about).toContain('string title = called();')
     expect(about).not.toContain('gTitle')
     expect(body(info, 'forget()')).toContain('gCardTitle = "";')
   })

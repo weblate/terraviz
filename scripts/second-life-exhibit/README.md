@@ -144,8 +144,10 @@ turns it instead. A drag handle beside the globe is planned
 
 **The floating text** holds 254 bytes, in this order, here for a
 dataset a `datasets` notecard names "Wildfire Smoke Overhead
-(2026-08-12)" (the title is the menu's or the notecard's name, or the
-dataset's own title for one `/9 show` names by its id alone):
+(2026-08-12)" (the title is the name the globe was given, from the menu,
+a notecard, a preset or `/9 show <id> <name>`; for one `/9 show` names by
+its id alone, the dataset's own title once its card arrives, and the id
+until then or on a node without cards):
 
 ```
 Wildfire Smoke Overhead (2026-08-12)
@@ -370,7 +372,8 @@ stand at the globe.
    before. It shouldn't during a talk.
 9. **Memory, and a date with a time.** `/9 show 01KQG64Y0999GTWAQQ1MZ99HAE`,
    Hurricane Maria 2017, which has a long abstract and a frame every 15
-   minutes. The floating text
+   minutes. The floating text and About should lead with "Hurricane
+   Maria - 2017", the card's title, not the id. The floating text
    should show a date and a UTC time, from 17 Sep 2017, 00:00 UTC to
    25 Sep 2017, 23:45 UTC across the clip. Choose About, then
    `/9 memory`. Every script should report well under 64 KB. The peaks
