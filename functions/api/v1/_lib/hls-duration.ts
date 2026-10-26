@@ -76,20 +76,30 @@
  * length at one frame rate. The sum is then moved onto the frame grid
  * the master names (`onFrameGrid`), since summed microseconds can land
  * a few off the frame the media ends on. Because the addresses come from
- * outside, every one read must be HTTPS on one of Vimeo's own hosts
- * (`REMOTE_PLAYLIST_HOST`), redirects are followed one hop at a time so
- * each is checked before it is asked, and a body is counted as it
- * arrives, so none is read past the size limit. A variant may sit on any
- * of those hosts. The time limit is longer (`REMOTE_READ_BUDGET_MS`),
- * and the memory is keyed on the Vimeo id, since the stream's address is
- * signed and changes. A proxy or a playlist that fails, or answers 200
- * with something that isn't a playlist, and the time limit read as not
- * `settled`; a video that is gone (404) and everything refused are a
- * settled 0, each logged with why, but never with an address's path or
- * query, which are signed.
+ * outside, every one read must be HTTPS at the default port with no
+ * credentials, on Vimeo's player or its CDN (`REMOTE_PLAYLIST_HOST`);
+ * redirects are followed one hop at a time so each is checked before it
+ * is asked; a body is counted as it arrives, so none is read past the
+ * size limit; and one reading makes at most `MAX_REMOTE_FETCHES`
+ * requests. A variant may sit on any of those hosts. The time limit is
+ * longer (`REMOTE_READ_BUDGET_MS`), a reading handed to `waitUntil`
+ * stops at `REMOTE_READ_CEILING_MS`, and the first variant to fail stops
+ * the rest. The memory is keyed on the Vimeo id, since the stream's
+ * address is signed and changes. A proxy or a playlist that fails (a
+ * missing one included: the proxy has just said the video exists), or
+ * answers 200 with something that isn't a playlist, and the time limit
+ * read as not `settled`; only the proxy's 404, a video that is gone, and
+ * everything refused are a settled 0. Every one is logged with why, but
+ * never with an address's path or query, which are signed, and a
+ * playlist's own text only quoted and cut short.
+ *
+ * **A failure is remembered briefly** (`UNSETTLED_TTL_MS`, on both
+ * paths), so a source that is failing isn't asked again by every request
+ * meanwhile. Requests that miss together still each read, since a read
+ * can't be shared in flight.
  */
 
-import { requestVimeoManifest } from './video-proxy'
+import { isVimeoId, requestVimeoManifest } from './video-proxy'
 
 /** A playlist larger than this is not read. ffmpeg's playlists run
  *  about 30 bytes a segment and the incremental writer's about 130, so
@@ -108,8 +118,9 @@ export const READ_BUDGET_MS = 500
 export const REMOTE_READ_BUDGET_MS = 2000
 
 /** The hosts a remote stream's playlists are read from: Vimeo's player,
- *  which redirects, and its CDN. Anything else reads as unknown. */
-export const REMOTE_PLAYLIST_HOST = /(^|\.)(vimeo\.com|vimeocdn\.com)$/i
+ *  which redirects, and its CDN, and no other host under vimeo.com.
+ *  Anything else reads as unknown, and is logged. */
+export const REMOTE_PLAYLIST_HOST = /^(player\.vimeo\.com|([a-z0-9-]+\.)*vimeocdn\.com)$/i
 
 /** The most redirects one remote playlist is followed through, each hop
  *  checked against `REMOTE_PLAYLIST_HOST` before it is asked. Vimeo's
@@ -120,11 +131,24 @@ export const MAX_REMOTE_REDIRECTS = 5
  *  once; Vimeo's list seven. */
 export const MAX_REMOTE_VARIANTS = 16
 
-/** A Vimeo video id as the proxy takes one. */
-const VIMEO_ID = /^[0-9]{1,20}$/
+/** The most requests one Vimeo reading makes, the proxy's included:
+ *  Vimeo's take ten (the proxy, the player and its redirect, seven
+ *  variants), and this stays under the 50 a Worker on the free plan may
+ *  make in a request. */
+export const MAX_REMOTE_FETCHES = 24
+
+/** When a Vimeo reading handed to `waitUntil` is stopped, whatever it
+ *  is waiting on. */
+export const REMOTE_READ_CEILING_MS = 10_000
 
 /** How long an isolate remembers a settled reading. */
 export const MEMO_TTL_MS = 10 * 60 * 1000
+
+/** How long an isolate remembers a reading that failed, so a card asked
+ *  for again and again meanwhile doesn't read again each time. Shorter
+ *  than the 15 s a card asks a script to wait, so the script's retry
+ *  reads afresh. */
+export const UNSETTLED_TTL_MS = 10_000
 
 /** The most readings an isolate remembers. */
 export const MEMO_MAX_ENTRIES = 512
@@ -283,15 +307,38 @@ async function readPlaylist(bucket: PlaylistBucket, key: string): Promise<string
   return object.text()
 }
 
-/** Whether `url` is one this module may read a remote playlist from. */
+/** Whether `url` is one this module may read a remote playlist from: on
+ *  one of Vimeo's hosts, over HTTPS, at the default port and with no
+ *  credentials in it. */
 function allowedRemote(url: URL): boolean {
-  return url.protocol === 'https:' && REMOTE_PLAYLIST_HOST.test(url.hostname)
+  return url.protocol === 'https:' && url.port === '' && url.username === '' && url.password === ''
+    && REMOTE_PLAYLIST_HOST.test(url.hostname)
 }
 
 /** Why a remote reading is a settled 0, for the log. It never carries an
  *  address's path or query: Vimeo's are signed and work as a password
  *  for about an hour. */
 type Refusal = (why: string) => void
+
+/** A remote reading that failed and is asked again later, with a message
+ *  this module wrote, so it can be logged: a platform's own error is not,
+ *  since it may carry the address. */
+class RemoteFailure extends Error {}
+
+/** One remote reading: how it fetches, where its refusals go, the signal
+ *  that stops everything it started, and how many requests it has made. */
+interface RemoteRead {
+  fetchImpl: typeof fetch
+  refuse: Refusal
+  signal: AbortSignal
+  fetches: number
+}
+
+/** Text from a playlist, as a log may show it: cut short and quoted, so
+ *  no line break or terminal escape in it reaches the log as one. */
+function shown(text: string): string {
+  return JSON.stringify(text.slice(0, 64))
+}
 
 async function discard(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => {})
@@ -335,53 +382,53 @@ async function boundedText(res: Response): Promise<string | null> {
  * relative variant resolves against that), following redirects one hop
  * at a time so every hop is checked before it is asked, or `null` for a
  * settled 0: an address this module won't read, a redirect off Vimeo's
- * hosts, too many redirects, a playlist that is gone (404 or 410), or a
- * body over the size limit. Throws on a failed fetch, any other status
+ * hosts, too many redirects, a body over the size limit, or more
+ * requests than one reading may make
+ * (`MAX_REMOTE_FETCHES`). Throws on a failed fetch, any other status
  * than 200, or a 200 that isn't a playlist (a bot check's page, say),
  * which the caller reports as not settled.
  */
-async function fetchPlaylist(
-  fetchImpl: typeof fetch,
-  address: URL,
-  refuse: Refusal,
-): Promise<{ text: string; url: URL } | null> {
+async function fetchPlaylist(read: RemoteRead, address: URL): Promise<{ text: string; url: URL } | null> {
   let url = address
   for (let hop = 0; ; hop++) {
     if (!allowedRemote(url)) {
-      refuse(`${url.protocol}//${url.hostname} is not one of Vimeo's hosts`)
+      read.refuse(`${url.protocol}//${url.hostname}${url.port ? ':' + url.port : ''} is not one of Vimeo's hosts, or names a port or credentials`)
       return null
     }
-    const res = await fetchImpl(url.href, { redirect: 'manual' })
+    if (read.fetches >= MAX_REMOTE_FETCHES) {
+      read.refuse(`more than ${MAX_REMOTE_FETCHES} requests`)
+      return null
+    }
+    read.fetches++
+    const res = await read.fetchImpl(url.href, { redirect: 'manual', signal: read.signal })
     if ([301, 302, 303, 307, 308].includes(res.status)) {
       await discard(res)
       const location = res.headers.get('location')
       if (location === null || hop >= MAX_REMOTE_REDIRECTS) {
-        refuse(location === null ? `${url.hostname} redirected nowhere` : `more than ${MAX_REMOTE_REDIRECTS} redirects`)
+        read.refuse(location === null ? `${url.hostname} redirected nowhere` : `more than ${MAX_REMOTE_REDIRECTS} redirects`)
         return null
       }
       try {
         url = new URL(location, url)
       } catch {
-        refuse(`${url.hostname} redirected to an address that is not one`)
+        read.refuse(`${url.hostname} redirected to an address that is not one`)
         return null
       }
       continue
     }
-    if (res.status === 404 || res.status === 410) {
-      await discard(res)
-      refuse(`${url.hostname} answered ${res.status}`)
-      return null
-    }
+    // Any status but 200, a 404 included: the proxy has just said the
+    // video exists, so a playlist it led to that is missing is more
+    // likely a CDN's miss, or a signature gone stale, than gone for good.
     if (res.status !== 200) {
       await discard(res)
-      throw new Error(`${url.hostname} answered ${res.status}`)
+      throw new RemoteFailure(`${url.hostname} answered ${res.status}`)
     }
     const text = await boundedText(res)
     if (text === null) {
-      refuse(`a playlist from ${url.hostname} over ${MAX_PLAYLIST_BYTES} bytes`)
+      read.refuse(`a playlist from ${url.hostname} over ${MAX_PLAYLIST_BYTES} bytes`)
       return null
     }
-    if (playlistLines(text) === null) throw new Error(`${url.hostname} answered 200 with something that isn't a playlist`)
+    if (playlistLines(text) === null) throw new RemoteFailure(`${url.hostname} answered 200 with something that isn't a playlist`)
     return { text, url }
   }
 }
@@ -413,13 +460,21 @@ export function masterVariants(text: string): Variant[] | null {
   return variants
 }
 
+/** One attribute of an attribute list, matched only where the last one
+ *  ended. Sticky, so a run that isn't an attribute ends the walk rather
+ *  than being searched again from every offset, which took seconds of
+ *  CPU, no time limit can interrupt, on a long line (found in review). */
+const NEXT_ATTRIBUTE = /([A-Z0-9-]+)=("[^"]*"|[^,]*)(?:,|$)/y
+
 /** One attribute's value from a tag's attribute list, quotes taken off.
  *  The list is walked in order, a quoted string taken whole, so a comma
  *  inside one (as in `CODECS`) never starts another attribute. */
 function attribute(tag: string, name: string): string | null {
   const list = tag.slice(tag.indexOf(':') + 1)
-  for (const [, key, value] of list.matchAll(/([A-Z0-9-]+)=("[^"]*"|[^,]*),?/g)) {
-    if (key === name) return value.startsWith('"') ? value.slice(1, -1) : value
+  NEXT_ATTRIBUTE.lastIndex = 0
+  for (let m = NEXT_ATTRIBUTE.exec(list); m !== null; m = NEXT_ATTRIBUTE.exec(list)) {
+    if (m[1] === name) return m[2].startsWith('"') ? m[2].slice(1, -1) : m[2]
+    if (NEXT_ATTRIBUTE.lastIndex >= list.length) break
   }
   return null
 }
@@ -443,7 +498,7 @@ function unstatedLength(master: string, variants: Variant[]): string | null {
   if (lines.some(l => l.startsWith('#EXT-X-MEDIA:') && attribute(l, 'TYPE') === 'AUDIO')) return 'an audio rendition'
   for (const v of variants) {
     if (v.codecs === null) return 'a variant that does not name its codecs'
-    if (!v.codecs.split(',').every(c => VIDEO_CODEC.test(c.trim()))) return `a variant carrying ${v.codecs}`
+    if (!v.codecs.split(',').every(c => VIDEO_CODEC.test(c.trim()))) return `a variant carrying ${shown(v.codecs)}`
   }
   return null
 }
@@ -480,10 +535,11 @@ export function onFrameGrid(seconds: number, fps: number | null): number {
   return Math.round((whole / fps) * 1e6) / 1e6
 }
 
-/** A remote stream's length from its master (or media) playlist at
- *  `address`: every variant read, and all of them the same length to the
- *  microsecond at one frame rate, since a visitor may play any. */
-async function readFromUrl(fetchImpl: typeof fetch, address: string, refuse: Refusal): Promise<number> {
+/** A remote stream's length from its master playlist at `address`: every
+ *  variant read, and all of them the same length to the microsecond at
+ *  one frame rate, since a visitor may play any. */
+async function readFromUrl(read: RemoteRead, address: string, stop: AbortController): Promise<number> {
+  const refuse = read.refuse
   let start: URL
   try {
     start = new URL(address)
@@ -491,10 +547,10 @@ async function readFromUrl(fetchImpl: typeof fetch, address: string, refuse: Ref
     refuse('the video proxy gave an address that is not one')
     return 0
   }
-  const top = await fetchPlaylist(fetchImpl, start, refuse)
+  const top = await fetchPlaylist(read, start)
   if (top === null) return 0
   if (!isMasterPlaylist(top.text)) {
-    refuse('a media playlist, which cannot say whether it carries audio')
+    refuse('a playlist with no variants, which cannot say whether it carries audio')
     return 0
   }
   const variants = masterVariants(top.text)
@@ -511,6 +567,11 @@ async function readFromUrl(fetchImpl: typeof fetch, address: string, refuse: Ref
     refuse(unstated)
     return 0
   }
+  const rates = new Set(variants.map(v => v.frameRate))
+  if (rates.size > 1) {
+    refuse(`variants at different frame rates (${[...rates].map(r => (r === null ? 'none' : shown(r))).join(', ')})`)
+    return 0
+  }
   let urls: URL[]
   try {
     urls = variants.map(v => new URL(v.uri, top.url))
@@ -518,23 +579,30 @@ async function readFromUrl(fetchImpl: typeof fetch, address: string, refuse: Ref
     refuse('a variant address that is not one')
     return 0
   }
-  const lengths = await Promise.all(urls.map(async url => {
-    const media = await fetchPlaylist(fetchImpl, url, refuse)
-    if (media === null) return null
-    const seconds = mediaPlaylistDuration(media.text)
-    if (seconds === null) refuse('a variant whose length cannot be stated')
-    return seconds
+  // The first variant to fail or be refused decides the reading, so it
+  // stops the others rather than leaving them running past the reply.
+  const outcomes = await Promise.allSettled(urls.map(async url => {
+    try {
+      const media = await fetchPlaylist(read, url)
+      const seconds = media === null ? null : mediaPlaylistDuration(media.text)
+      if (media !== null && seconds === null) refuse('a variant whose length cannot be stated')
+      if (seconds === null) stop.abort()
+      return seconds
+    } catch (error) {
+      stop.abort()
+      throw error
+    }
   }))
-  const known = lengths.filter((l): l is number => l !== null)
-  if (known.length !== lengths.length) return 0
+  // A refusal is settled even when it stopped another variant mid-read;
+  // otherwise a failure is the reading's, and the one that stopped the
+  // rest, not one it stopped, is the one to report.
+  if (outcomes.some(o => o.status === 'fulfilled' && o.value === null)) return 0
+  const failures = outcomes.filter((o): o is PromiseRejectedResult => o.status === 'rejected').map(o => o.reason)
+  if (failures.length > 0) throw failures.find(f => f instanceof RemoteFailure) ?? failures[0]
+  const known = outcomes.map(o => (o as PromiseFulfilledResult<number>).value)
   const first = known[0]
   if (known.some(l => l !== first)) {
     refuse(`variants of different lengths (${[...new Set(known)].join(', ')} s)`)
-    return 0
-  }
-  const rates = new Set(variants.map(v => v.frameRate))
-  if (rates.size > 1) {
-    refuse(`variants at different frame rates (${[...rates].join(', ')})`)
     return 0
   }
   return onFrameGrid(first, framesPerSecond(variants[0].frameRate))
@@ -584,9 +652,10 @@ function remember(memo: HlsDurationMemo, key: string, reading: HlsDurationReadin
 }
 
 /**
- * The length in seconds of the HLS asset whose master (or media)
- * playlist is `key` in `bucket`, 0 when it cannot be stated. Never
- * throws, and never takes much longer than `budgetMs`.
+ * The length in seconds of the HLS asset whose master playlist is `key`
+ * in `bucket`, 0 when it cannot be stated (a media playlist named
+ * directly always is). Never throws, and never takes much longer than
+ * `budgetMs`.
  */
 export async function readHlsDuration(
   bucket: PlaylistBucket | undefined,
@@ -612,25 +681,44 @@ export async function readVimeoDuration(
   proxyBase: string,
   options: ReadVimeoDurationOptions = {},
 ): Promise<HlsDurationReading> {
-  if (!VIMEO_ID.test(vimeoId)) return { seconds: 0, settled: true }
+  if (!isVimeoId(vimeoId)) return { seconds: 0, settled: true }
   const fetchImpl = options.fetchImpl ?? fetch
   const refuse: Refusal = why => console.warn(`[hls-duration] Vimeo ${vimeoId}: ${why}, so its length reads as unknown`)
-  const read = async (): Promise<number> => {
-    const { status, manifest } = await requestVimeoManifest(vimeoId, proxyBase, fetchImpl)
-    // The proxy passes on Vimeo's 404 for a video that is gone. Anything
-    // else that isn't a manifest is the proxy failing, asked again later.
-    if (status === 404) {
-      refuse('the video proxy answered 404')
-      return 0
+  const once = async (): Promise<number> => {
+    // Whatever the reading started stops at the first failure, a refusal
+    // or the ceiling, so none of it runs on for long past the reply.
+    const stop = new AbortController()
+    let ranOut = false
+    const ceiling = setTimeout(() => {
+      ranOut = true
+      stop.abort()
+    }, REMOTE_READ_CEILING_MS)
+    const read: RemoteRead = { fetchImpl, refuse, signal: stop.signal, fetches: 0 }
+    try {
+      read.fetches++
+      const { status, manifest } = await requestVimeoManifest(vimeoId, proxyBase, fetchImpl, stop.signal)
+      // The proxy passes on Vimeo's 404 for a video that is gone. Anything
+      // else that isn't a manifest is the proxy failing, asked again later.
+      if (status === 404) {
+        refuse('the video proxy answered 404')
+        return 0
+      }
+      if (!manifest) throw new RemoteFailure(`the video proxy answered ${status}`)
+      if (typeof manifest.hls !== 'string' || manifest.hls === '') {
+        refuse('the video proxy gave no HLS address')
+        return 0
+      }
+      return await readFromUrl(read, manifest.hls, stop)
+    } catch (error) {
+      const why = error instanceof RemoteFailure ? error.message
+        : ranOut ? `the read ran past ${REMOTE_READ_CEILING_MS / 1000} s` : 'a request failed'
+      console.warn(`[hls-duration] Vimeo ${vimeoId}: ${why}, so its length is asked for again later`)
+      throw error
+    } finally {
+      clearTimeout(ceiling)
     }
-    if (!manifest) throw new Error(`the video proxy answered ${status}`)
-    if (typeof manifest.hls !== 'string' || manifest.hls === '') {
-      refuse('the video proxy gave no HLS address')
-      return 0
-    }
-    return readFromUrl(fetchImpl, manifest.hls, refuse)
   }
-  return measure(options.memo ?? remoteMemo, vimeoId, read, options, REMOTE_READ_BUDGET_MS)
+  return measure(options.memo ?? remoteMemo, vimeoId, once, options, REMOTE_READ_BUDGET_MS)
 }
 
 /** A read's length, remembered once it lands, within a time limit. */
@@ -643,7 +731,9 @@ async function measure(
 ): Promise<HlsDurationReading> {
   const now = options.nowMs ?? Date.now
   const remembered = memo.get(key)
-  if (remembered && now() - remembered.atMs < MEMO_TTL_MS) return remembered.reading
+  if (remembered && now() - remembered.atMs < (remembered.reading.settled ? MEMO_TTL_MS : UNSETTLED_TTL_MS)) {
+    return remembered.reading
+  }
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const outOfTime = new Promise<HlsDurationReading>(resolve => {
@@ -658,7 +748,13 @@ async function measure(
       remember(memo, key, settled, now())
       return settled
     },
-    (): HlsDurationReading => UNKNOWN_FOR_NOW,
+    (): HlsDurationReading => {
+      // Briefly, so a failing source isn't asked again by every request
+      // meanwhile; a time limit alone is not remembered, since the read
+      // it gave up on may still land.
+      remember(memo, key, UNKNOWN_FOR_NOW, now())
+      return UNKNOWN_FOR_NOW
+    },
   )
   options.waitUntil?.(reading)
   try {

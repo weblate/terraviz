@@ -1917,17 +1917,21 @@ driven by its owner in chat, with none of the visitor controls.
     - A card for a Vimeo row asks outside the node. In an isolate that
       hasn't read that video in ten minutes, it calls the video proxy
       (which asks Vimeo's API), Vimeo's player address, which redirects,
-      the CDN's master and each of its variants (seven today), within
-      two seconds. Every playlist must come from Vimeo's own hosts over
-      HTTPS. Each redirect hop is checked before it is asked, and no
-      body is read past a megabyte. So a Vimeo row's moving date depends
-      on the proxy and on Vimeo answering a Worker. When either fails, a
-      card says `retry`, which a script spends its four tries on before
-      showing the range. A refusal (a host off the list, renditions that
-      disagree, audio) shows the range for ten minutes and is logged,
-      without the signed addresses. The asking is bounded by the script,
-      which reads a card only when the dataset changes: four cards at
-      most per choice.
+      the CDN's master and each of its variants (seven today), ten
+      requests in all, within two seconds. Every playlist must come from
+      Vimeo's player or CDN over HTTPS. Each redirect hop is checked
+      before it is asked, no body is read past a megabyte, and no
+      reading makes more than 24 requests or runs past ten seconds after
+      the reply. So a Vimeo row's moving date depends on the proxy and on
+      Vimeo answering a Worker. When either fails, a card says `retry`,
+      which a script spends its four tries on before showing the range,
+      and the isolate doesn't ask again for ten seconds whoever calls. A
+      refusal (a host off the list, renditions that disagree, audio)
+      shows the range for ten minutes. Both are logged, without the
+      signed addresses. A well-behaved script reads a card only when the
+      dataset changes, four cards at most per choice; what bounds anyone
+      else is the per-reading caps and the brief memory, since the card
+      is public.
     - The first menu read walked every public row on every request. On
       D1's free plan that spends the day's reads at about one request
       every 17 seconds. A list per isolate is enough at exhibit

@@ -49,18 +49,28 @@ export async function fetchVimeoManifest(
   return (await requestVimeoManifest(vimeoId, proxyBase, fetchImpl)).manifest
 }
 
+/** A Vimeo video id as the proxy takes one: digits, nothing that could
+ *  make `${proxyBase}/${id}` another path on the proxy's host. */
+export function isVimeoId(id: string): boolean {
+  return /^[0-9]{1,20}$/.test(id)
+}
+
 /**
  * `fetchVimeoManifest` with the proxy's status beside it, for a caller
  * that tells a video that is gone (404, which the proxy passes on from
  * Vimeo for a deleted or never-existing id) from a proxy that is failing.
- * `manifest` is `null` for any status but a 2xx.
+ * `manifest` is `null` for any status but a 2xx. An id that isn't one is
+ * never sent (status 0), and a redirect, which the proxy never answers,
+ * is not followed.
  */
 export async function requestVimeoManifest(
   vimeoId: string,
   proxyBase: string,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<{ status: number; manifest: VideoManifest | null }> {
-  const upstream = await fetchImpl(`${proxyBase}/${vimeoId}`)
+  if (!isVimeoId(vimeoId)) return { status: 0, manifest: null }
+  const upstream = await fetchImpl(`${proxyBase}/${vimeoId}`, { redirect: 'manual', ...(signal ? { signal } : {}) })
   if (!upstream.ok) {
     await upstream.body?.cancel().catch(() => {})
     return { status: upstream.status, manifest: null }

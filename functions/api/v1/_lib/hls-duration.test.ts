@@ -4,12 +4,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_PLAYLIST_BYTES,
+  MAX_REMOTE_FETCHES,
   MAX_REMOTE_REDIRECTS,
   MAX_REMOTE_VARIANTS,
   MEMO_MAX_ENTRIES,
   MEMO_TTL_MS,
   READ_BUDGET_MS,
   REMOTE_READ_BUDGET_MS,
+  REMOTE_READ_CEILING_MS,
+  UNSETTLED_TTL_MS,
   framesPerSecond,
   isMasterPlaylist,
   masterVariants,
@@ -196,6 +199,18 @@ describe('isMasterPlaylist and masterVariants', () => {
     expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:VIDEO="v,CODECS=avc1",CODECS="avc1.64,mp4a.40.2"\nv/p.m3u8\n')?.[0].codecs)
       .toBe('avc1.64,mp4a.40.2')
     expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:XCODECS="avc1",BANDWIDTH=1\nv/p.m3u8\n')?.[0].codecs).toBeNull()
+    // A malformed attribute ends the walk, rather than the search starting
+    // again inside a quoted value further on.
+    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:x="a,CODECS=avc1.64",CODECS="avc1.64,mp4a.40.2"\nv/p.m3u8\n')?.[0].codecs).toBeNull()
+  })
+
+  it('reads a long attribute list in time linear in its length', () => {
+    // Searched again from every offset, 40,000 characters took seconds,
+    // synchronously, past any time limit (found in review).
+    const line = '#EXT-X-STREAM-INF:' + 'A'.repeat(400_000)
+    const started = performance.now()
+    expect(masterVariants(`#EXTM3U\n${line}\nv/p.m3u8\n`)).toEqual([{ uri: 'v/p.m3u8', frameRate: null, codecs: null }])
+    expect(performance.now() - started).toBeLessThan(1000)
   })
 
   it('skips blank lines after the tag, and refuses a variant behind another tag or with no address', () => {
@@ -296,10 +311,31 @@ describe('readHlsDuration', () => {
       const r = await readHlsDuration(bucket({ [MASTER_KEY]: master, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })
       expect(r, master).toEqual({ seconds: 0, settled: true })
     }
-    // The video codecs the node's encoders write, and their HEVC and AV1 kin, are fine.
-    const other = FFMPEG_MASTER.replace('avc1.4d4033', 'hvc1.1.6.L153.B0').replace('avc1.4d4032', 'av01.0.08M.08')
-    expect(await readHlsDuration(bucket({ [MASTER_KEY]: other, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() }))
-      .toEqual({ seconds: 6.2, settled: true })
+    // The video codecs the node's encoders write, and their HEVC, AV1 and
+    // VP9 kin, are fine, in either case and spaced or not; a name that
+    // only starts like one is not; and subtitles are not a track a
+    // browser's duration counts.
+    for (const [codecs, seconds] of [
+      ['hvc1.1.6.L153.B0', 6.2],
+      ['av01.0.08M.08', 6.2],
+      ['vp09.00.10.08', 6.2],
+      ['AVC1.4D4033', 6.2],
+      ['avc1.4d4033, hvc1.1.6.L153.B0', 6.2],
+      ['avc1x.4d4033', 0],
+      ['', 0],
+    ] as const) {
+      const master = FFMPEG_MASTER.replace('avc1.4d4033', codecs)
+      expect((await readHlsDuration(bucket({ [MASTER_KEY]: master, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })).seconds, codecs)
+        .toBe(seconds)
+    }
+    const subtitled = FFMPEG_MASTER.replace('#EXT-X-VERSION:3', '#EXT-X-VERSION:3\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="s",NAME="en",URI="s.m3u8"')
+    expect((await readHlsDuration(bucket({ [MASTER_KEY]: subtitled, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })).seconds).toBe(6.2)
+  })
+
+  it('is a settled 0 for a master with a variant that has no address', async () => {
+    const master = FFMPEG_MASTER.replace('stream_1/playlist.m3u8', '#EXT-X-FOO')
+    expect(await readHlsDuration(bucket({ [MASTER_KEY]: master, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() }))
+      .toEqual({ seconds: 0, settled: true })
   })
 
   it('is a settled 0 with no binding, or a master or variant that is not there', async () => {
@@ -432,7 +468,7 @@ describe('readHlsDuration', () => {
     expect(reads.length).toBe(afterFirst * 2)
   })
 
-  it('does not remember an unsettled reading', async () => {
+  it('remembers an unsettled reading only briefly', async () => {
     let fail = true
     const sometimes: PlaylistBucket = {
       async get(key) {
@@ -442,9 +478,14 @@ describe('readHlsDuration', () => {
       },
     }
     const m = memo()
-    expect((await readHlsDuration(sometimes, MASTER_KEY, { memo: m })).settled).toBe(false)
+    let now = 1_000_000
+    const nowMs = () => now
+    expect((await readHlsDuration(sometimes, MASTER_KEY, { memo: m, nowMs })).settled).toBe(false)
     fail = false
-    expect(await readHlsDuration(sometimes, MASTER_KEY, { memo: m })).toEqual({ seconds: 15.966667, settled: true })
+    // A failing bucket isn't asked again by every request meanwhile.
+    expect((await readHlsDuration(sometimes, MASTER_KEY, { memo: m, nowMs })).settled).toBe(false)
+    now += UNSETTLED_TTL_MS
+    expect(await readHlsDuration(sometimes, MASTER_KEY, { memo: m, nowMs })).toEqual({ seconds: 15.966667, settled: true })
   })
 
   it('hands the read to waitUntil, so it can land after the response', async () => {
@@ -504,6 +545,9 @@ describe('framesPerSecond and onFrameGrid', () => {
     expect(onFrameGrid(12.11, 30)).toBe(12.11)
     expect(onFrameGrid(143.766672, null)).toBe(143.766672)
     expect(onFrameGrid(0.0001, 30)).toBe(0.0001)
+    // A thousandth of a frame is the most it moves a length.
+    expect(onFrameGrid(363.0009 / 30, 30)).toBe(12.1)
+    expect(onFrameGrid(363.002 / 30, 30)).toBe(363.002 / 30)
   })
 })
 
@@ -540,20 +584,27 @@ const VIMEO_VARIANT = [
 /** A redirect, as a fetch asked not to follow one gives it. */
 const redirect = (to: string, status = 302) => () => new Response(null, { status, headers: { location: to } })
 
+type Route = (init?: RequestInit) => Response | Promise<Response>
+
 /** The video proxy and Vimeo, as a fetch: each address answered by `routes`. */
-function vimeo(routes: Record<string, () => Response | Promise<Response>>) {
-  return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+function vimeo(routes: Record<string, Route>) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input)
     const route = routes[url]
     if (!route) throw new Error(`unexpected fetch: ${url}`)
-    return route()
+    return route(init)
   })
 }
+
+/** An answer that never comes, until the request's signal stops it. */
+const hanging: Route = init => new Promise<Response>((_, reject) => {
+  init?.signal?.addEventListener('abort', () => reject(new DOMException('stopped', 'AbortError')))
+})
 
 const PROXY = 'https://video-proxy.test/video'
 const [VIMEO_VARIANT_1, VIMEO_VARIANT_2] = [3, 5].map(i => new URL(VIMEO_MASTER.split('\n')[i], VIMEO_MASTER_AT).href)
 
-function vimeoRoutes(overrides: Record<string, () => Response | Promise<Response>> = {}) {
+function vimeoRoutes(overrides: Record<string, Route> = {}) {
   return {
     [`${PROXY}/920241809`]: () => Response.json({ id: '920241809', duration: 12, hls: VIMEO_HLS, files: [] }),
     [VIMEO_HLS]: redirect(VIMEO_MASTER_AT),
@@ -628,38 +679,110 @@ describe('readVimeoDuration', () => {
       vimeoRoutes({ [`${PROXY}/920241809`]: () => new Response('no', { status: 403 }) }),
       vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response('expired', { status: 403 }) }),
       vimeoRoutes({ [VIMEO_VARIANT_2]: () => { throw new TypeError('network') } }),
-      // A bot check's page, or a proxy's error page, at 200.
+      // A bot check's page, or a proxy's error page, at 200, or nothing.
       vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response('<html>are you a robot?</html>') }),
       vimeoRoutes({ [VIMEO_VARIANT_1]: () => new Response('<html>are you a robot?</html>') }),
+      vimeoRoutes({ [VIMEO_VARIANT_1]: () => new Response(null) }),
+      // A playlist the proxy just led to that is missing: a CDN's miss, or
+      // a signature gone stale, more likely than a video that is gone.
+      vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response('missing', { status: 404 }) }),
+      vimeoRoutes({ [VIMEO_VARIANT_1]: () => new Response('gone', { status: 410 }) }),
     ]) {
       resetHlsDurationsForTests()
       expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: false })
     }
+    // Each says why, with nothing of the signed addresses.
+    expect(logged()).toMatch(/Vimeo 920241809: the video proxy answered 503, so its length is asked for again later/)
+    expect(logged()).toMatch(/skyfire\.vimeocdn\.com answered 403, so its length is asked for again later/)
+    expect(logged()).toMatch(/skyfire\.vimeocdn\.com answered 200 with something that isn't a playlist/)
+    expect(logged()).toMatch(/Vimeo 920241809: a request failed/)
+  })
+
+  it('remembers a failure briefly, so requests meanwhile don\'t read again', async () => {
+    let now = 1_000_000
+    const nowMs = () => now
+    const fetchImpl = vimeo(vimeoRoutes({ [`${PROXY}/920241809`]: () => new Response('down', { status: 503 }) }))
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl, nowMs })).toEqual({ seconds: 0, settled: false })
+    now += UNSETTLED_TTL_MS - 1
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl, nowMs })).toEqual({ seconds: 0, settled: false })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    // Before the 15 s a card asks a script to wait, so its retry reads afresh.
+    expect(UNSETTLED_TTL_MS).toBeLessThan(15_000)
+    now += 1
+    await readVimeoDuration('920241809', PROXY, { fetchImpl, nowMs })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('is a settled 0 for a video that is gone, and says so', async () => {
-    for (const routes of [
-      vimeoRoutes({ [`${PROXY}/920241809`]: () => new Response('not found', { status: 404 }) }),
-      vimeoRoutes({ [VIMEO_VARIANT_1]: () => new Response('gone', { status: 410 }) }),
-    ]) {
-      resetHlsDurationsForTests()
-      expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: true })
-    }
+    const routes = vimeoRoutes({ [`${PROXY}/920241809`]: () => new Response('not found', { status: 404 }) })
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: true })
     expect(logged()).toMatch(/Vimeo 920241809: the video proxy answered 404, so its length reads as unknown/)
-    expect(logged()).toMatch(/skyfire\.vimeocdn\.com answered 410/)
+  })
+
+  it('stops the other variants when one fails, and reports the one that failed', async () => {
+    const seen: RequestInit[] = []
+    const fetchImpl = vimeo(vimeoRoutes({
+      [VIMEO_VARIANT_1]: () => new Response('down', { status: 503 }),
+      [VIMEO_VARIANT_2]: init => {
+        seen.push(init ?? {})
+        return hanging(init)
+      },
+    }))
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: false })
+    expect(seen[0].signal?.aborted).toBe(true)
+    expect(logged()).toMatch(/skyfire\.vimeocdn\.com answered 503/)
+    expect(logged()).not.toMatch(/ran past|a request failed/)
+  })
+
+  it('stops a reading at its ceiling, after the reply, whatever it waits on', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vimeo(vimeoRoutes({ [VIMEO_VARIANT_2]: hanging }))
+      const waitUntil = vi.fn()
+      const pending = readVimeoDuration('920241809', PROXY, { fetchImpl, waitUntil })
+      await vi.advanceTimersByTimeAsync(REMOTE_READ_BUDGET_MS)
+      expect(await pending).toEqual({ seconds: 0, settled: false })
+      await vi.advanceTimersByTimeAsync(REMOTE_READ_CEILING_MS)
+      await expect(waitUntil.mock.calls[0][0]).resolves.toEqual({ seconds: 0, settled: false })
+      expect(logged()).toMatch(new RegExp(`the read ran past ${REMOTE_READ_CEILING_MS / 1000} s`))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('makes no more than so many requests in one reading', async () => {
+    // Sixteen variants that each redirect once: 1 + 2 + 32 requests.
+    const lines = ['#EXTM3U']
+    const routes: Record<string, Route> = {}
+    for (let i = 0; i < MAX_REMOTE_VARIANTS; i++) {
+      const at = new URL(`v${i}/media.m3u8`, VIMEO_MASTER_AT).href
+      lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${i + 1},${VIDEO_30}`, `v${i}/media.m3u8`)
+      routes[at] = redirect(`${at}?moved=1`)
+      routes[`${at}?moved=1`] = () => new Response(VIMEO_VARIANT)
+    }
+    const fetchImpl = vimeo(vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response(lines.join('\n')), ...routes }))
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(MAX_REMOTE_FETCHES)
+    expect(logged()).toMatch(new RegExp(`more than ${MAX_REMOTE_FETCHES} requests`))
   })
 
   it('reads only from Vimeo\'s own hosts, over HTTPS, at every hop of a redirect', async () => {
-    const cases: Array<Record<string, () => Response | Promise<Response>>> = [
+    const cases: Array<Record<string, Route>> = [
       // A stream address off Vimeo's hosts is not fetched at all.
       vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://evil.example/hls.m3u8' }) }),
       vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'http://player.vimeo.com/hls.m3u8' }) }),
       vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://notvimeo.com/hls.m3u8' }) }),
       vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://player.vimeo.com.evil.example/hls.m3u8' }) }),
+      // Nor other hosts under vimeo.com, which aren't the player.
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://help.vimeo.com/hls.m3u8' }) }),
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://vimeo.com/hls.m3u8' }) }),
       // A redirect off them is not asked, at the first hop or a later one.
       vimeoRoutes({ [VIMEO_HLS]: redirect('https://evil.example/playlist.m3u8') }),
-      vimeoRoutes({ [VIMEO_HLS]: redirect('https://vimeo.com/hop'), 'https://vimeo.com/hop': redirect('https://evil.example/playlist.m3u8') }),
+      vimeoRoutes({ [VIMEO_HLS]: redirect('https://player.vimeo.com/hop'), 'https://player.vimeo.com/hop': redirect('https://evil.example/playlist.m3u8') }),
       vimeoRoutes({ [VIMEO_HLS]: redirect('http://skyfire.vimeocdn.com/playlist.m3u8') }),
+      // Nor one of them at another port, or with credentials in it.
+      vimeoRoutes({ [VIMEO_HLS]: redirect('https://skyfire.vimeocdn.com:8443/playlist.m3u8') }),
+      vimeoRoutes({ [VIMEO_HLS]: redirect('https://user:pw@skyfire.vimeocdn.com/playlist.m3u8') }),
       // Nor a variant elsewhere.
       vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response(VIMEO_MASTER.replace('../../../27e2e64f', 'https://evil.example/27e2e64f')) }),
     ]
@@ -667,9 +790,10 @@ describe('readVimeoDuration', () => {
       resetHlsDurationsForTests()
       const fetchImpl = vimeo(routes)
       expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
-      for (const [url] of fetchImpl.mock.calls) expect(String(url)).not.toMatch(/evil\.example|notvimeo|^http:/)
+      for (const [url] of fetchImpl.mock.calls) expect(String(url)).not.toMatch(/evil\.example|notvimeo|help\.|^https:\/\/vimeo|^http:|:8443|@/)
     }
     expect(logged()).toMatch(/https:\/\/evil\.example is not one of Vimeo's hosts/)
+    expect(logged()).toMatch(/https:\/\/skyfire\.vimeocdn\.com:8443 is not one of Vimeo's hosts, or names a port or credentials/)
   })
 
   it('follows a variant onto another of Vimeo\'s hosts', async () => {
@@ -680,9 +804,14 @@ describe('readVimeoDuration', () => {
   })
 
   it('follows at most so many redirects, and none that goes nowhere', async () => {
+    // Each redirect status, the last hop's address relative to the one
+    // before it, as a Location may be.
+    const statuses = [301, 302, 303, 307, 308]
     const hops = (n: number) => {
-      const routes: Record<string, () => Response> = { [VIMEO_HLS]: redirect('https://vimeo.com/hop0', 301) }
-      for (let i = 0; i < n; i++) routes[`https://vimeo.com/hop${i}`] = redirect(i + 1 < n ? `https://vimeo.com/hop${i + 1}` : VIMEO_MASTER_AT, 307)
+      const routes: Record<string, Route> = { [VIMEO_HLS]: redirect('https://player.vimeo.com/hop0', 301) }
+      for (let i = 0; i < n; i++) {
+        routes[`https://player.vimeo.com/hop${i}`] = redirect(i + 1 < n ? `/hop${i + 1}` : VIMEO_MASTER_AT, statuses[i % statuses.length])
+      }
       return vimeoRoutes(routes)
     }
     expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(hops(MAX_REMOTE_REDIRECTS - 1)) })).toEqual({ seconds: 12.1, settled: true })
@@ -706,8 +835,23 @@ describe('readVimeoDuration', () => {
       expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: true })
     }
     expect(logged()).toMatch(/variants of different lengths \(12\.1, 12\.066667 s\)/)
-    expect(logged()).toMatch(/variants at different frame rates \(30\.000, 25\.000\)/)
+    expect(logged()).toMatch(/variants at different frame rates \("30\.000", "25\.000"\)/)
     expect(logged()).toMatch(/a variant whose length cannot be stated/)
+  })
+
+  it('refuses variants at different frame rates from the master alone', async () => {
+    const fetchImpl = vimeo(masterOf({ attrs: VIDEO_30, text: VIMEO_VARIANT }, { attrs: 'CODECS="avc1.640020"', text: VIMEO_VARIANT }))
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
+    expect(fetchImpl.mock.calls.map(c => String(c[0]))).toEqual([`${PROXY}/920241809`, VIMEO_HLS, VIMEO_MASTER_AT])
+    expect(logged()).toMatch(/frame rates \("30\.000", none\)/)
+  })
+
+  it('logs a playlist\'s own text only quoted and cut short', async () => {
+    const fetchImpl = vimeo(masterOf({ attrs: `FRAME-RATE=30.000,CODECS="mp4a.40.2\u001b[31m forged line${'x'.repeat(500)}"`, text: VIMEO_VARIANT }))
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
+    const text = logged()
+    expect(text).not.toMatch(/\u001b|x{100}/)
+    expect(text).toContain('\\u001b[31m')
   })
 
   it('is a settled 0 for a stream that carries audio, or doesn\'t say what it carries', async () => {
@@ -726,10 +870,10 @@ describe('readVimeoDuration', () => {
       // Refused from the master, before any variant is asked.
       expect(fetchImpl.mock.calls.map(c => String(c[0]))).toEqual([`${PROXY}/920241809`, VIMEO_HLS, VIMEO_MASTER_AT])
     }
-    expect(logged()).toMatch(/a variant carrying avc1\.640020,mp4a\.40\.2/)
+    expect(logged()).toMatch(/a variant carrying "avc1\.640020,mp4a\.40\.2"/)
     expect(logged()).toMatch(/a variant that does not name its codecs/)
     expect(logged()).toMatch(/an audio rendition/)
-    expect(logged()).toMatch(/a media playlist/)
+    expect(logged()).toMatch(/a playlist with no variants/)
   })
 
   it('is a settled 0 for a stream with no address', async () => {
@@ -738,9 +882,13 @@ describe('readVimeoDuration', () => {
   })
 
   it('does not read a playlist over the size limit, whatever its headers say', async () => {
-    const declared = () => new Response(VIMEO_MASTER, { headers: { 'content-length': String(MAX_PLAYLIST_BYTES + 1) } })
-    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(vimeoRoutes({ [VIMEO_MASTER_AT]: declared })) }))
+    const declared = (bytes: number) => () => new Response(VIMEO_MASTER, { headers: { 'content-length': String(bytes) } })
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(vimeoRoutes({ [VIMEO_MASTER_AT]: declared(MAX_PLAYLIST_BYTES + 1) })) }))
       .toEqual({ seconds: 0, settled: true })
+    // One declaring exactly the limit is read.
+    resetHlsDurationsForTests()
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(vimeoRoutes({ [VIMEO_MASTER_AT]: declared(MAX_PLAYLIST_BYTES) })) }))
+      .toEqual({ seconds: 12.1, settled: true })
 
     // No Content-Length (chunked, or compressed): counted as it arrives,
     // and not read past the limit.

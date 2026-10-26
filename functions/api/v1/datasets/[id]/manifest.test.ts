@@ -728,7 +728,19 @@ describe('resolveManifest (unit)', () => {
     if ('manifest' in result) {
       expect(result.manifest.kind).toBe('video')
     }
-    expect(fetchImpl).toHaveBeenCalledWith('https://test/video/7')
+    // The proxy never redirects, so a redirect is not followed off its host.
+    expect(fetchImpl).toHaveBeenCalledWith('https://test/video/7', { redirect: 'manual' })
+  })
+
+  it('never sends the proxy an id that is not one', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}'))
+    const result = await resolveManifest(
+      { id: 'DSXXX', format: 'video/mp4', data_ref: 'vimeo:../../admin' },
+      { VIDEO_PROXY_BASE: 'https://test/video' },
+      fetchImpl as unknown as typeof fetch,
+    )
+    expect('manifest' in result).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
 
