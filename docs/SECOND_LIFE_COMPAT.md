@@ -1468,7 +1468,7 @@ yet.
     with no seek measured yet then seeked again every loop. The steer
     now turns the element back itself, to the target plus how long the
     last turn stood still, and tells the playhead layer, so its settle
-    window covers the restart. Measured the same way after: seams 10 to
+    window covers the restart. Measured the same way after: seams 11 to
     75 ms on that loop, a median lag of 10 to 17 ms, and under 20 ms on
     Vimeo's.
 - **Found in review and not yet done:**

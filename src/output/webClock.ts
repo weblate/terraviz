@@ -117,8 +117,9 @@ export const PAUSED_RESEEKS = 1
  *  from 170 to 300 ms behind to within 45 ms (found in review). */
 export const SEAM_LEAD_INITIAL_S = 0.1
 
-/** The most a timed turn is believed to cost. A turn that took longer was
- *  a stall, and leading by it would put the copy that far ahead. */
+/** The most a timed turn is believed to cost. One timed longer was a
+ *  stall or a gap in steering (a hidden tab), not the restart, and is
+ *  thrown away: leading by it would put the copy that far ahead. */
 export const SEAM_LEAD_MAX_S = 0.5
 
 /** A position the loop counts as its start: a seek written a hair short
@@ -337,14 +338,18 @@ export function createWebClockSteer(
         if (pending && !video.seeking && video.currentTime > pending.landingS) {
           const playedS = (video.currentTime - pending.landingS) / (video.playbackRate || 1)
           const stoodS = (now - pending.sinceMs) / 1000 - playedS
-          seamCost.seconds = Math.min(SEAM_LEAD_MAX_S, Math.max(0, stoodS))
+          if (stoodS <= SEAM_LEAD_MAX_S) seamCost.seconds = Math.max(0, stoodS)
           seamCost.pending = null
         }
         const atItsEnd = video.paused && video.currentTime >= video.duration - END_AS_START_S
         if (!video.seeking && (video.currentTime >= d || atItsEnd)) {
           const driftS = view.currentTime - d / 2
           const landing = wrap(targetS + seamCost.seconds * clock.rate, d)
-          const landingS = landing > d - END_AS_START_S ? 0 : landing
+          // Past the element's own end as well as the period's: an element
+          // shorter than its stated period would otherwise land on its end,
+          // stop there, and be turned again every frame (found in review).
+          const end = Math.min(d, video.duration) - END_AS_START_S
+          const landingS = landing > end ? 0 : landing
           video.currentTime = landingS
           // After the seek: `play()` on an element at its end rewinds it.
           if (video.paused) video.play()
@@ -371,6 +376,9 @@ export function createWebClockSteer(
       // cost each resume an unprotected seek and a second stall to learn
       // it again (found in review).
       playhead.dropPendingSeek()
+      // And a turn at the seam still being timed, or the pause would be
+      // counted as its stall.
+      if (seamCost) seamCost.pending = null
       if (!video.paused) video.pause()
       // Mid-seek, `currentTime` already reads the target while the old
       // frame is still on the glass; measuring it would be fiction.
