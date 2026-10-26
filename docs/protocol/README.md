@@ -107,11 +107,14 @@ SCHEMA_BASE_URL=https://terraviz.example.org/schema/v1 npm run gen:protocol-sche
   reorder fails a test rather than a globe. Copies once rezzed can't be updated remotely, so these pins
   stay while old copies may still read this way.
 - **The exhibit reads are where an LSL script should read instead:**
-  `GET /api/v1/exhibit/datasets/{id}`, `GET /api/v1/exhibit/datasets`
-  and `GET /api/v1/exhibit/tags`, small replies within byte budgets
+  `GET /api/exhibit/v1/datasets/{id}`, `GET /api/exhibit/v1/datasets`
+  and `GET /api/exhibit/v1/tags`, small replies within byte budgets
   they state, with their own contract for scripts already rezzed:
   additive only, no field changes meaning, a breaking change gets a
-  new path ([`exhibit-reads.ts`](../../functions/api/v1/_lib/exhibit-reads.ts),
+  new path, `/api/exhibit/v2/`. Their version is their own, outside
+  `/api/v1/`, so the 410 this protocol's `/api/v1/` answers once a
+  later major version has run its window never reaches a script that
+  can't be updated ([`exhibit-reads.ts`](../../functions/api/v1/_lib/exhibit-reads.ts),
   [`SECOND_LIFE_COMPAT.md`](../SECOND_LIFE_COMPAT.md) §9 Phase 2). They
   are convenience reads of nodes running this codebase from October
   2026 on, not part of the federation protocol, and not in

@@ -6,20 +6,24 @@
  * for callers that can afford little, of which the Second Life exhibit
  * globe is the first (`docs/SECOND_LIFE_COMPAT.md` §9 Phase 2, "The
  * exhibit's own reads from the node"). The routes are
- * `functions/api/v1/exhibit/`; this module holds what they share.
+ * `functions/api/exhibit/v1/`, beside `functions/api/exhibit/[[path]].ts`
+ * for anything else under `/api/exhibit/`; this module holds what they
+ * share. The exhibit's version is its own, outside `/api/v1/`, which the
+ * federation protocol will one day retire with a 410 that a rezzed
+ * script couldn't be updated past.
  *
- * - `GET /api/v1/exhibit/datasets/{id}`, a dataset's card (`buildCard`),
+ * - `GET /api/exhibit/v1/datasets/{id}`, a dataset's card (`buildCard`),
  *   at most `CARD_BUDGET` bytes.
- * - `GET /api/v1/exhibit/datasets`, a page of the menu (`buildPage`), at
+ * - `GET /api/exhibit/v1/datasets`, a page of the menu (`buildPage`), at
  *   most `PAGE_BUDGET` bytes.
- * - `GET /api/v1/exhibit/tags`, the categories (`buildTags`), at most
+ * - `GET /api/exhibit/v1/tags`, the categories (`buildTags`), at most
  *   `TAGS_BUDGET` bytes.
  *
  * **A contract with copies already rezzed.** Scripts in Second Life can't
  * be updated remotely, so every later node serves these shapes to copies
  * running now. Under this path a change is additive only and inside the
  * budget, no field changes meaning, and a breaking change gets a new path
- * while the old one stays. `functions/api/v1/exhibit/exhibit.test.ts` pins
+ * while the old one stays. `functions/api/exhibit/v1/exhibit.test.ts` pins
  * the names and types beside the budgets. Convenience reads of nodes
  * running this codebase, as `featured` is: not part of the federation
  * protocol, and not in `public/schema/v1/`. Any failure answers the node's

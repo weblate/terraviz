@@ -2,7 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 /**
- * Cloudflare Pages Function — anything under /api/v1/exhibit/ that no
+ * Cloudflare Pages Function — anything under /api/exhibit/ that no
  * other route there matches.
  *
  * A JSON 404, `no_such_route`, rather than the app's page, which is what
@@ -14,7 +14,7 @@
  * `method_not_allowed`.
  */
 
-import { exhibitError } from '../_lib/exhibit-reads'
+import { exhibitError } from '../v1/_lib/exhibit-reads'
 
 export const onRequest: PagesFunction = async context => {
   // A real read asked with another method falls through to here too, and

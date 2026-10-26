@@ -2,7 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 /**
- * Cloudflare Pages Function — GET /api/v1/exhibit/datasets/{id}
+ * Cloudflare Pages Function — GET /api/exhibit/v1/datasets/{id}
  *
  * A dataset's card for the Second Life exhibit's info script, at most
  * `CARD_BUDGET` bytes: `{ id, page, kind, title, startTime, endTime,
@@ -24,7 +24,7 @@
  *   - 503 `unavailable` for anything that fails while answering.
  */
 
-import type { CatalogEnv } from '../../_lib/env'
+import type { CatalogEnv } from '../../../v1/_lib/env'
 import {
   buildCard,
   exactLength,
@@ -34,7 +34,7 @@ import {
   exhibitError,
   exhibitJson,
   findPublicRow,
-} from '../../_lib/exhibit-reads'
+} from '../../../v1/_lib/exhibit-reads'
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/
 

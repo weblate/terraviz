@@ -2,7 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 /**
- * Cloudflare Pages Function — GET /api/v1/exhibit/tags
+ * Cloudflare Pages Function — GET /api/exhibit/v1/tags
  *
  * The categories of the Second Life exhibit's dataset menu, at most
  * `TAGS_BUDGET` bytes: `{ tags: [{ tag, count }], more }`.
@@ -18,8 +18,8 @@
  *   - 503 `unavailable` for anything that fails while answering.
  */
 
-import type { CatalogEnv } from '../_lib/env'
-import { buildTags, exhibitAnswer, exhibitError, exhibitJson, exhibitList } from '../_lib/exhibit-reads'
+import type { CatalogEnv } from '../../v1/_lib/env'
+import { buildTags, exhibitAnswer, exhibitError, exhibitJson, exhibitList } from '../../v1/_lib/exhibit-reads'
 
 export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
   if (!context.env.CATALOG_DB) {

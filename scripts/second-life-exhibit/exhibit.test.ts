@@ -287,7 +287,7 @@ describe('second-life exhibit scripts', () => {
     expect(card).toContain('if (llGetSubString(gPage, 0, 0) != "/") gPage = "/dataset/" + gDataset;')
     // A length the node didn't settle is asked for again when it says.
     expect(card).toContain('if (gVideo && gDuration == 0.0 && retry > 0) later(retry);')
-    expect(info).toContain('gNode + "/api/v1/exhibit/datasets/" + llEscapeURL(gDataset)')
+    expect(info).toContain('gNode + "/api/exhibit/v1/datasets/" + llEscapeURL(gDataset)')
   })
 
   it('answer a pause, a play or a move with the date the globe shows, not the clip\'s seconds', () => {

@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { asD1, makeCtx } from '../_lib/test-helpers'
+import { asD1, makeCtx } from '../../v1/_lib/test-helpers'
 import { freshMigratedDb } from '../../../../scripts/lib/catalog-migrations'
 import {
   byteLength,
@@ -33,13 +33,13 @@ import {
   type ExhibitCard,
   type ExhibitPage,
   type ExhibitTags,
-} from '../_lib/exhibit-reads'
-import { jsonBytes } from '../_lib/exhibit-text'
-import { resetHlsDurationsForTests, type PlaylistBucket } from '../_lib/hls-duration'
+} from '../../v1/_lib/exhibit-reads'
+import { jsonBytes } from '../../v1/_lib/exhibit-text'
+import { resetHlsDurationsForTests, type PlaylistBucket } from '../../v1/_lib/hls-duration'
 import { onRequestGet as getCard, onRequestHead as headCard } from './datasets/[id]'
 import { onRequestGet as getPage, onRequestHead as headPage } from './datasets'
 import { onRequestGet as getTags, onRequestHead as headTags } from './tags'
-import { onRequest as noSuchRoute } from './[[path]]'
+import { onRequest as noSuchRoute } from '../[[path]]'
 
 const TS = '2026-10-01T00:00:00.000Z'
 
@@ -131,10 +131,10 @@ async function call<T>(
 }
 
 const card = (sqlite: Database.Database, id: string, env?: Record<string, unknown>) =>
-  call<ExhibitCard>(getCard as never, sqlite, `/api/v1/exhibit/datasets/${id}`, { params: { id }, env })
+  call<ExhibitCard>(getCard as never, sqlite, `/api/exhibit/v1/datasets/${id}`, { params: { id }, env })
 const page = (sqlite: Database.Database, query = '') =>
-  call<ExhibitPage>(getPage as never, sqlite, `/api/v1/exhibit/datasets${query}`)
-const tags = (sqlite: Database.Database) => call<ExhibitTags>(getTags as never, sqlite, '/api/v1/exhibit/tags')
+  call<ExhibitPage>(getPage as never, sqlite, `/api/exhibit/v1/datasets${query}`)
+const tags = (sqlite: Database.Database) => call<ExhibitTags>(getTags as never, sqlite, '/api/exhibit/v1/tags')
 
 const ULID = (n: number) => `01KQG6${String(n).padStart(20, '0')}`
 
@@ -166,7 +166,7 @@ beforeEach(() => {
 })
 afterEach(() => resetExhibitListForTests())
 
-describe('GET /api/v1/exhibit/datasets/{id}, the card', () => {
+describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
   it('has exactly the contract\'s fields, in order, with their types', async () => {
     const sqlite = setup([{ id: ULID(1) }])
     const { status, body, res } = await card(sqlite, ULID(1))
@@ -294,7 +294,7 @@ describe('GET /api/v1/exhibit/datasets/{id}, the card', () => {
     // The read is handed to waitUntil, so one that misses the time limit
     // still lands for the next request.
     const waitUntil = vi.fn()
-    const { body } = await call<ExhibitCard>(getCard as never, sqlite, `/api/v1/exhibit/datasets/${ULID(1)}`, {
+    const { body } = await call<ExhibitCard>(getCard as never, sqlite, `/api/exhibit/v1/datasets/${ULID(1)}`, {
       params: { id: ULID(1) }, env: { CATALOG_R2: bucket('ok') }, waitUntil,
     })
     expect(body.exactDuration).toBeCloseTo(6.2, 6)
@@ -440,7 +440,7 @@ describe('GET /api/v1/exhibit/datasets/{id}, the card', () => {
   })
 
   it('answers a failure in the node\'s envelope, never kept', async () => {
-    const { status, body, res } = await call<{ error: string }>(getCard as never, null, `/api/v1/exhibit/datasets/${ULID(1)}`, {
+    const { status, body, res } = await call<{ error: string }>(getCard as never, null, `/api/exhibit/v1/datasets/${ULID(1)}`, {
       params: { id: ULID(1) }, env: { CATALOG_DB: BROKEN_DB },
     })
     expect(status).toBe(503)
@@ -449,7 +449,7 @@ describe('GET /api/v1/exhibit/datasets/{id}, the card', () => {
   })
 })
 
-describe('GET /api/v1/exhibit/datasets, a page of the menu', () => {
+describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
   it('has exactly the contract\'s fields, with their types', async () => {
     const sqlite = setup([{ id: ULID(1) }])
     const { status, body } = await page(sqlite)
@@ -556,7 +556,7 @@ describe('GET /api/v1/exhibit/datasets, a page of the menu', () => {
   })
 
   it('answers a failure in the node\'s envelope', async () => {
-    const { status, body } = await call<{ error: string }>(getPage as never, null, '/api/v1/exhibit/datasets', {
+    const { status, body } = await call<{ error: string }>(getPage as never, null, '/api/exhibit/v1/datasets', {
       env: { CATALOG_DB: BROKEN_DB },
     })
     expect(status).toBe(503)
@@ -564,7 +564,7 @@ describe('GET /api/v1/exhibit/datasets, a page of the menu', () => {
   })
 })
 
-describe('GET /api/v1/exhibit/tags, the categories', () => {
+describe('GET /api/exhibit/v1/tags, the categories', () => {
   it('has exactly the contract\'s fields, most common first', async () => {
     const sqlite = setup([
       { id: ULID(1), tags: ['Water', 'Air'] },
@@ -639,7 +639,7 @@ describe('GET /api/v1/exhibit/tags, the categories', () => {
   })
 
   it('answers a failure in the node\'s envelope', async () => {
-    const { status, body } = await call<{ error: string }>(getTags as never, null, '/api/v1/exhibit/tags', {
+    const { status, body } = await call<{ error: string }>(getTags as never, null, '/api/exhibit/v1/tags', {
       env: { CATALOG_DB: BROKEN_DB },
     })
     expect(status).toBe(503)
@@ -720,14 +720,14 @@ describe('HEAD', () => {
   })
 })
 
-describe('anything else under /api/v1/exhibit/', () => {
+describe('anything else under /api/exhibit/', () => {
   const other = (method: string) =>
-    call<{ error: string; message: string }>(noSuchRoute as never, null, '/api/v1/exhibit/nope', { method })
+    call<{ error: string; message: string }>(noSuchRoute as never, null, '/api/exhibit/nope', { method })
 
   it('is a JSON 404 the script can tell from the app\'s page', async () => {
     for (const method of ['GET', 'HEAD']) {
       const res = await (noSuchRoute as never as (ctx: unknown) => Promise<Response>)(
-        makeCtx({ url: 'https://test.local/api/v1/exhibit/nope', env: {}, method }),
+        makeCtx({ url: 'https://test.local/api/exhibit/nope', env: {}, method }),
       )
       expect(res.status, method).toBe(404)
     }
@@ -747,11 +747,11 @@ describe('anything else under /api/v1/exhibit/', () => {
 
 describe('a missing database binding', () => {
   it('is a 503 on every read', async () => {
-    for (const [handler, path] of [[getPage, '/api/v1/exhibit/datasets'], [getTags, '/api/v1/exhibit/tags']] as const) {
+    for (const [handler, path] of [[getPage, '/api/exhibit/v1/datasets'], [getTags, '/api/exhibit/v1/tags']] as const) {
       const { status } = await call(handler as never, null, path)
       expect(status).toBe(503)
     }
-    const { status } = await call(getCard as never, null, `/api/v1/exhibit/datasets/${ULID(1)}`, { params: { id: ULID(1) } })
+    const { status } = await call(getCard as never, null, `/api/exhibit/v1/datasets/${ULID(1)}`, { params: { id: ULID(1) } })
     expect(status).toBe(503)
   })
 })

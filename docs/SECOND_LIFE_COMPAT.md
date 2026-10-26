@@ -1656,7 +1656,7 @@ driven by its owner in chat, with none of the visitor controls.
     about that dataset in place of the chat abstract.
 - **The exhibit's own reads from the node** (designed 25 October and
   revised after the API review the same day; the node's half built 26
-  October in `functions/api/v1/exhibit/`, and the info script moved
+  October in `functions/api/exhibit/v1/`, and the info script moved
   onto the card the same day, not yet measured in-world; the menu not
   yet). The
   scripts have about 6 KB to spare at their busiest (§9 Phase 2's
@@ -1672,7 +1672,7 @@ driven by its owner in chat, with none of the visitor controls.
     the shape first built for it, about 10 KB, about 20 KB held, would
     have reached two scripts.
 
-  So the node gains three small reads under `/api/v1/exhibit/`. What
+  So the node gains three small reads under `/api/exhibit/v1/`. What
   defines them is their contract: small replies that arrive whole, each
   within a byte budget it states, for callers that can't afford more,
   of which the Second Life globe is the first. The name is the
@@ -1687,7 +1687,17 @@ driven by its owner in chat, with none of the visitor controls.
   `public/schema/v1/`. (`search` was named beside it once, but
   `CATALOG_FEDERATION_PROTOCOL.md` lists vector search as a candidate
   protocol capability.)
-  - **`GET /api/v1/exhibit/datasets/{id}`, a dataset's card:**
+  - **Versioned in a namespace of their own** (the maintainer's
+    decision, 26 October, before any script read them). They were
+    built under `/api/v1/exhibit/`, and the Federation review found
+    the clash: `CATALOG_FEDERATION_PROTOCOL.md` has `/api/v1/` answer
+    410 after a deprecation window once the protocol moves on, and a
+    rezzed script can't be updated past a 410. So the exhibit's
+    version is its own, `/api/exhibit/v1/`, and a breaking change is
+    `/api/exhibit/v2/` beside it; a federation cutover never reaches
+    them. Moving them cost a rename while no copy was rezzed, and
+    would have cost every copy afterwards.
+  - **`GET /api/exhibit/v1/datasets/{id}`, a dataset's card:**
     `{ id, page, kind, showable, title, startTime, endTime, period,
     exactDuration, retry, credit, license, licenseText, abstract,
     truncated }`.
@@ -1756,7 +1766,7 @@ driven by its owner in chat, with none of the visitor controls.
       reads its own row, so it is as current as the dataset's record: a
       dataset published a moment ago is found, and one retracted a
       moment ago is a 404.
-  - **`GET /api/v1/exhibit/datasets?tag=&offset=&limit=`, a page of
+  - **`GET /api/exhibit/v1/datasets?tag=&offset=&limit=`, a page of
     the menu:** `{ total, offset, limit, tag, datasets: [{ id, title
     }] }`.
     - The datasets the output page can show: an image or video format
@@ -1779,7 +1789,7 @@ driven by its owner in chat, with none of the visitor controls.
     - Titles are cut to 48 bytes as sent. A dialog's text holds under
       512 bytes: nine titles with "1. " and line breaks come to 467,
       leaving 44 for a heading such as "Water, 10-18 of 71".
-  - **`GET /api/v1/exhibit/tags`, the categories:** `{ tags: [{ tag,
+  - **`GET /api/exhibit/v1/tags`, the categories:** `{ tags: [{ tag,
     count }], more }`.
     - A tag is never cut, since it is the key a script sends back. Its
       canonical form is NFC, trimmed, with control characters dropped.
@@ -1857,10 +1867,10 @@ driven by its owner in chat, with none of the visitor controls.
     keeps serving these shapes to scripts nobody can update remotely.
     Under this path, changes are additive only and within the budgets.
     No field changes meaning, as `exactDuration`'s 0 and `kind`'s open
-    set must not. A breaking change gets a new path, and the old one
-    stays. A contract test pins the names and types as well as the
+    set must not. A breaking change gets a new path,
+    `/api/exhibit/v2/`, and the old one stays. A contract test pins the names and types as well as the
     budgets. The node never logs the owner name and key headers every
-    `llHTTPRequest` carries. A path under `/api/v1/exhibit/` that
+    `llHTTPRequest` carries. A path under `/api/exhibit/` that
     matches nothing answers a JSON 404, `no_such_route`, as
     `stac/[[path]].ts` does for its own, so a later script asking a
     read this node lacks gets an answer rather than the app's page.

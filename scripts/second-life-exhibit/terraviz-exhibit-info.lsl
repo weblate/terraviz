@@ -14,7 +14,7 @@
 // globe shows. terraviz-exhibit.lsl tells it what that is after every
 // change. From the node it reads the dataset's card, a reply of at most
 // 2 KB that the node writes for the exhibit, its text already plain and
-// cut to fit (/api/v1/exhibit/datasets/<id>), and from it keeps two things:
+// cut to fit (/api/exhibit/v1/datasets/<id>), and from it keeps two things:
 // - The hover text over the globe, kept short, in this order:
 //     the title
 //     the date: exact when paused, every couple of seconds while playing,
@@ -437,7 +437,7 @@ fetch()
     if (gDataset == "" || gNode == "" || gTries >= TRIES) return;
     if (gReq) return;
     ++gTries;
-    gReq = llHTTPRequest(gNode + "/api/v1/exhibit/datasets/" + llEscapeURL(gDataset), [HTTP_METHOD, "GET",
+    gReq = llHTTPRequest(gNode + "/api/exhibit/v1/datasets/" + llEscapeURL(gDataset), [HTTP_METHOD, "GET",
         HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, CARD_MAX], "");
     // A request Second Life throttled gets no key and never an answer.
     if (gReq == NULL_KEY) later(30);

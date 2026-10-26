@@ -2,7 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 /**
- * Cloudflare Pages Function — GET /api/v1/exhibit/datasets
+ * Cloudflare Pages Function — GET /api/exhibit/v1/datasets
  *
  * A page of the Second Life exhibit's dataset menu, at most `PAGE_BUDGET`
  * bytes: `{ total, offset, limit, tag, datasets: [{ id, title }] }`.
@@ -12,7 +12,7 @@
  * browse lists them. Query parameters, each optional, and an empty one
  * the same as a missing one:
  *   - `tag`: only datasets carrying this tag, matched exactly in its
- *     canonical form, as `GET /api/v1/exhibit/tags` lists it. The reply
+ *     canonical form, as `GET /api/exhibit/v1/tags` lists it. The reply
  *     echoes the tag it matched; an unknown one gives `total: 0`.
  *   - `offset`: where the page starts (0 to 100000; default 0). Past
  *     `total` gives no datasets.
@@ -25,8 +25,8 @@
  *   - 503 `unavailable` for anything that fails while answering.
  */
 
-import type { CatalogEnv } from '../_lib/env'
-import { buildPage, exhibitAnswer, exhibitError, exhibitJson, exhibitList, parsePageQuery } from '../_lib/exhibit-reads'
+import type { CatalogEnv } from '../../v1/_lib/env'
+import { buildPage, exhibitAnswer, exhibitError, exhibitJson, exhibitList, parsePageQuery } from '../../v1/_lib/exhibit-reads'
 
 export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
   if (!context.env.CATALOG_DB) {
