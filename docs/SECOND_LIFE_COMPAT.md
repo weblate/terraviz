@@ -1650,7 +1650,8 @@ driven by its owner in chat, with none of the visitor controls.
   - a notecard named by a dataset's id, given to a visitor who asks
     about that dataset in place of the chat abstract.
 - **The exhibit's own reads from the node** (designed 25 October and
-  revised after the API review the same day; not yet built). The
+  revised after the API review the same day; the node's half built 26
+  October in `functions/api/v1/exhibit/`, the scripts' not yet). The
   scripts have about 6 KB to spare at their busiest (§9 Phase 2's
   status note), and every web reply lands in every script in the prim
   with a handler for one. Two of the node's replies don't fit that:
