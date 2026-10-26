@@ -262,6 +262,20 @@ describe('second-life exhibit scripts', () => {
     expect(info).toContain('KB while reading a card or answering About')
   })
 
+  it("name a dataset shown by its id alone by the card's title, and keep any name it was given", () => {
+    // `/9 show <id>` gives the globe no name, so it sends the id, which
+    // means nothing to a visitor (found in-world, 26 October). A menu's,
+    // a notecard's or a preset's name is the owner's choice and stays.
+    expect(body(globe, 'show(key who, string id, string title)')).toContain('if (gTitle == "") gTitle = id;')
+    const name = body(info, 'string name()')
+    expect(name).toContain('if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;')
+    expect(body(info, 'hover()')).toContain('string title = name();')
+    const about = body(info, 'about(key av)')
+    expect(about).toContain('string title = name();')
+    expect(about).not.toContain('gTitle')
+    expect(body(info, 'forget()')).toContain('gCardTitle = "";')
+  })
+
   it('ask for a card a bounded number of times, and again when an answer was lost', () => {
     // Every request counts against TRIES, one at a time, so a failing node
     // is asked at most four times a dataset, never every 30 s for good.
@@ -294,7 +308,7 @@ describe('second-life exhibit scripts', () => {
     const card = body(info, 'card(string b, integer cut)')
     const read = [...all(card, /value\(b, "(\w+)"\)/g), ...all(card, /llJsonGetValue\(b, \["(\w+)"\]\)/g)]
     expect(new Set(read)).toEqual(new Set([
-      'kind', 'showable', 'page', 'credit', 'license', 'licenseText', 'truncated', 'abstract',
+      'kind', 'showable', 'title', 'page', 'credit', 'license', 'licenseText', 'truncated', 'abstract',
       'startTime', 'endTime', 'period', 'exactDuration', 'retry',
     ]))
     for (const name of read) expect(Object.keys(shape), name).toContain(name)

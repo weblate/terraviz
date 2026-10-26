@@ -145,7 +145,7 @@ turns it instead. A drag handle beside the globe is planned
 **The floating text** holds 254 bytes, in this order, here for a
 dataset a `datasets` notecard names "Wildfire Smoke Overhead
 (2026-08-12)" (the title is the menu's or the notecard's name, or the
-id for `/9 show`):
+dataset's own title for one `/9 show` names by its id alone):
 
 ```
 Wildfire Smoke Overhead (2026-08-12)
