@@ -246,7 +246,7 @@ describe('second-life exhibit scripts', () => {
     // A reply that isn't a card, as an older node's page is, or one cut at
     // the budget, which no card is, is not read, nor asked for again.
     const card = body(info, 'card(string b, integer cut)')
-    expect(card).toMatch(/if \(cut \|\| kind == JSON_INVALID\)\n\s+\{\n\s+gTries = TRIES;/)
+    expect(card).toMatch(/if \(cut \|\| kind == JSON_INVALID\)\n\s+\{\n\s+if \(gTries < TRIES\) \{ later\(60\); return; \}/)
     // "About" is joined once and measured a character at a time, not
     // copied for each line added and each piece counted.
     const about = body(info, 'about(key av)')
@@ -260,6 +260,24 @@ describe('second-life exhibit scripts', () => {
     // And "/9 memory" says the most either took.
     expect(info).toMatch(/MSG_ABOUT\)\n\s+\{\n\s+llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);\n\s+about\(id\);\n\s+peak\(\);/)
     expect(info).toContain('KB while reading a card or answering About')
+  })
+
+  it('ask for a card a bounded number of times, and again when an answer was lost', () => {
+    // Every request counts against TRIES, one at a time, so a failing node
+    // is asked at most four times a dataset, never every 30 s for good.
+    const fetch = body(info, 'fetch()')
+    expect(fetch).toMatch(/if \(gDataset == "" \|\| gNode == "" \|\| gTries >= TRIES\) return;\n\s+if \(gReq\) return;\n\s+\+\+gTries;/)
+    expect(fetch).toContain('if (gReq == NULL_KEY) later(30);')
+    expect(Number(constant(info, 'integer', 'TRIES'))).toBe(4)
+    // A failure is asked again; the timer is what asks.
+    const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
+    expect(reply).toContain('if (status != 200) later(30);')
+    const timer = info.slice(info.indexOf('    timer()'), info.indexOf('    listen('))
+    expect(timer).toMatch(/if \(gRetryAt && llGetUnixTime\(\) >= gRetryAt\)\n\s+\{\n\s+gRetryAt = 0;\n\s+fetch\(\);/)
+    // A region restart drops a request in flight: it is asked again.
+    expect(info).toMatch(/if \(c & CHANGED_REGION_START\)\n\s+if \(gReq\) \{ gReq = NULL_KEY; later\(10\); pace\(\); \}/)
+    // A card of exactly the budget can't read as cut.
+    expect(fetch).toContain('HTTP_BODY_MAXLENGTH, CARD_MAX + 1]')
   })
 
   it("read only what a card carries, as the type it has", () => {

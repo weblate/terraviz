@@ -68,8 +68,10 @@ integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" other
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
 // A card's budget, in bytes. The node keeps every card within it, so a
-// card arrives whole, and a reply cut short at it isn't one. Held at two
-// bytes a character, a card is the largest thing this script holds.
+// card arrives whole, and a reply cut short isn't one. A request reads one
+// byte more, so a card of exactly the budget can't read as cut, whichever
+// way Second Life counts the limit. Held at two bytes a character, a card
+// is the largest thing this script holds.
 integer CARD_MAX = 2048;
 integer TRIES = 4;             // asks for one dataset's card, a failed one or one the node said to repeat
 integer ABSTRACT_MAX = 500;    // characters of an abstract kept for "About"; the link has the rest
@@ -438,7 +440,7 @@ fetch()
     if (gReq) return;
     ++gTries;
     gReq = llHTTPRequest(gNode + "/api/exhibit/v1/datasets/" + llEscapeURL(gDataset), [HTTP_METHOD, "GET",
-        HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, CARD_MAX], "");
+        HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, CARD_MAX + 1], "");
     // A request Second Life throttled gets no key and never an answer.
     if (gReq == NULL_KEY) later(30);
 }
@@ -496,18 +498,21 @@ unshowable(string why)
     llMessageLinked(LINK_THIS, MSG_CONTROL, "earth " + gDataset, NULL_KEY);
 }
 
-// What a card says, kept. A reply that isn't a card, as an older node's
-// page is, or one cut short at the budget, which a card never is, changes
-// nothing, and nothing more is asked.
+// What a card says, kept. A reply that isn't a card, or one longer than
+// a card can be, changes nothing. An older node answers with the app's
+// page, but so does any node while its Functions are down (a spent daily
+// quota, say), so it is asked again a minute later, and only once the
+// tries are spent is the owner told, once.
 card(string b, integer cut)
 {
     string kind = llJsonGetValue(b, ["kind"]);
     if (cut || kind == JSON_INVALID)
     {
-        gTries = TRIES;
+        if (gTries < TRIES) { later(60); return; }
         if (!gToldNode)
-            llOwnerSay("[exhibit] " + gNode + " sent no dataset card, which a node older than the exhibit's "
-                + "reads doesn't have. The hover text shows titles alone, and About gives the dataset's page.");
+            llOwnerSay("[exhibit] " + gNode + " sent no dataset card. A node older than the exhibit's reads has "
+                + "none, and one whose Functions are down sends its page instead. The hover text shows titles "
+                + "alone, and About gives the dataset's page.");
         gToldNode = TRUE;
         return;
     }
@@ -676,6 +681,10 @@ default
     changed(integer c)
     {
         if (c & CHANGED_OWNER) llResetScript();
+        // A region restart drops a request in flight, which then never
+        // answers, so it is asked again.
+        if (c & CHANGED_REGION_START)
+            if (gReq) { gReq = NULL_KEY; later(10); pace(); }
     }
 
     link_message(integer sender, integer n, string str, key id)

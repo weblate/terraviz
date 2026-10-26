@@ -53,9 +53,10 @@ notecards and the visitor list would run out.
 - **A node with the exhibit's reads.** The info script reads a dataset's
   card, a reply of at most 2 KB that the node writes for this exhibit
   (`/api/exhibit/v1/datasets/<id>`). A node that predates the cards
-  answers with the app's page instead: the floating text then shows
-  titles alone, "About" gives the dataset's page, and the info script
-  tells you once.
+  answers with the app's page instead, as does any node while its
+  Functions are down. The info script asks again a minute later, and
+  after four tries the floating text shows titles alone, "About" gives
+  the dataset's page, and the info script tells you once.
 
 ## Setting it up
 
