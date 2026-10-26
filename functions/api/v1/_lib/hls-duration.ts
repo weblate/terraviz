@@ -4,7 +4,8 @@
 /**
  * The length of an HLS asset the node holds in R2, read from the
  * asset's own playlists, for the manifest's `duration`
- * (`datasets/[id]/manifest.ts`).
+ * (`datasets/[id]/manifest.ts`), and of a Vimeo stream, read from its
+ * playlists over HTTPS, for the exhibit's card (`readVimeoDuration`).
  *
  * The manifest has always carried `duration`, but only the Vimeo proxy
  * ever filled it: every `r2:` HLS bundle reported 0. A browser does not
@@ -56,7 +57,25 @@
  * off than it was, and none of it costs the manifest itself. The last
  * two are reported as not `settled`, so the manifest is cached only
  * briefly on a reading that could be different a moment later.
+ *
+ * **A Vimeo stream** (`readVimeoDuration`) is read the same way, from the
+ * HLS address the video proxy gives (`video-proxy.ts`), for a clip the
+ * node doesn't host: Vimeo's API gives a length in whole seconds (12 for
+ * a clip of 12.1 s), a page loops on the stream's own, and a date worked
+ * out from the first drifts from the picture with every loop. Every
+ * rendition of the node's seven Vimeo videos summed to the same length in
+ * October 2026, so the first variant stands for all of them here too.
+ * Because the addresses come from outside, every one read must be HTTPS
+ * on one of Vimeo's own hosts (`REMOTE_PLAYLIST_HOST`), checked again
+ * after a redirect, and a variant must sit on the master's own origin.
+ * The time limit is longer (`REMOTE_READ_BUDGET_MS`), since three
+ * round trips cross the internet, and the memory is keyed on the Vimeo
+ * id, since the stream's address is signed and changes. A proxy that
+ * doesn't answer, a refused or failed fetch, or the time limit reads as
+ * not `settled`.
  */
+
+import { fetchVimeoManifest } from './video-proxy'
 
 /** A playlist larger than this is not read. ffmpeg's playlists run
  *  about 30 bytes a segment and the incremental writer's about 130, so
@@ -67,6 +86,18 @@ export const MAX_PLAYLIST_BYTES = 1024 * 1024
  *  length unknown. R2 reads from a Function usually take a few tens of
  *  milliseconds. */
 export const READ_BUDGET_MS = 500
+
+/** How long a Vimeo reading waits for the proxy and the playlists:
+ *  three round trips across the internet, on a path (the exhibit's card)
+ *  no browser waits on. */
+export const REMOTE_READ_BUDGET_MS = 2000
+
+/** The hosts a remote stream's playlists are read from: Vimeo's player,
+ *  which redirects, and its CDN. Anything else reads as unknown. */
+export const REMOTE_PLAYLIST_HOST = /(^|\.)(vimeo\.com|vimeocdn\.com)$/i
+
+/** A Vimeo video id as the proxy takes one. */
+const VIMEO_ID = /^[0-9]{1,20}$/
 
 /** How long an isolate remembers a settled reading. */
 export const MEMO_TTL_MS = 10 * 60 * 1000
@@ -112,11 +143,14 @@ export interface HlsDurationMemo {
 }
 
 const isolateMemo = new Map<string, MemoEntry>()
+/** Vimeo readings, keyed on the Vimeo id, apart from the R2 keys. */
+const remoteMemo = new Map<string, MemoEntry>()
 
 /** Forget every remembered reading, so one test's cannot answer
  *  another's. */
 export function resetHlsDurationsForTests(): void {
   isolateMemo.clear()
+  remoteMemo.clear()
 }
 
 export interface ReadHlsDurationOptions {
@@ -242,6 +276,64 @@ async function readPlaylist(bucket: PlaylistBucket, key: string): Promise<string
   return object.text()
 }
 
+/** Whether `url` is one this module may read a remote playlist from. */
+function allowedRemote(url: URL): boolean {
+  return url.protocol === 'https:' && REMOTE_PLAYLIST_HOST.test(url.hostname)
+}
+
+/**
+ * A remote playlist's text and the address it was finally served from
+ * (a relative variant resolves against that), or `null` for an address
+ * this module won't read, one redirected off Vimeo's hosts, or a body
+ * over the size limit. Throws on a failed fetch or a status other than
+ * 200, which the caller reports as not settled.
+ */
+async function fetchPlaylist(fetchImpl: typeof fetch, address: URL): Promise<{ text: string; url: URL } | null> {
+  if (!allowedRemote(address)) return null
+  const res = await fetchImpl(address.href, { redirect: 'follow' })
+  const served = res.url ? new URL(res.url) : address
+  if (!allowedRemote(served)) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (res.status !== 200) {
+    await res.body?.cancel().catch(() => {})
+    throw new Error(`playlist answered ${res.status}`)
+  }
+  const length = Number(res.headers.get('content-length'))
+  if (Number.isFinite(length) && length > MAX_PLAYLIST_BYTES) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  const text = await res.text()
+  return text.length > MAX_PLAYLIST_BYTES ? null : { text, url: served }
+}
+
+/** A remote stream's length from its master (or media) playlist at
+ *  `address`: the first variant, on the master's own origin. */
+async function readFromUrl(fetchImpl: typeof fetch, address: string): Promise<number> {
+  let start: URL
+  try {
+    start = new URL(address)
+  } catch {
+    return 0
+  }
+  const top = await fetchPlaylist(fetchImpl, start)
+  if (top === null) return 0
+  if (!isMasterPlaylist(top.text)) return mediaPlaylistDuration(top.text) ?? 0
+  const uri = firstVariantUri(top.text)
+  if (uri === null) return 0
+  let variant: URL
+  try {
+    variant = new URL(uri, top.url)
+  } catch {
+    return 0
+  }
+  if (variant.origin !== top.url.origin) return 0
+  const media = await fetchPlaylist(fetchImpl, variant)
+  return media === null ? 0 : mediaPlaylistDuration(media.text) ?? 0
+}
+
 function conventionalVariantKey(key: string): string | null {
   return /(^|\/)master\.m3u8$/i.test(key) ? resolvePlaylistKey(key, CONVENTIONAL_FIRST_VARIANT) : null
 }
@@ -295,19 +387,54 @@ export async function readHlsDuration(
   options: ReadHlsDurationOptions = {},
 ): Promise<HlsDurationReading> {
   if (!bucket) return { seconds: 0, settled: true }
-  const memo = options.memo ?? isolateMemo
+  return measure(options.memo ?? isolateMemo, key, () => readFromBucket(bucket, key), options, READ_BUDGET_MS)
+}
+
+export interface ReadVimeoDurationOptions extends ReadHlsDurationOptions {
+  fetchImpl?: typeof fetch
+}
+
+/**
+ * The length in seconds of the Vimeo video `vimeoId`, read from the HLS
+ * stream the video proxy at `proxyBase` gives for it, 0 when it cannot be
+ * stated. Never throws, and never takes much longer than `budgetMs`
+ * (`REMOTE_READ_BUDGET_MS` by default).
+ */
+export async function readVimeoDuration(
+  vimeoId: string,
+  proxyBase: string,
+  options: ReadVimeoDurationOptions = {},
+): Promise<HlsDurationReading> {
+  if (!VIMEO_ID.test(vimeoId)) return { seconds: 0, settled: true }
+  const fetchImpl = options.fetchImpl ?? fetch
+  const read = async (): Promise<number> => {
+    const manifest = await fetchVimeoManifest(vimeoId, proxyBase, fetchImpl)
+    if (!manifest) throw new Error('the video proxy gave no manifest')
+    return typeof manifest.hls === 'string' && manifest.hls !== '' ? readFromUrl(fetchImpl, manifest.hls) : 0
+  }
+  return measure(options.memo ?? remoteMemo, vimeoId, read, options, REMOTE_READ_BUDGET_MS)
+}
+
+/** A read's length, remembered once it lands, within a time limit. */
+async function measure(
+  memo: HlsDurationMemo,
+  key: string,
+  read: () => Promise<number>,
+  options: ReadHlsDurationOptions,
+  defaultBudgetMs: number,
+): Promise<HlsDurationReading> {
   const now = options.nowMs ?? Date.now
   const remembered = memo.get(key)
   if (remembered && now() - remembered.atMs < MEMO_TTL_MS) return remembered.reading
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const outOfTime = new Promise<HlsDurationReading>(resolve => {
-    timer = setTimeout(() => resolve(UNKNOWN_FOR_NOW), options.budgetMs ?? READ_BUDGET_MS)
+    timer = setTimeout(() => resolve(UNKNOWN_FOR_NOW), options.budgetMs ?? defaultBudgetMs)
   })
   // Remembered when it lands, not when it is returned, so a reading
   // that missed the time limit still spares the next request, as long
   // as `waitUntil` keeps it alive past the response.
-  const reading = readFromBucket(bucket, key).then(
+  const reading = read().then(
     (seconds): HlsDurationReading => {
       const settled = { seconds, settled: true }
       remember(memo, key, settled, now())

@@ -46,10 +46,11 @@
 // month or year a frame (P1D, P1M, P1Y) is counted in frames: the clip
 // holds one per period, the first at the start and the last at the end,
 // so the label is the frame's own.
-// A video on Vimeo shows its range: Vimeo gives its length in whole
-// seconds, the page loops on the stream's own, and a date worked out
-// from the first drifts from the picture with every loop. So the card
-// gives a length only when the node read it from a bundle of its own.
+// A clip's length is the card's, which the node reads from the stream's
+// own playlists, its own bundle's or a Vimeo stream's: Vimeo's API gives
+// whole seconds, the page loops on the stream's own, and a date worked
+// out from the first would drift from the picture with every loop. When
+// the node has no exact length, as for a single file, the range shows.
 //
 // A node older than the card answers with the app's page instead. The
 // hover text then shows the title alone, "About" gives the dataset's
@@ -468,7 +469,7 @@ string value(string card, string name)
 // Answers whoever paused, played or moved the clip, with the date the
 // globe now shows: the clip's seconds mean nothing to a visitor. A dataset
 // with no dates gets the plain word, as does one whose clip length isn't
-// known: not yet, or never, for a video on Vimeo.
+// known: not yet, or never, for a video with no playlist to read.
 moved(key who)
 {
     string d = "";
@@ -568,7 +569,8 @@ card(string b, integer cut)
     string p = value(b, "period");
     period(p);
     gFrames = p == "P1D" || p == "P1M" || p == "P1Y";
-    // The clip's exact length, or 0 when the node has none, as for Vimeo.
+    // The clip's exact length, or 0 when the node has none, as for a
+    // single file.
     gDuration = (float)value(b, "exactDuration");
     if (gDuration < 0.0) gDuration = 0.0;
     // The node's read of the length didn't settle, and it says when to ask

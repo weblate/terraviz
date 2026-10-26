@@ -14,8 +14,9 @@
  * dataset exists: the script says why it isn't shown. `showable` is
  * whether the output page can show it, which `kind` alone doesn't say (a
  * video on a `peer:` reference can't be). `exactDuration` is the clip's
- * exact length from an HLS bundle the node holds, or 0 when the node has
- * none, which is always so for Vimeo. `retry` is set when that length read
+ * exact length from its own HLS playlists, a bundle the node holds or a
+ * Vimeo stream (whose API gives only whole seconds), or 0 when the node
+ * has none, as for a single file. `retry` is set when that length read
  * didn't settle, and the card is then never cached; it isn't read at all
  * for a row the page can't show. The row is read on its own, so the card
  * is as current as the dataset's record. The id is read percent-decoded,

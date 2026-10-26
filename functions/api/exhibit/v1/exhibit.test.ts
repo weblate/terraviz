@@ -82,7 +82,7 @@ function seed(sqlite: Database.Database, rows: Row[]): void {
   for (const row of rows) {
     insert.run(
       row.id, row.slug ?? row.id.toLowerCase(), row.title ?? `Title ${row.id}`, row.abstract ?? 'Abstract.',
-      row.organization ?? null, row.format ?? 'video/mp4', row.data_ref ?? 'vimeo:1', row.weight ?? 0,
+      row.organization ?? null, row.format ?? 'video/mp4', row.data_ref ?? 'url:https://example.org/v.mp4', row.weight ?? 0,
       row.visibility ?? 'public', row.hidden ? 1 : 0,
       row.attribution_text ?? null, row.rights_holder ?? null, row.license_spdx ?? null,
       row.license_url ?? null, row.license_statement ?? null,
@@ -165,8 +165,16 @@ function bucket(mode: 'ok' | 'fail'): PlaylistBucket {
 beforeEach(() => {
   resetExhibitListForTests()
   resetHlsDurationsForTests()
+  // A card for a Vimeo row asks the video proxy and Vimeo: no test may
+  // reach the network, so any fetch a test didn't arrange fails.
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    throw new Error(`unexpected fetch: ${String(input)}`)
+  }))
 })
-afterEach(() => resetExhibitListForTests())
+afterEach(() => {
+  resetExhibitListForTests()
+  vi.unstubAllGlobals()
+})
 
 describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
   it('has exactly the contract\'s fields, in order, with their types', async () => {
@@ -375,10 +383,48 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect((await card(sqlite, 'LEGACY%2')).status).toBe(404)
   })
 
-  it('says 0 for a video on Vimeo, which never has an exact length', async () => {
+  it('reads a Vimeo stream\'s exact length from its own playlists, not the API\'s whole seconds', async () => {
+    // As Vimeo served the real-time sea surface temperature: the API says
+    // 12, the stream's segments sum to 12.1 (hls-duration.test.ts has the
+    // fuller playlists and the refusals).
+    const at = 'https://skyfire.vimeocdn.com/a/b/c/playlist.m3u8'
+    const variantAt = 'https://skyfire.vimeocdn.com/x/media.m3u8?sig=1'
+    const routes: Record<string, () => Response> = {
+      'https://video-proxy.zyra-project.org/video/920241809': () =>
+        Response.json({ id: '920241809', duration: 12, hls: 'https://player.vimeo.com/play/x/hls.m3u8' }),
+      'https://player.vimeo.com/play/x/hls.m3u8': () => {
+        const res = new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n../../../x/media.m3u8?sig=1\n')
+        Object.defineProperty(res, 'url', { value: at })
+        return res
+      },
+      [variantAt]: () => {
+        const res = new Response('#EXTM3U\n#EXTINF:6.000000,\na.mp4\n#EXTINF:6.100000,\nb.mp4\n#EXT-X-ENDLIST\n')
+        Object.defineProperty(res, 'url', { value: variantAt })
+        return res
+      },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const route = routes[String(input)]
+      if (!route) throw new Error(`unexpected fetch: ${String(input)}`)
+      return route()
+    }))
     const sqlite = setup([{ id: ULID(1), data_ref: 'vimeo:920241809' }])
-    const { body } = await card(sqlite, ULID(1))
-    expect(body).toMatchObject({ exactDuration: 0, retry: 0 })
+    const { body, res } = await card(sqlite, ULID(1))
+    expect(body).toMatchObject({ exactDuration: 12.1, retry: 0 })
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=60')
+  })
+
+  it('asks the script to try again when the video proxy fails for a Vimeo row', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('down', { status: 503 })))
+    const sqlite = setup([{ id: ULID(1), data_ref: 'vimeo:920241809' }])
+    const { body, res } = await card(sqlite, ULID(1))
+    expect(body).toMatchObject({ exactDuration: 0, retry: 15 })
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+  })
+
+  it('says 0, settled, for a video with no playlist to read', async () => {
+    const sqlite = setup([{ id: ULID(1), data_ref: 'url:https://example.org/v.mp4' }])
+    expect((await card(sqlite, ULID(1))).body).toMatchObject({ exactDuration: 0, retry: 0 })
   })
 
   it('asks the script to try again, and is never kept, when the length read did not settle', async () => {

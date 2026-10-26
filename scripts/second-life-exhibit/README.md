@@ -88,7 +88,7 @@ menu that opens is theirs alone:
 |---|---|---|
 | About | everyone | The abstract, credit and licence, in their own chat, or a notecard the owner wrote. |
 | Datasets | whoever may act | The menu of datasets, nine to a page. |
-| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, where the info script knows it: not for a dataset with no dates, nor for a video on Vimeo, whose length it isn't given. |
+| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, where the info script knows it: not for a dataset with no dates, nor for a video whose exact length the node can't read. |
 | Back 10 s, Forward 10 s, Start over | the same | Move through the animation. |
 | Live Earth | the same | Back to today's clouds and the real day and night. |
 | Turn... | whoever may act | A menu for turning the globe, for everyone at it, which comes back after each press: |
@@ -177,13 +177,14 @@ start to the end, evenly through the clip, the first at the start and
 the last at the end, so the label changes with the frame. Any other
 is the start plus the share of its span played, the arithmetic of the
 app's own label. Until the node has said how long the clip is, and for
-an image, it shows the dataset's range instead. So does a video hosted
-on Vimeo, such as Sea temperature: Vimeo gives its length in whole
+an image, it shows the dataset's range instead. The length is the one
+the node reads from the stream's own playlists, its own HLS bundle's or
+a Vimeo stream's, such as Sea temperature's: Vimeo's API gives whole
 seconds, which isn't quite the stream's, and a date worked out from it
-would drift from the picture with every loop. So the card gives a
-length only when the node read it from a bundle of its own. When the
-node couldn't read it in time, the card says when to ask again, and
-the info script does. A card the node fails to send, an error or a
+would drift from the picture with every loop. A video with no playlist
+to read, a single file, shows its range. When the node couldn't read
+the length in time, the card says when to ask again, and the info
+script does. A card the node fails to send, an error or a
 timeout, is asked for again too, up to four tries in all.
 
 The credit is the dataset's attribution, or else its rights holder, or
@@ -349,8 +350,8 @@ stand at the globe.
 5. **Pause.** They pause. The reply should give the date the globe now
    shows, the floating text's date should stop and match the frame, and
    both views should show the same frame. On a dataset with no dates,
-   such as Air Traffic, or a video on Vimeo, such as `/9 show sst`, the
-   reply just says it paused.
+   such as Air Traffic, the reply just says it paused. A video on
+   Vimeo, such as `/9 show sst`, has a moving date like any other.
 6. **About.** They choose About. They should get the abstract, the
    credit, the licence and a link, in their own chat, in a few pieces.
    Nobody else should see it. Then add a notecard named

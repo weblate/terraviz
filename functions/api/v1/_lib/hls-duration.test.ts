@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Zyra Project
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_PLAYLIST_BYTES,
   MEMO_MAX_ENTRIES,
@@ -10,6 +10,8 @@ import {
   isMasterPlaylist,
   mediaPlaylistDuration,
   readHlsDuration,
+  readVimeoDuration,
+  resetHlsDurationsForTests,
   resolvePlaylistKey,
   type HlsDurationMemo,
   type PlaylistBucket,
@@ -437,5 +439,148 @@ describe('readHlsDuration', () => {
     expect(m.size).toBe(MEMO_MAX_ENTRIES)
     expect(m.get('v/0/stream_0/playlist.m3u8')).toBeUndefined()
     expect(m.get(`v/${MEMO_MAX_ENTRIES}/stream_0/playlist.m3u8`)).toBeDefined()
+  })
+})
+
+// What Vimeo served for the real-time sea surface temperature in October
+// 2026, the signatures shortened: the player's address redirects to the
+// CDN, whose master names its variants by relative paths with a signed
+// query, and the variant sums to 12.1 s where Vimeo's API says 12.
+const VIMEO_HLS = 'https://player.vimeo.com/play/aab1e50e/hls.m3u8?s=920241809_17'
+const VIMEO_MASTER_AT = 'https://skyfire.vimeocdn.com/1792988657-0x914d/aab1e50e/v2/playlist/av/primary/prot/cmFuZ2U/playlist.m3u8?omit=av1'
+const VIMEO_MASTER = [
+  '#EXTM3U',
+  '#EXT-X-INDEPENDENT-SEGMENTS',
+  '#EXT-X-STREAM-INF:CLOSED-CAPTIONS=NONE,BANDWIDTH=2341090,AVERAGE-BANDWIDTH=2137000,RESOLUTION=1366x684,FRAME-RATE=30.000,CODECS="avc1.640020"',
+  '../../../27e2e64f/avf/44450089/media.m3u8?pathsig=8c953e4f~CDVI&qsr=1&r=dXMtZWFzdDE%3D&st=video',
+  '#EXT-X-STREAM-INF:CLOSED-CAPTIONS=NONE,BANDWIDTH=299986,AVERAGE-BANDWIDTH=285000,RESOLUTION=426x214,FRAME-RATE=30.000,CODECS="avc1.640015"',
+  '../../../27e2e64f/avf/bc072d38/media.m3u8?pathsig=8c953e4f~55zP&qsr=1&r=dXMtZWFzdDE%3D&st=video',
+  '',
+].join('\n')
+const VIMEO_VARIANT = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:6',
+  '#EXT-X-MEDIA-SEQUENCE:0',
+  '#EXT-X-TARGETDURATION:6',
+  '#EXT-X-PLAYLIST-TYPE:VOD',
+  '#EXT-X-MAP:URI="../../../../../range/prot/cmFuZ2U9MC04MDQ/avf/44450089.mp4?pathsig=8c953e4f~KUum&range=0-804"',
+  '#EXTINF:6.000000,',
+  '../../../../../range/prot/cmFuZ2U9ODA1LTIyNjU2NTA/avf/44450089.mp4?pathsig=8c953e4f~a&range=805-2265650',
+  '#EXTINF:6.100000,',
+  '../../../../../range/prot/cmFuZ2U9MjI2NTY1MS00NTE1NjQw/avf/44450089.mp4?pathsig=8c953e4f~b&range=2265651-4515640',
+  '#EXT-X-ENDLIST',
+  '',
+].join('\n')
+
+/** A Response as fetch gives one, served from `url` after any redirect. */
+function served(body: string | null, url: string, init: ResponseInit = {}): Response {
+  const res = new Response(body, init)
+  Object.defineProperty(res, 'url', { value: url })
+  return res
+}
+
+/** The video proxy and Vimeo, as a fetch: each address answered by `routes`. */
+function vimeo(routes: Record<string, () => Response | Promise<Response>>) {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input)
+    const route = routes[url] ?? Object.entries(routes).find(([k]) => url.startsWith(k))?.[1]
+    if (!route) throw new Error(`unexpected fetch: ${url}`)
+    return route()
+  })
+}
+
+const PROXY = 'https://video-proxy.test/video'
+const VIMEO_VARIANT_AT = new URL(VIMEO_MASTER.split('\n')[3], VIMEO_MASTER_AT).href
+
+function vimeoRoutes(overrides: Record<string, () => Response | Promise<Response>> = {}) {
+  return {
+    [`${PROXY}/920241809`]: () => Response.json({ id: '920241809', duration: 12, hls: VIMEO_HLS, files: [] }),
+    [VIMEO_HLS]: () => served(VIMEO_MASTER, VIMEO_MASTER_AT),
+    [VIMEO_VARIANT_AT]: () => served(VIMEO_VARIANT, VIMEO_VARIANT_AT),
+    ...overrides,
+  }
+}
+
+describe('readVimeoDuration', () => {
+  beforeEach(() => resetHlsDurationsForTests())
+
+  it('sums the stream\'s own first variant, where the API gives whole seconds', async () => {
+    const fetchImpl = vimeo(vimeoRoutes())
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 12.1, settled: true })
+    // The proxy, the master (redirected to the CDN), and the first variant.
+    expect(fetchImpl.mock.calls.map(c => String(c[0]))).toEqual([`${PROXY}/920241809`, VIMEO_HLS, VIMEO_VARIANT_AT])
+  })
+
+  it('remembers a reading by the Vimeo id, so the next asks nothing', async () => {
+    const fetchImpl = vimeo(vimeoRoutes())
+    await readVimeoDuration('920241809', PROXY, { fetchImpl })
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 12.1, settled: true })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('asks nothing for an id that is not a Vimeo id', async () => {
+    const fetchImpl = vimeo({})
+    for (const id of ['', 'abc', '1/../../admin', '123?x=1']) {
+      expect(await readVimeoDuration(id, PROXY, { fetchImpl }), id).toEqual({ seconds: 0, settled: true })
+    }
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('is unsettled when the proxy or a playlist fails, so a script asks again', async () => {
+    for (const routes of [
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => new Response('down', { status: 503 }) }),
+      vimeoRoutes({ [VIMEO_HLS]: () => served('expired', VIMEO_MASTER_AT, { status: 403 }) }),
+      vimeoRoutes({ [VIMEO_VARIANT_AT]: () => { throw new TypeError('network') } }),
+    ]) {
+      resetHlsDurationsForTests()
+      expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: false })
+    }
+  })
+
+  it('reads only from Vimeo\'s own hosts, over HTTPS, and never follows a variant elsewhere', async () => {
+    const cases: Array<Record<string, () => Response | Promise<Response>>> = [
+      // A stream address off Vimeo's hosts is not fetched at all.
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://evil.example/hls.m3u8' }) }),
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'http://player.vimeo.com/hls.m3u8' }) }),
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: 'https://notvimeo.com/hls.m3u8' }) }),
+      // A redirect off them is not read.
+      vimeoRoutes({ [VIMEO_HLS]: () => served(VIMEO_MASTER, 'https://evil.example/playlist.m3u8') }),
+      // A variant on another origin is not followed.
+      vimeoRoutes({ [VIMEO_HLS]: () => served(VIMEO_MASTER.replace('../../../27e2e64f', 'https://vod-adaptive-ak.vimeocdn.com/27e2e64f'), VIMEO_MASTER_AT) }),
+    ]
+    for (const routes of cases) {
+      resetHlsDurationsForTests()
+      const fetchImpl = vimeo(routes)
+      expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
+      for (const [url] of fetchImpl.mock.calls) expect(String(url)).not.toMatch(/evil\.example|notvimeo|^http:/)
+    }
+  })
+
+  it('is a settled 0 for a stream with no address, or a playlist that cannot state its length', async () => {
+    for (const routes of [
+      vimeoRoutes({ [`${PROXY}/920241809`]: () => Response.json({ id: '1', hls: '' }) }),
+      vimeoRoutes({ [VIMEO_VARIANT_AT]: () => served(VIMEO_VARIANT.replace('#EXT-X-ENDLIST', ''), VIMEO_VARIANT_AT) }),
+    ]) {
+      resetHlsDurationsForTests()
+      expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: true })
+    }
+  })
+
+  it('does not read a playlist over the size limit', async () => {
+    const big = () => served(VIMEO_MASTER, VIMEO_MASTER_AT, { headers: { 'content-length': String(MAX_PLAYLIST_BYTES + 1) } })
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(vimeoRoutes({ [VIMEO_HLS]: big })) }))
+      .toEqual({ seconds: 0, settled: true })
+  })
+
+  it('gives up at its time limit unsettled, and hands the read to waitUntil to land later', async () => {
+    let release: () => void = () => {}
+    const slow = new Promise<void>(r => { release = r })
+    const fetchImpl = vimeo(vimeoRoutes({ [VIMEO_HLS]: async () => { await slow; return served(VIMEO_MASTER, VIMEO_MASTER_AT) } }))
+    const waitUntil = vi.fn()
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl, budgetMs: 5, waitUntil })).toEqual({ seconds: 0, settled: false })
+    expect(waitUntil).toHaveBeenCalledTimes(1)
+    release()
+    await waitUntil.mock.calls[0][0]
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 12.1, settled: true })
   })
 })

@@ -953,7 +953,9 @@ playlists' `#EXTINF`s summed, to the microsecond
 figure, which is whole seconds and so can be up to a second off the
 length a player reads from the stream itself (12 for a clip that plays
 12.1). A reader that loops the clip and needs the two to agree should
-not trust it for a `vimeo:` asset. Browsers ignore it, since a player
+not trust it for a `vimeo:` asset; the exhibit's card does the
+summing for it (`exactDuration`, `readVimeoDuration`), reading the
+Vimeo stream's own playlists. Browsers ignore it, since a player
 reads the length from the playlist. A Second Life globe's script uses it to turn a clip position
 into a date ([`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7
 item 4).

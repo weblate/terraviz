@@ -55,7 +55,8 @@ import {
   type DatasetRow,
 } from './catalog-store'
 import { parseDataRef } from './data-ref'
-import { readHlsDuration, type HlsDurationReading } from './hls-duration'
+import { readHlsDuration, readVimeoDuration, type HlsDurationReading } from './hls-duration'
+import { DEFAULT_VIDEO_PROXY_BASE } from './video-proxy'
 import { isSafeLicenseUrl } from './metadata-readiness'
 import { canonicalTag, cutProse, exhibitPlainText, exhibitProse, jsonBytes, machineValue } from './exhibit-text'
 import { SLUG_RE } from './validators'
@@ -286,17 +287,26 @@ export async function findPublicRow(db: D1Database, id: string): Promise<ListEnt
   return row ? entryFor(row, []) : null
 }
 
-/** The clip's exact length, for an HLS bundle the node holds, else 0. */
+/**
+ * The clip's exact length, read from its own HLS playlists: an HLS bundle
+ * the node holds in R2, or a Vimeo stream, whose API gives only whole
+ * seconds (`readVimeoDuration`). 0 for any other video, which has no
+ * playlist to read.
+ */
 export async function exactLength(
   row: Pick<DatasetRow, 'format' | 'data_ref'>,
-  env: Pick<CatalogEnv, 'CATALOG_R2'>,
+  env: Pick<CatalogEnv, 'CATALOG_R2' | 'VIDEO_PROXY_BASE'>,
   waitUntil?: (p: Promise<unknown>) => void,
 ): Promise<HlsDurationReading> {
   const ref = parseDataRef(row.data_ref)
-  if (kindOf(row.format) !== 'video' || !ref || ref.scheme !== 'r2' || !ref.value.toLowerCase().endsWith('.m3u8')) {
-    return { seconds: 0, settled: true }
+  if (kindOf(row.format) !== 'video' || !ref) return { seconds: 0, settled: true }
+  if (ref.scheme === 'vimeo') {
+    return readVimeoDuration(ref.value, env.VIDEO_PROXY_BASE ?? DEFAULT_VIDEO_PROXY_BASE, { waitUntil })
   }
-  return readHlsDuration(env.CATALOG_R2, ref.value, { waitUntil })
+  if (ref.scheme === 'r2' && ref.value.toLowerCase().endsWith('.m3u8')) {
+    return readHlsDuration(env.CATALOG_R2, ref.value, { waitUntil })
+  }
+  return { seconds: 0, settled: true }
 }
 
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/

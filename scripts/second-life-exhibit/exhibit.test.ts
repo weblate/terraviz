@@ -370,7 +370,10 @@ describe('second-life exhibit scripts', () => {
     const manifest = read('../../functions/api/v1/datasets/[id]/manifest.ts')
     expect(manifest.match(/^\s+id: row\.id,$/gm)?.length).toBeGreaterThanOrEqual(2)
     expect(manifest).toMatch(/externalVideoManifest\(row\.id,/)
-    expect(manifest).toMatch(/^\s+id: data\.id,$/m)
+    // A Vimeo manifest's id is Vimeo's own, which the proxy gives.
+    const proxy = read('../../functions/api/v1/_lib/video-proxy.ts')
+    expect(proxy).toMatch(/^\s+id: data\.id,$/m)
+    expect(manifest).toMatch(/fetchVimeoManifest\(parsed\.value, proxyBase, fetchImpl\)/)
   })
 
   it('label every button within the 24 bytes a menu allows', () => {

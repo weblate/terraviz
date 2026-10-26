@@ -838,10 +838,15 @@ The work, smallest first:
        through on the rest. The fix belongs on the node: report 0
        for `vimeo:`, or sum the Vimeo playlist as `hls-duration.ts`
        sums the node's own, which would give those datasets a moving
-       date. The exhibit's card took the first on 26 October: its
-       `exactDuration` is 0 for `vimeo:`, and the info script reads
-       the card rather than the manifest (Phase 2's "The exhibit's own
-       reads from the node"). `stream:`
+       date. The exhibit's card took the second on 26 October: its
+       `exactDuration` sums the Vimeo stream's own playlists
+       (`hls-duration.ts`, `readVimeoDuration`), and the info script
+       reads the card rather than the manifest (Phase 2's "The
+       exhibit's own reads from the node"). The node's seven Vimeo
+       videos, all real-time ones, read 12.1, 12.066667, 143.766672
+       and 10.8 s where the API said 12, 144 and 11, every rendition
+       alike, and now show a moving date. The manifest's `duration`
+       keeps Vimeo's figure. `stream:`
        and single files still report 0, and any reading can be 0 for
        a moment when the bucket is slow, which the manifest caches for
        15 s rather than five minutes;
@@ -1719,13 +1724,14 @@ driven by its owner in chat, with none of the visitor controls.
       `YYYY-MM-DDTHH:MM:SS[.fff]Z` (an instant written to more places
       is kept to the millisecond), or `""`. `period` is an ISO 8601
       duration the node could parse, or `""`.
-    - `exactDuration` is the clip's exact length in seconds, from the
-      node's own reading of an HLS bundle's playlist, or 0 when the
-      node has no exact length. That is always so for a video on
-      Vimeo: only the node knows a row is on Vimeo, and the info script
-      used to guess it from the manifest's text. It isn't read for a
-      row the page can't show. `retry` is 15 when the
-      length read didn't settle (an R2 error, or the read's time
+    - `exactDuration` is the clip's exact length in seconds, read
+      from the stream's own playlists: an HLS bundle the node holds,
+      or a Vimeo stream, whose API gives only whole seconds (added the
+      same day, once the in-world test showed a Vimeo dataset's range
+      where the app shows a date). 0 when the node has no exact length,
+      as for a single file. It isn't read for a row the page can't
+      show. `retry` is 15 when the length read didn't settle (an R2 or
+      network error, the video proxy failing, or the read's time
       limit), and 0 otherwise. It means ask again after that many
       seconds, and such a card is never kept by a cache, which could
       otherwise answer the second ask with the first reading. A single
