@@ -133,7 +133,7 @@ integer gRetryAt;
 string  gShown;        // the hover text as last set
 integer gPeak;         // the most memory used reading a card or answering About
 string  gWarned;       // the dataset whose notecard the owner was last warned about
-integer gToldNode;     // the owner has been told the node sent no card
+integer gToldNode;     // the owner has been told the node sent no card, or didn't answer
 key     gChose;        // who chose the dataset shown, until the node has said whether it can be
 key     gLastAbout;
 integer gLastAboutAt;
@@ -753,8 +753,18 @@ default
         if (status == 404)
             if (llJsonGetValue(body, ["error"]) == "not_found") { unshowable("isn't a dataset on the node"); pace(); return; }
         // A failure (a 503, or Second Life's 499 for a timeout) is asked
-        // again, as many times as TRIES allows.
-        if (status != 200) later(30);
+        // again, as many times as TRIES allows, and the owner is told,
+        // once, with the status, when the last fails too.
+        if (status != 200)
+        {
+            if (gTries < TRIES) later(30);
+            else if (!gToldNode)
+            {
+                llOwnerSay("[exhibit] " + gNode + " didn't answer for " + gDataset + " after " + (string)TRIES
+                    + " tries (HTTP " + (string)status + "). The hover text shows the title alone.");
+                gToldNode = TRUE;
+            }
+        }
         else
         {
             llScriptProfiler(PROFILE_SCRIPT_MEMORY);

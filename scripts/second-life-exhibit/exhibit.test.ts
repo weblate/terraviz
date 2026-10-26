@@ -285,7 +285,10 @@ describe('second-life exhibit scripts', () => {
     expect(Number(constant(info, 'integer', 'TRIES'))).toBe(4)
     // A failure is asked again; the timer is what asks.
     const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
-    expect(reply).toContain('if (status != 200) later(30);')
+    expect(reply).toMatch(/if \(status != 200\)\n\s+\{\n\s+if \(gTries < TRIES\) later\(30\);\n\s+else if \(!gToldNode\)/)
+    // Once the tries are spent the owner is told, with the status, rather
+    // than the globe going quiet.
+    expect(reply).toContain('" tries (HTTP " + (string)status + "). The hover text shows the title alone."')
     const timer = info.slice(info.indexOf('    timer()'), info.indexOf('    listen('))
     expect(timer).toMatch(/if \(gRetryAt && llGetUnixTime\(\) >= gRetryAt\)\n\s+\{\n\s+gRetryAt = 0;\n\s+fetch\(\);/)
     // The timer runs while a retry waits, a retry is the earliest asked
