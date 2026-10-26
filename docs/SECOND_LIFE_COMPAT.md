@@ -838,10 +838,40 @@ The work, smallest first:
        through on the rest. The fix belongs on the node: report 0
        for `vimeo:`, or sum the Vimeo playlist as `hls-duration.ts`
        sums the node's own, which would give those datasets a moving
-       date. `stream:`
-       and single files still report 0, and any reading can be 0 for
-       a moment when the bucket is slow, which the manifest caches for
-       15 s rather than five minutes;
+       date. The exhibit's card took the second on 26 October: its
+       `exactDuration` sums the Vimeo stream's own playlists
+       (`hls-duration.ts`, `readVimeoDuration`), and the info script
+       reads the card rather than the manifest (Phase 2's "The
+       exhibit's own reads from the node"). The node's seven Vimeo
+       videos, all real-time ones, read 12.1, 12.066667, 143.766672
+       and 10.8 s where the API said 12, 144 and 11, every rendition
+       alike, and now show a moving date (seen in-world on sea surface
+       temperature the same day). The manifest's `duration` keeps
+       Vimeo's figure. **What a page looped on was then measured, not
+       assumed**, in Chromium 153 with the repo's hls.js 1.6, since
+       the sum is only what the player holds until its last segment
+       buffers, and after that a browser's `duration` is the latest
+       end of every track. For all seven, and for the node's bundles
+       without audio, the stream started at 0 and ended within 6 µs of
+       the sum (143.766666 against 143.766672); Vimeo's B-frames didn't
+       shift it, since the edit list is applied. The node's bundles
+       carrying AAC did not agree: hls.js puts the stream's zero at the
+       audio's first sample, so the picture started one AAC frame
+       (21 ms) in, and the element ended 21 to 40 ms past the sum, which
+       on a 4.3 s clip is a dozen frames a minute. That is 50 of the
+       node's 119 bundles, 13 of them dated, 12 of those with a silent
+       track. Rather than give those no length, **the page now loops on
+       the playlist's total** (`HLSService.playlistDurationS`, the
+       maintainer's decision, 26 October 2026), which is one number for
+       every copy whatever the tracks, wherever the renditions agree, and
+       the card sends that sum for the node's own bundles and the Vimeo
+       streams it has checked.
+       That also closes "Each copy looped on its own idea of the clip's
+       length" below. Second Life's browser is an older Chromium, which
+       nobody has measured. `stream:` and single files still report 0, and any
+       reading can be 0 for a moment when the bucket, the video proxy
+       or Vimeo is slow, which the manifest caches for 15 s rather than
+       five minutes;
      - show the dataset's date range when the exact date can't be
        worked out, which covers those.
    - **The slow-link behaviour is page work, not the controller's.** It
@@ -857,13 +887,18 @@ The work, smallest first:
      which answers a touch in chat, shows whether it arrived.
    - **The hover text holds 254 bytes**, shared by the title, the date,
      the credit and any telemetry notice. Phase 2 needs a fixed order
-     for them and a rule for shortening. *Set in the controller:* the
-     notice comes first, under the globe's name, then the title, the
-     date and the credit, then a talk if one is on and how to touch the
-     globe. Only the title and the credit are ever cut, sharing what the
-     rest leave, so the notice never is: the title keeps at least 32
-     bytes and the credit 48 where both fit, and the title's come first
-     where they don't, as behind a preview node's longer address.
+     for them and a rule for shortening. *Set in the controller,* and
+     kept short at the maintainer's request (25 October): the title,
+     the date, then while telemetry is on the notice, "Counts anonymous
+     use:" and the privacy policy's address, then the credit, a talk if
+     one is on, and how to touch the globe. "Privacy:" and the address
+     alone was tried and set aside: visitors rarely see the object's
+     description, so the floating text is where they learn the globe is
+     measured. Only the title and the credit are ever cut, sharing what
+     the rest leave, so the notice never is: the
+     title keeps at least 32 bytes and the credit 48 where both fit, and
+     the title's come first where they don't, as behind a preview node's
+     longer address.
 
    **What that means for the design.** The first version of this item
    had each copy work out its position from the time of day. That only
@@ -1409,31 +1444,63 @@ yet.
   - **A lower rendition**, around 1024×512 at 1.5–2 Mbps, would suit
     1024-wide faces and slow links. Data-encoded datasets have one
     rendition by design, so they would always need buffering or stepping.
+- **Found in review and done since:**
+  - **Each copy looped on its own idea of the clip's length**, done
+    26 October 2026. With hls.js, `duration` is the playlist's total
+    until the stream ends, then the furthest buffered end across
+    tracks, so it could differ between copies, and on one copy before
+    and after its last segment. Copies then wrapped on different
+    periods, and the gap grows with every loop since the `at` anchor,
+    not since the page loaded: in simulation, a 1 ms difference on a
+    16 s loop with a day-old anchor put copies 5.4 s apart. Measured
+    since, the difference was 21 to 40 ms on the node's bundles
+    carrying AAC (item 4 above). The page now loops on the playlist's
+    total, held from the first level hls.js loads
+    (`HLSService.playlistDurationS`), both where the target wraps
+    (`clockTargetS`) and where the error is measured round the loop
+    (`loopView`), and the card sends the same sum for the node's own
+    bundles and the Vimeo streams it has checked. A copy playing HLS
+    natively, with no hls.js to ask, still loops on its element's own
+    length.
+  - **The loop's seam cost each copy a restart nobody timed**, done the
+    same day. An element that ran past the period into its sound
+    track's tail, or stopped at its own end, waited for the control
+    law's `play()`, which rewinds an element at its end to 0. Measured in
+    Chromium on the real streams, that restart took 50 to 250 ms, so a
+    4.3 s loop with AAC fell 170 to 300 ms behind at each seam, and a copy
+    with no seek measured yet then seeked again every loop. The steer
+    now turns the element back itself, to the target plus how long the
+    last turn stood still, and tells the playhead layer, so its settle
+    window covers the restart. Measured the same way after: seams 11 to
+    75 ms on that loop, a median lag of 10 to 17 ms, and under 20 ms on
+    Vimeo's.
+  - **Above rate 1 the lead dug into a keyframe interval**, done the
+    same day. The node's bundles have one keyframe a segment, at its
+    start, so a turn landing x seconds in decodes from 0 to x first, and
+    a lead of the stall times the rate landed deep: at 4x a landing
+    0.7 s in stood 184 ms where the restart at 0 stood about 100, a
+    longer stall led deeper still, and Ocean Circulation's picture was
+    frozen 22% of the time (11% before the lead), never settling at
+    12.8x. The lead is now held to a quarter second of clip, below the
+    settle threshold, which also stops a lead the law would seek back
+    before the turn is timed from sticking for the element's life.
+    Measured after, single runs in Chromium: Ocean at 4x frozen 15% of
+    the time with a median lag of 228 ms (11% and 365 ms before the lead,
+    22% and 78 ms with it uncapped), so it trades a little of each; COVID
+    from 18% to 5%; Vimeo 3 to 4% (6 to 10% uncapped) with a median lag
+    of 26 to 32 ms. At rate 1 the cap binds only on a turn that stands
+    longer than 250 ms; Drought at 1x read 12% frozen before and 8%
+    after, one run each, so whether it changes rate 1 is not settled.
+    Nothing keeps sync at 12.8x on a 4.3 s loop, capped or not, and the
+    grammar now says how close copies stay depends on the clip's length
+    and the rate.
 - **Found in review and not yet done:**
-  - **Each copy loops on its own idea of the clip's length.** With
-    hls.js, `duration` is the playlist's total until the stream ends,
-    then the furthest buffered end across tracks, so it can differ
-    between copies, and on one copy before and after its last segment.
-    Copies then wrap on different periods, and the gap grows with
-    every loop since the `at` anchor, not since the page loaded: in
-    simulation, a 1 ms difference on a 16 s loop with a day-old anchor
-    put copies 5.4 s apart. A copy's own target also jumps when its
-    `duration` updates. The difference is unmeasured: logging
-    `duration` before and after the last segment on the production
-    stream would settle it. The fix is one period every copy agrees on
-    whichever rendition it plays, such as the playlist's total
-    duration, used both where the target wraps (`clockTargetS`) and
-    where the error is measured round the loop (`loopView`). The
-    manifest now carries that number for the node's own bundles (item
-    4 above), to the microsecond, so the page can read it alongside the
-    stream. A page using it still needs the element's own length
-    whenever the manifest says 0.
   - **A copy that fell back to a video's single file stays on it.**
-    Its stream is not tried again once the file has loaded, and the clock
-    wraps on each element's own length. If the file and the stream differ
-    in length, that copy loops on a different period from the others,
-    the same drift as above, and the same fix (one agreed period) covers
-    it.
+    Its stream is not tried again once the file has loaded, and that
+    copy's clock wraps on the file's own length, since a file states no
+    other. If the file and the stream differ in length, that copy loops
+    on a different period from the others, the drift the agreed period
+    removed for every other copy.
   - **Startup costs a segment it throws away.** hls.js downloads a
     probe segment to measure bandwidth, about 3.4 MB at 1440, before
     loading from the start and then seeking to the clock.
@@ -1591,10 +1658,12 @@ driven by its owner in chat, with none of the visitor controls.
     the globe, and asks the globe to go back to the live Earth once
     the last visitor has been gone for the idle time.
   - **info** owns what the globe says about itself. It reads the
-    record and the manifest for each dataset. From them it keeps the
-    hover text (any telemetry notice, the title, the date and a short
-    credit, in that fixed order, in 254 bytes: §7 item 4 has the
-    shortening rule). It also gives the abstract and full credit on
+    node's card for each dataset (the record and the manifest until
+    26 October; "The exhibit's own reads from the node" below). From it
+    it keeps the
+    hover text (the title, the date, any telemetry notice and a short
+    credit, in that fixed order, in 254 bytes: §7 item 4
+    has the shortening rule). It also gives the abstract and full credit on
     request, and tells whoever paused, played or moved the clip the
     date the globe now shows. When the node has no such dataset, or
     it is a tour, it puts the globe back on the live Earth and says
@@ -1644,6 +1713,311 @@ driven by its owner in chat, with none of the visitor controls.
       talk ends (2).
   - a notecard named by a dataset's id, given to a visitor who asks
     about that dataset in place of the chat abstract.
+- **The exhibit's own reads from the node** (designed 25 October and
+  revised after the API review the same day; the node's half built 26
+  October in `functions/api/exhibit/v1/`, and the info script moved
+  onto the card the same day, not yet measured in-world; the menu not
+  yet). The
+  scripts have about 6 KB to spare at their busiest (§9 Phase 2's
+  status note), and every web reply lands in every script in the prim
+  with a handler for one. Two of the node's replies don't fit that:
+  - **A dataset's record** is 1 to 16 KB (4 KB median, 180 records in
+    October), held at two bytes a character. The abstract comes before
+    the dates, so a read long enough for the dates holds most of an
+    abstract (1,323 bytes median) the floating text never shows. And
+    the info script carries code for JSON escapes and HTML that costs
+    it memory at rest.
+  - **A menu** needs a list. The catalog was 822 KB, and a menu page in
+    the shape first built for it, about 10 KB, about 20 KB held, would
+    have reached two scripts.
+
+  So the node gains three small reads under `/api/exhibit/v1/`. What
+  defines them is their contract: small replies that arrive whole, each
+  within a byte budget it states, for callers that can't afford more,
+  of which the Second Life globe is the first. The name is the
+  exhibit's because the budgets are: nine to a page for a dialog, 48
+  bytes a title for a dialog's text. The API review set aside
+  `/api/v1/datasets`, which a general reader would take for every
+  public dataset, and then `/api/v1/output/`: "output" already names
+  the multi-monitor windows, their telemetry and Zyra's workflow
+  outputs, and the card answers for tours, which the output page can't
+  show. They are convenience reads of nodes running this codebase, as
+  `featured` is: not part of the federation protocol and not in
+  `public/schema/v1/`. (`search` was named beside it once, but
+  `CATALOG_FEDERATION_PROTOCOL.md` lists vector search as a candidate
+  protocol capability.)
+  - **Versioned in a namespace of their own** (the maintainer's
+    decision, 26 October, before any script read them). They were
+    built under `/api/v1/exhibit/`, and the Federation review found
+    the clash: `CATALOG_FEDERATION_PROTOCOL.md` has `/api/v1/` answer
+    410 after a deprecation window once the protocol moves on, and a
+    rezzed script can't be updated past a 410. So the exhibit's
+    version is its own, `/api/exhibit/v1/`, and a breaking change is
+    `/api/exhibit/v2/` beside it; a federation cutover never reaches
+    them. Moving them cost a rename while no copy was rezzed, and
+    would have cost every copy afterwards.
+  - **`GET /api/exhibit/v1/datasets/{id}`, a dataset's card:**
+    `{ id, page, kind, showable, title, startTime, endTime, period,
+    exactDuration, retry, credit, license, licenseText, abstract,
+    truncated }`.
+    - `page` is the dataset's page in the main app, `/dataset/<slug>`
+      or `/dataset/<id>`, which the script appends to its own node
+      address. The app's link grammar can then change on the node
+      without reaching scripts already rezzed.
+    - `kind` is `video` for a `video/*` format, `image` for `image/*`,
+      and a word of its own for anything else, `tour` today. The set
+      is open. A tour is a 200, since the dataset exists, so the script
+      can say why it isn't shown.
+    - `showable` is whether the output page can show it, by the same
+      rule as the menu's (below), which `kind` alone doesn't say: a
+      video on a `peer:` reference is still a video. Added after the
+      API review of the built reads, before any script read the card.
+      A script shows a card that says `showable`, of a kind it knows,
+      which a test pins.
+    - `startTime` and `endTime` are the record's, as
+      `YYYY-MM-DDTHH:MM:SS[.fff]Z` (an instant written to more places
+      is kept to the millisecond), or `""`. `period` is an ISO 8601
+      duration the node could parse, or `""`.
+    - `exactDuration` is the clip's exact length in seconds, the one
+      the page loops on, or 0 when the node has none. **0 means only
+      that**: which rows have a length is the node's to widen, and
+      neither value says where a video is hosted. Today the length is
+      read from the stream's own playlists, for an HLS bundle the node
+      holds or a Vimeo stream, whose API gives only whole seconds
+      (Vimeo added the same day, once the in-world test showed a Vimeo
+      dataset's range where the app shows a date): the `#EXTINF`s
+      summed, which is the period the page loops on whatever the
+      stream's tracks ("The date needs the clip's length" above says
+      why). A single file has none. It isn't read for a
+      row the page can't show. `retry` is a number of seconds, 15
+      today, when the length read didn't settle (an R2 or network
+      error, the video proxy or Vimeo failing, or the read's time
+      limit), and 0 otherwise. It means ask again after that many
+      seconds, and such a card is never kept by a cache, which could
+      otherwise answer the second ask with the first reading. A single
+      0 couldn't tell "never" from "not yet". A Vimeo video that is gone
+      (the proxy's 404) is "never". The manifest's own `duration`, which
+      is Vimeo's whole seconds for a Vimeo row, keeps its meaning; this
+      field has a name of its own.
+    - `credit` is the first of the attribution text, the rights
+      holder and the organization with any text once its HTML is out.
+      `license` is the SPDX id, as the record's `licenseSpdx` and
+      STAC's `license` are. `licenseText` is the statement, then the
+      licence's address, printable ASCII, which is dropped whole rather
+      than cut; a statement the address leaves no room for is dropped,
+      and counts as cut.
+    - `abstract` is cut at a word. A value cut on the node ends `...`,
+      and `truncated` is true when any was, so "About" can say the
+      dataset's page has the rest. A script compares it with
+      `JSON_TRUE`, since `(integer)` of a JSON `true` reads 0.
+    - **Only prose is ever cut**: the title, the credit, the licence
+      statement and the abstract. Machine values (the id, `page`,
+      `kind`, the dates, `period`, the licence's address) are sent
+      whole or left out, since cutting `PT1H30M` to `PT1H` changes
+      what it says.
+    - **One text pipeline for every prose value**, tested against the
+      cases the script's own `plain()` handled: HTML to text, every
+      entity decoded once, numeric ones included, tabs and line breaks
+      to a space, control characters and lone surrogates dropped, and
+      U+FDD0 to U+FDEF dropped too, since LSL's `JSON_*` constants live
+      there and a title of U+FDD0 would read back as `JSON_INVALID`.
+      Then runs of spaces fold and the ends are trimmed. Markdown is
+      rendered for the abstract alone (portal abstracts are Markdown,
+      SOS ones HTML; `marked` is already a dependency): titles and
+      credits are text in the app, and read as Markdown "1. Hurricane
+      Maria" loses its number (found in review). A source past 8,192
+      characters, or 3,072 for Markdown, is cut at a word before it is
+      read, so the parse costs a bounded share of a Worker's CPU, and
+      the text says it was cut. Length alone didn't bound Markdown
+      (found in the second review): a line of `1. 1. 1. ...` nests a
+      list per marker and took 89 ms in 3,072 characters, `>>>...`
+      overflowed the parser's stack, and unmatched emphasis is
+      quadratic. So a line's block markers past eight are flattened
+      (a list marker only with the space Markdown requires after it,
+      so "1.2.3.4" stays text), a source with more than 128 inline
+      delimiters is read as HTML alone (the most in any abstract on
+      the node was 4), and so is one the parser throws on. The worst
+      hostile shape found now parses in about 10 ms, against 690
+      before, and no real abstract reads differently. A Markdown
+      autolink, `<https://...>`, is kept as its address. A licence's
+      address must pass the node's own `isSafeLicenseUrl` (no
+      credentials, white space, controls or backslashes), and goes in
+      the ASCII form `URL` writes.
+    - A dataset that isn't public is a 404 with the node's envelope,
+      `error: "not_found"`, the only 404 a script acts on. The card
+      reads its own row, so it is as current as the dataset's record: a
+      dataset published a moment ago is found, and one retracted a
+      moment ago is a 404.
+  - **`GET /api/exhibit/v1/datasets?tag=&offset=&limit=`, a page of
+    the menu:** `{ total, offset, limit, tag, datasets: [{ id, title
+    }] }`.
+    - The datasets the output page can show: an image or video format
+      whose data reference the manifest can resolve. So no tours, no
+      `peer:` rows, and no row whose reference and format disagree.
+    - Ordered as the app's browse orders the catalog: by weight, then
+      by title as `localeCompare` sorts it, then by id.
+    - `tag` matches a tag exactly in its canonical form (below), as the
+      app's category filter matches, and the reply echoes the tag it
+      matched. An empty parameter is the same as a missing one, a
+      malformed one is a 400 `invalid_request`, an offset past `total`
+      gives no datasets, and an unknown tag gives `total: 0`. A tag
+      longer than the tags read ever lists is a 400, since an echo it
+      had to leave out would look like the unfiltered menu, and so is
+      one of nothing but spaces or control characters. A repeated
+      key's first value counts, and a key the node doesn't know is
+      ignored, so a later script's query reads on an older node.
+    - `limit` runs from 1 to 9, defaulting to 9, frozen. A row whose id
+      is longer than a ULID's 26 characters is left out rather than
+      cut.
+    - Titles are cut to 48 bytes as sent. A dialog's text holds under
+      512 bytes: nine titles with "1. " and line breaks come to 467,
+      leaving 44 for a heading such as "Water, 10-18 of 71".
+  - **`GET /api/exhibit/v1/tags`, the categories:** `{ tags: [{ tag,
+    count }], more }`.
+    - A tag is never cut, since it is the key a script sends back. Its
+      canonical form drops control characters, then is NFC and trimmed;
+      normalized last, so it is its own canonical form, and a tag the
+      script was given matches when sent back.
+      Tags are grouped and matched by it, and one whose canonical form
+      is empty, longer than 40 bytes, or holds a character beyond the
+      Basic Multilingual Plane is left out: whether Second Life carries
+      one whole, in a reply and back in an address, hasn't been checked
+      in-world.
+    - The most common come first, ties by tag, at most 30. Thirty tags
+      of 40 bytes with six-digit counts come to 2,003 bytes by their caps,
+      so the loop that drops whole tags from the least common end
+      until the reply fits is a guard; `more: true` says when tags
+      were left.
+    - A tag's `count` equals the page's `total` for that tag, which a
+      test holds.
+    - It is a resource of its own, not a parameter of the page, so
+      each path keeps one budget.
+  - **Budgets, proved by arithmetic:** every field has a cap counted
+    as the body's UTF-8 bytes as the script receives them, escapes
+    included, and a reply's budget is their sum: a card at most 2,048
+    bytes, a page 1,024, the tags 2,048.
+    - The page holds by construction: nine 26-byte ids, nine 48-byte
+      titles, a 40-byte tag, six-digit numbers and the envelope come
+      to 964 bytes.
+    - The card's fixed fields take about 200 bytes, and the abstract
+      what's left.
+    - Tests sum the caps, and hold each reply with worst-case data:
+      CJK, quotes, control characters, padded titles. The first menu
+      read's review found two ways past its budget, a title padded
+      past validation that gave an 83 KB page, and tags of control
+      characters.
+    - A field added later must fit inside the same budget.
+    - A script sets `HTTP_BODY_MAXLENGTH` to one byte more than the
+      budget of what it asks for, so a reply of exactly the budget
+      can't read as cut, whichever way Second Life counts the limit. A
+      node that breaks its promise, an older fork, or an error page
+      then costs no script more than that, and `HTTP_BODY_TRUNCATED`
+      says it wasn't a card.
+    - Anything that fails while answering, a D1 error or a spent
+      quota among them, is a 503 `unavailable` in the node's envelope,
+      never the platform's own page, which is neither JSON nor within
+      a budget. A read asked with a method other than GET or HEAD is
+      a 405 `method_not_allowed`; any other path under `/api/exhibit/`
+      is `no_such_route` for every method.
+  - **JSON, not plain lines.** A small reply that arrives whole reads
+    with one `llJsonGetValue` a field, and Second Life decodes the
+    escapes. A field can be added without moving the others. What sank
+    the record read was its size, not its format.
+  - **What it costs the node:**
+    - One in-memory list of every public dataset with its kind and
+      tags, built with the catalog's own `listPublicDatasets` so that
+      "public" means what the catalog means by it, and the tags alone
+      rather than `getDecorations`'s five tables, rebuilt at most once
+      a minute per isolate. Pages and tags filter it; a card reads its
+      own row.
+    - Only a list already read is shared. A Worker can't hand one
+      request's I/O to another, so a read shared while in flight hangs
+      every request waiting on it if the one that started it ends
+      (`orbit-gate.ts` says so; found in review), and requests that
+      miss together each read. A failed read keeps the last good list
+      for up to five minutes, the stale copy `/api/v1/catalog` already
+      allows a client (`stale-while-revalidate=300`), trying again once
+      a minute and logging that it did.
+    - So a retracted dataset can stay in pages for up to a minute, or
+      five while reads fail, and pages from different isolates can come
+      from lists as far apart, so a page can skip or repeat a row. Its
+      card is a 404 at once, and the output page refuses it. The menu
+      should learn to notice the change, and the API review set three
+      conditions for the field that will say so: a `list`, a short hash
+      of the matching datasets' ids in order rather than the page's
+      alone; 18 bytes of the page's budget held for it now
+      (`PAGE_RESERVED`), which nothing else may spend; and shipped
+      before or with the first menu script, since a rezzed one can't
+      learn it later.
+    - Cloudflare doesn't store a Function's reply at its edge, so
+      `Cache-Control` saves the node nothing; it is for browsers:
+      `public, max-age=60`, and `no-store` for a card with a `retry`
+      and for errors.
+    - A card for a Vimeo row asks outside the node. In an isolate that
+      hasn't read that video in ten minutes, it calls the video proxy
+      (which asks Vimeo's API), Vimeo's player address, which redirects,
+      the CDN's master and each of its variants (seven today), ten
+      requests in all, within two seconds. Every playlist must come from
+      Vimeo's player or CDN over HTTPS. Each redirect hop is checked
+      before it is asked, no body is read past a megabyte, and no
+      reading makes more than 24 requests or runs past ten seconds after
+      the reply. So a Vimeo row's moving date depends on the proxy and on
+      Vimeo answering a Worker. When either fails, a card says `retry`,
+      which a script spends its four tries on before showing the range,
+      and the isolate doesn't ask again for ten seconds whoever calls. A
+      refusal (a host off the list, renditions that disagree) shows the
+      range for ten minutes. Both are logged, without the
+      signed addresses. A well-behaved script reads a card only when the
+      dataset changes, four cards at most per choice; what bounds anyone
+      else is the per-reading caps and the brief memory, since the card
+      is public.
+    - The first menu read walked every public row on every request. On
+      D1's free plan that spends the day's reads at about one request
+      every 17 seconds. A list per isolate is enough at exhibit
+      traffic; if it ever shows, it moves to one fixed KV key, cleared
+      when a publish clears the catalog's snapshot.
+  - **A contract with the copies already rezzed.** Every later node
+    keeps serving these shapes to scripts nobody can update remotely.
+    Under this path, changes are additive only and within the budgets.
+    No field changes meaning, as `exactDuration`'s 0 and `kind`'s open
+    set must not. A breaking change gets a new path,
+    `/api/exhibit/v2/`, and the old one stays. A contract test pins the names and types as well as the
+    budgets. The node never logs the owner name and key headers every
+    `llHTTPRequest` carries. A path under `/api/exhibit/` that
+    matches nothing answers a JSON 404, `no_such_route`, as
+    `stac/[[path]].ts` does for its own, so a later script asking a
+    read this node lacks gets an answer rather than the app's page.
+  - **The record read doesn't retire with the card.** Copies of the
+    info script from before the card read the record and the manifest
+    by position, under `/api/v1/`. The record's key order and the
+    manifest's leading keys stay pinned while they may exist
+    (`docs/protocol/README.md` says so), though those copies will meet
+    the protocol's `/api/v1/` 410 one day whatever is pinned.
+  - **In the scripts, in three steps:**
+    1. The info script reads the card in place of the record and the
+       manifest: one request, or a second after a `retry`, about 4 KB
+       held where the record took 6, and no JSON or HTML code of its
+       own. Done 26 October, 185 lines shorter; `/9 memory` in-world is
+       still to measure.
+    2. The menu. The info script stays the only script with an
+       `http_response`. It reads pages for the visitors script and
+       relays their ids and titles. A link message reaches every
+       script in the prim with a handler for one, the globe script
+       included, so the relay is as compact as it can be, or the
+       visitors script moves to a child prim of its own.
+    3. Phase 4b's buttons, with the owner's chat commands moved to a
+       fourth script to give the globe script room.
+  - **The node and the scripts go together.** A TerraViz node without
+    these reads answers them with the app's page and a 200, not JSON,
+    which Second Life refuses with its own HTTP 415, since the script
+    asks for JSON (found in-world, 26 October). The script takes a 415
+    as no card.
+    A node whose Functions are down, a spent daily quota among the
+    causes, answers the same way, so the info script asks again a
+    minute later, and once its four tries are spent shows the title
+    alone and tells the owner once. There is no fallback to the record
+    read, since its code is what the info script sheds. A request a
+    region restart dropped is asked again.
 - **Who is at the globe** comes from the region's avatar list and each
   avatar's distance from the globe's surface, every five seconds. That costs less than a sensor
   and isn't capped at 16 avatars. Nothing about a visitor leaves the

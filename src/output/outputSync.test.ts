@@ -467,6 +467,119 @@ describe('createPlayheadSync', () => {
     expect(controller.sync(video, state).seeked).toBe(true)
   })
 
+  it('treats a seek the caller noted as its own, settle window and all', () => {
+    // The web clock's turn at a loop's seam: made on the element directly,
+    // and without the note the next call seeked again for the restart.
+    let now = 0
+    const controller = createPlayheadSync(() => now)
+    const video = target({ currentTime: 50 - BEHIND_S })
+    const state = inputs()
+    controller.noteSeek(video)
+    now = 10
+    expect(controller.sync(video, state).seeked).toBe(false)
+    // Past the window, an error past the threshold is corrected again.
+    now = OUTPUT_SEEK_SETTLE_MS + 20
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(true)
+  })
+
+  /** Frames at 16 ms from `from` to `to`, the element seeking until the last. */
+  function standStill(controller: ReturnType<typeof createPlayheadSync>, video: SyncTarget, clock: { now: number }, to: number) {
+    ;(video as { seeking: boolean }).seeking = true
+    while (clock.now + 16 < to) {
+      clock.now += 16
+      controller.sync(video, inputs())
+    }
+    clock.now = to
+    ;(video as { seeking: boolean }).seeking = false
+    controller.sync(video, inputs())
+  }
+
+  it("measures a noted seek's cost into the floor", () => {
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const video = target({ currentTime: 50 })
+    controller.sync(video, inputs())
+    clock.now = 16
+    controller.noteSeek(video)
+    // The turn stands still for 1.2 s before the element plays on.
+    standStill(controller, video, clock, 1216)
+    // Past the window, half a second out is under that cost's floor, so
+    // the law trims rather than seek into another 1.2 s stall.
+    clock.now += OUTPUT_SEEK_SETTLE_MS
+    video.currentTime = 49.5
+    const out = controller.sync(video, inputs())
+    expect(out.seeked).toBe(false)
+    expect(video.playbackRate).toBeGreaterThan(1)
+  })
+
+  it("starts a new element's measurement at the note, not at its first sync", () => {
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const first = target({ currentTime: 10 })
+    expect(controller.sync(first, inputs()).seeked).toBe(true)
+    standStill(controller, first, clock, 1200)
+
+    // A new element, turned at once. Without taking it as the element
+    // being steered, its first sync would forget the note and seek again.
+    const second = target({ currentTime: 50 - BEHIND_S })
+    clock.now += 16
+    controller.noteSeek(second)
+    clock.now += 16
+    expect(controller.sync(second, inputs()).seeked).toBe(false)
+  })
+
+  it('times a noted seek made on the first call after a stop', () => {
+    // Steering stopped (a hidden tab), and the first thing on the way back
+    // was the caller's own seek. Measured from the last `sync`, the next
+    // call read the gap as a stop and dropped the seek unmeasured, so a
+    // slow restart left no floor and the law seeked again (found in
+    // review).
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const video = target({ currentTime: 50 })
+    controller.sync(video, inputs())
+    clock.now = 60_000
+    controller.noteSeek(video)
+    standStill(controller, video, clock, 61_200)
+    clock.now += OUTPUT_SEEK_SETTLE_MS
+    video.currentTime = 49.5
+    expect(controller.sync(video, inputs()).seeked).toBe(false)
+  })
+
+  it('times a noted seek made on the first call after a pause', () => {
+    // A pause clears the call time on purpose, so the pause is not an
+    // interval; the seek that ends it still is one to time.
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const video = target({ currentTime: 50 })
+    controller.sync(video, inputs())
+    controller.dropPendingSeek()
+    clock.now = 30_000
+    controller.noteSeek(video)
+    standStill(controller, video, clock, 31_200)
+    clock.now += OUTPUT_SEEK_SETTLE_MS
+    video.currentTime = 49.5
+    expect(controller.sync(video, inputs()).seeked).toBe(false)
+  })
+
+  it("does not carry the last element's cost to a new one's note", () => {
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const first = target({ currentTime: 10 })
+    expect(controller.sync(first, inputs()).seeked).toBe(true)
+    standStill(controller, first, clock, 1200)
+
+    // The new element's note is dropped across a stop, so it has no cost
+    // of its own yet. Half a second out past the window is then an
+    // ordinary seek, not one held off by the first element's 1.2 s.
+    const second = target({ currentTime: 49.5 })
+    clock.now += 16
+    controller.noteSeek(second)
+    clock.now += 5_000
+    expect(controller.sync(second, inputs()).seeked).toBe(true)
+  })
+
   it('does not start the window on a call that did not seek', () => {
     // Stamping every call would suppress the *first* seek after a quiet
     // period, which is the one that matters.

@@ -334,13 +334,16 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
         scene.setParams(viewParams(camera.view()))
         if (!camera.moving()) deps.markDirty()
       }
-      const video = mirror.current()?.video ?? null
+      const media = mirror.current()
+      const video = media?.video ?? null
       if (!video || !current) {
         wasSeeking = false
         return NOT_READY
       }
       const before = video.currentTime
-      const outcome = clockSteer.steer(video, current.clock, nowMs(), clockReadAtMs)
+      // The stream's own period, where it states one: copies agree on it
+      // wherever the renditions do.
+      const outcome = clockSteer.steer(video, current.clock, nowMs(), clockReadAtMs, media?.loopS?.() ?? null)
       // A seek changes the decoded frame without the scene knowing, and
       // so does a seek *landing*. A paused element counts as static, so
       // without the second the new frame waited out the 1 Hz floor, up

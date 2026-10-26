@@ -139,7 +139,7 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 | `lat` | degrees, −90 to 90 | The latitude at the centre of the picture once it comes to rest, in degrees north. The picture turns to bring it there with north up, so `lat=-90` puts the South Pole at the centre of an upright sphere. | `0` |
 | `zoom` | 0 or more | How far the centre of the picture is magnified once it comes to rest, in the main app's zoom levels. The far side shrinks rather than being cut off, so the whole Earth is still on the sphere. A zoom past about `5.67`, the most the picture can magnify, reads as that most. | `0` |
 | `debug` | present | The output's debug readout, drawn on the picture. | off |
-| `t` | seconds into the clip, 0 or more | Where the clip is. A `t` past the clip's end wraps round it, paused or playing. | `0` |
+| `t` | seconds into the clip, 0 or more | Where the clip is. A `t` past the clip's end wraps round it, paused or playing. The clip's length is its stream's playlist total, the `#EXTINF`s summed, from the first rendition the copy loads. Copies agree on it wherever the renditions do, as they do on the node's own bundles and on the Vimeo streams the node has checked. For those two, the node's exhibit card sends the same sum. A copy with no playlist to read a length from wraps on the video's own length: a single file, or a browser that plays HLS itself rather than through hls.js. | `0` |
 | `at` | Unix time in seconds, decimals allowed | When `t` was current. A playing copy shows `t + (now − at) × rate`, wrapped round the clip. | when this copy read the address: at load, or at the `#` change that last changed the clock |
 | `rate` | 0.0834 to 12.8 | Playback speed; `1` is the clip's own. The player's own limits are 0.0625 to 16, and a copy needs room above and below the rate to catch up or fall back, so values outside this narrower range read as `1`. | `1` |
 | `paused` | present | Hold `t` exactly. Every copy shows the same frame. | playing |
@@ -171,10 +171,15 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 - **`debug` and `paused`** follow the
   [truthy convention](#stability-guarantees) exactly as `embed` does.
 - **Paused is exact; playing is close.** Paused copies seek to `t`
-  itself. Playing copies steer their video toward the target the way
-  the desktop outputs do, the short way round the loop. They stay
-  within a fraction of a second once settled, but not on the same
-  frame.
+  itself. Playing copies steer their video toward the target with the
+  desktop outputs' control law, the short way round the loop. They stay
+  within a fraction of a second of the clip once settled, but not on the
+  same frame. Each pass round the clip restarts the video, which holds
+  the picture for about 50 to 250 ms and leaves a copy up to that times
+  `rate` behind in the clip until it catches up. So how close copies
+  stay depends on the clip's length and the rate. On a short clip at a
+  high rate they don't settle at all: a 4.3 s clip at rate 12.8 restarts
+  three times a second.
 - **A shared clock needs `at`.** Without it each copy times `t` from
   when it read the address, so copies that loaded at different moments
   differ. With it they agree as far as their computers' clocks do, so
@@ -318,6 +323,7 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 | v1 | 2026-07-04 | Initial written contract. Documents the pre-existing `dataset` / `/dataset/:id` / `tour` / `catalog` / `preview` selectors and the `terrain` / `labels` / `borders` / `rotate` / `layout` / `setview` / `orbit` / `prompt` modifiers, and introduces the new `embed` minimal-chrome flag and its `chat` sub-flag. |
 | v1 | 2026-10-24 | Additive. The output page (`/output/output`) gains its parameters: `dataset`, `fit`, `width`, `rotation` (the longitude at the picture's centre), `debug`, and the clock `t` / `at` / `rate` / `paused`, each with its own default, read from the query and the fragment alike. No main-app parameter changes. A bare output-page address draws the live Earth it always did, now sized to the page as displayed and with clouds that refresh. Later the same day, also additive: `telemetry=1`, which turns on the page's own Essential telemetry, off by default. It fails toward off rather than following the truthy convention. |
 | v1 | 2026-10-25 | Additive, with one behavior change. The output page gains `lat`, the latitude at the picture's centre, and `zoom`, which magnifies it, through the desktop output's follow turn; a zoom past what the picture can magnify (about 5.67) reads as that most. `rotation` keeps its meaning and draws the same picture at rest as before; at a pole it names the meridian the centre sits on. The behavior change: the three keys name the view the picture comes to rest on, and a change to any of them after the `#` now sets the picture moving, coasting to a stop on the new view like a spun globe on its bearing, instead of jumping there. The first reading of an address, and every view for a viewer whose browser reports reduced motion, still jump. Kept in v1 by the maintainer's decision of 25 October 2026, recorded in #501: the section was a day old, and every known composer writes at most once a second, the Second Life limit. **Migration:** a composer that animated `rotation` by writing it faster than once a second now sees the picture trail by about 0.8 s, and its swings shrink to about 40% at 0.5 Hz; write the view the picture should come to rest on, at most once a second. No main-app parameter changes. |
+| v1 | 2026-10-26 | One behavior change. The output page's clock (`t`, `at`, `rate`, `paused`) wraps on the clip's playlist total, the `#EXTINF`s summed from the first rendition a copy loads, rather than on the video element's `duration`. That `duration` was the same number until a stream had buffered to its end and then the latest end of every track: measured in Chromium, 21 to 40 ms longer on the node's bundles with a sound track. So a copy changed its period partway through, copies on different engines looped on different periods, and the gap grew with every loop since `at`. A copy with no playlist to read a length from (a single file, or a browser playing HLS itself) still wraps on the video's own length. No key, type or range changes. Kept in v1 by the maintainer's decision of 26 October 2026, recorded in #502: the section was two days old, and the old period was never stable even on one copy. **Migration:** nothing for a composer, which writes the same keys. A copy opened before the change keeps the old period until it reloads, so on a bundle with a sound track it can show a different point of the loop from a new copy; any change before the `#` reloads every copy. No main-app parameter changes. The same day, "Paused is exact; playing is close" was reworded to state its limit, which was already so: each pass round the clip restarts the video, so how close playing copies stay depends on the clip's length and the rate, and on a short clip at a high rate they don't settle. No behavior changes with that. |
 
 ---
 

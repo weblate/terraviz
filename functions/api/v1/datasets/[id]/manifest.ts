@@ -44,10 +44,12 @@
  *     a moment as well as for good:
  *     Vimeo's figure for `vimeo:` (whole seconds, so up to a second
  *     off what a player reads from the stream), the sum of the bundle's own
- *     `#EXTINF`s for `r2:` HLS (`_lib/hls-duration.ts`), and 0 for
- *     `stream:` and single files. Browsers ignore it, since a player
- *     reads the length from the playlist; a Second Life globe's
- *     script needs it to turn a clip position into a date.
+ *     `#EXTINF`s for `r2:` HLS (`_lib/hls-duration.ts`), the period a
+ *     web output loops on, and 0 for `stream:` and single files.
+ *     Browsers ignore it, since a player reads the length from the
+ *     playlist. Second Life info scripts from before the exhibit's
+ *     card read it to turn a clip position into a date; the card's
+ *     `exactDuration` is what one reads now.
  *   - Image: `{ kind: "image", variants: [{ width, url }], fallback }`
  *     per `CATALOG_BACKEND_PLAN.md` "Image datasets (R2 + Cloudflare
  *     Images)". Phase 2 enriches this with real Cloudflare Images
@@ -75,6 +77,7 @@ import { streamPlaybackUrl } from '../../_lib/stream-store'
 import { computeEtag } from '../../_lib/snapshot'
 import { encodeR2Key, resolveR2HlsPublicUrl, resolveR2PublicUrl } from '../../_lib/r2-public-url'
 import { readHlsDuration } from '../../_lib/hls-duration'
+import { DEFAULT_VIDEO_PROXY_BASE, fetchVimeoManifest, type VideoManifest } from '../../_lib/video-proxy'
 
 const CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=600'
 
@@ -106,25 +109,6 @@ export function cacheControlFor(
   return now - end <= 2 * seconds * 1000 ? CACHE_CONTROL_REALTIME : CACHE_CONTROL
 }
 const CONTENT_TYPE = 'application/json; charset=utf-8'
-const DEFAULT_VIDEO_PROXY_BASE = 'https://video-proxy.zyra-project.org/video'
-
-interface VideoProxyFile {
-  quality: string
-  width?: number
-  height?: number
-  size: number
-  type: string
-  link: string
-}
-
-interface VideoManifest {
-  kind: 'video'
-  id: string
-  title: string
-  duration: number
-  hls: string
-  files: VideoProxyFile[]
-}
 
 interface ImageManifest {
   kind: 'image'
@@ -171,47 +155,6 @@ export function imageVariants(href: string): ImageManifest {
     url: `${base}_${width}${ext}`,
   }))
   return { kind: 'image', variants, fallback: href }
-}
-
-/**
- * Resolve a `vimeo:<id>` to a `VideoManifest` by calling the
- * upstream proxy. The proxy returns the existing
- * `{ id, title, duration, hls, dash, files }` shape; we drop `dash`
- * (the frontend never used it) and stamp `kind: "video"` so the
- * union discriminator is in place for forward compatibility.
- *
- * On upstream failure we return null and the caller surfaces a 502
- * — this path is one of the few in the catalog backend that has a
- * hard external dependency, so a clear error envelope is worth more
- * than a half-rendered manifest.
- */
-async function fetchVimeoManifest(
-  vimeoId: string,
-  proxyBase: string,
-  fetchImpl: typeof fetch,
-): Promise<VideoManifest | null> {
-  const upstream = await fetchImpl(`${proxyBase}/${vimeoId}`)
-  if (!upstream.ok) return null
-  const data = (await upstream.json()) as {
-    id: string
-    title?: string
-    duration?: number
-    hls: string
-    files?: VideoProxyFile[]
-  }
-  return {
-    kind: 'video',
-    id: data.id,
-    title: data.title ?? '',
-    // The manifest's `duration` is never negative: anything the proxy
-    // sends that isn't a usable length reads as unknown.
-    duration:
-      typeof data.duration === 'number' && Number.isFinite(data.duration) && data.duration > 0
-        ? data.duration
-        : 0,
-    hls: data.hls,
-    files: data.files ?? [],
-  }
 }
 
 /**

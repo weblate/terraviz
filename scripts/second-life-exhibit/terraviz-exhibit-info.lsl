@@ -12,14 +12,15 @@
 // WHAT THIS SCRIPT DOES
 // It is one of the exhibit's three scripts, and the one that says what the
 // globe shows. terraviz-exhibit.lsl tells it what that is after every
-// change. From the node it reads the dataset's record and, for a video,
-// the clip's length, and from those it keeps two things:
-// - The hover text over the globe, in this order:
-//     TerraViz globe
-//     the telemetry notice, while the owner has telemetry on
+// change. From the node it reads the dataset's card, a reply of at most
+// 2 KB that the node writes for the exhibit, its text already plain and
+// cut to fit (/api/exhibit/v1/datasets/<id>), and from it keeps two things:
+// - The hover text over the globe, kept short, in this order:
 //     the title
 //     the date: exact when paused, every couple of seconds while playing,
 //       and the dataset's range when the clip's length isn't known
+//     the telemetry notice, "Counts anonymous use:" and the privacy
+//       policy's address, while the owner has telemetry on
 //     a short credit, such as "Credit: NOAA · CC-BY-4.0"
 //     "Talk in progress", during one
 //     how to touch the globe
@@ -45,16 +46,19 @@
 // month or year a frame (P1D, P1M, P1Y) is counted in frames: the clip
 // holds one per period, the first at the start and the last at the end,
 // so the label is the frame's own.
-// A video on Vimeo shows its range: Vimeo gives its length in whole
-// seconds, the page loops on the stream's own, and a date worked out
-// from the first drifts from the picture with every loop. Only the node
-// knows a dataset is on Vimeo, so this script trusts a length only from a
-// manifest carrying the dataset's own id, which the node writes into
-// every manifest it builds and Vimeo's don't carry.
+// A clip's length is the card's, which the node reads from the stream's
+// own playlists, its own bundle's or a Vimeo stream's: Vimeo's API gives
+// whole seconds, the page loops on the stream's own, and a date worked
+// out from the first would drift from the picture with every loop. When
+// the node has no exact length, as for a single file, the range shows.
+//
+// A node older than the card answers with the app's page instead. The
+// hover text then shows the title alone, "About" gives the dataset's
+// page, and the owner is told once.
 //
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
-// reading a record or answering "About", which are when it needs the most.
+// reading a card or answering "About", which are when it needs the most.
 
 integer CHAN = 9;
 
@@ -64,37 +68,20 @@ integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script re
 integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
 
-// How much of a record is read, in bytes. Every field this script uses
-// comes before the record's `createdAt`, which began at byte 8,356 (UTF-8,
-// measured to that key) in the longest record on the node in October 2026. That order is this node's
-// serializer's, not a promise of the protocol (docs/protocol/README.md);
-// exhibit.test.ts fails if it changes. A record longer than this is read
-// as far as it goes: a value cut short ends "...", a field past the cut is
-// missing, and "About" says the rest is at the dataset's page.
-// Held at two bytes a character, a read is the largest thing this script
-// holds, and it rests at about 50 KB of its 64 (measured in-world, October
-// 2026). Every copy made while reading counts too, until Second Life
-// collects it, so the read is held once (gBody) and each value is copied
-// as few times as it can be. 3072 holds every field this script reads in
-// 78% of the node's records, and gives the dates a whole record would in
-// 95% and the credit in 81%.
-integer BODY_MAX = 3072;
-// How much of a manifest: its id comes first, then its title, which the
-// node's own manifests leave empty, then its length and stream address
-// (by byte 80, and Vimeo's name by 120, on the node in October 2026).
-// This leaves room for a long title before the length.
-integer MANIFEST_MAX = 1024;
+// A card's budget, in bytes. The node keeps every card within it, so a
+// card arrives whole, and a reply cut short isn't one. A request reads one
+// byte more, so a card of exactly the budget can't read as cut, whichever
+// way Second Life counts the limit. Held at two bytes a character, a card
+// is the largest thing this script holds.
+integer CARD_MAX = 2048;
+integer TRIES = 4;             // asks for one dataset's card, a failed one or one the node said to repeat
 integer ABSTRACT_MAX = 500;    // characters of an abstract kept for "About"; the link has the rest
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
 float   TICK = 2.0;            // how often a playing clip's date is worked out again
 integer MIN_CREDIT = 48;       // bytes the credit keeps when the hover text is full
 integer MIN_TITLE = 32;        // bytes the title keeps, first, when there isn't room for both
-string  TAG_START = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/!";
-// Tags a browser runs into the words beside them, as in "CO<sub>2</sub>"
-// or "Center</a>, USGS"; any other tag stands for a break.
-list    INLINE = ["a", "abbr", "b", "big", "code", "em", "font", "i", "small", "span", "strong", "sub", "sup", "u"];
 
-string  LIVE_LINE = "The live Earth: today's clouds and the real day and night";
+string  LIVE_LINE = "Live Earth: today's clouds";
 string  LIVE_CREDIT = "Credit: NASA Blue Marble, Black Marble";
 string  LIVE_ABOUT = "The live Earth: NASA's Blue Marble by day and its Black Marble city lights at night, under today's clouds, lit by the Sun as it stands right now. The globe rests on it when nobody has chosen a dataset.";
 string  TOUCH_LINE = "Right-click, Touch for more";
@@ -118,10 +105,11 @@ integer gTelemetry;
 string  gNode;
 integer gTalk;
 
-// What the node says about it.
+// What the node's card says about it.
 string  gFor;          // the dataset the fields below describe
-integer gHaveRec;
-string  gRef;          // the dataset's slug, or its id, for its page's link
+integer gHaveRec;      // its card has been read
+string  gPage;         // the dataset's page, a path on the node, as "/dataset/<slug>"
+string  gCardTitle;    // the card's title, kept for every card, used when the globe's title is the bare id
 integer gVideo;
 integer gDated;
 integer gStartDay;     // days since 1970, and seconds into that day
@@ -132,28 +120,20 @@ integer gRes;
 integer gSnapS;        // a sub-daily period in seconds, or 0
 integer gFrames;       // the period is a single day, month or year (P1D, P1M, P1Y)
 float   gDuration;     // the clip's length in seconds, 0 while unknown
-string  gWho;
-string  gSpdx;
-string  gLicUrl;
-string  gStatement;
+string  gWho;          // the credit
+string  gSpdx;         // the licence's SPDX id
+string  gLicText;      // the licence's statement and address
 string  gAbstract;
-integer gCut;          // a value was cut short, or the record wasn't read to the end
-integer gLastCut;      // the last field() read was cut short
-integer gCuts;         // which of the abstract (1), credit (2), licence id (4) and statement (8) were
+integer gCut;          // the node cut a value short, or this script cut the abstract
 
-key     gRecReq;
-key     gManReq;
-integer gRecTries;
-integer gManTries;
+key     gReq;
+integer gTries;
 integer gRetryAt;
 
-string  gBody;         // the record being read, only while record() runs
-integer gStop;         // where in it the fields this script reads end, or -1
-
 string  gShown;        // the hover text as last set
-integer gPeak;         // the most memory used reading a record or answering About
-integer gUnshowable;   // the record names a format the page can't show
+integer gPeak;         // the most memory used reading a card or answering About
 string  gWarned;       // the dataset whose notecard the owner was last warned about
+integer gToldNode;     // the owner has been told this node sent no card, or didn't answer
 key     gChose;        // who chose the dataset shown, until the node has said whether it can be
 key     gLastAbout;
 integer gLastAboutAt;
@@ -391,9 +371,19 @@ string fit(string s, integer max)
     return llStringTrim(s, STRING_TRIM_TAIL) + "...";
 }
 
+// What the dataset is called: the name the globe was given (the menu's,
+// a notecard's, a preset's, or one typed after /9 show <id>), or the
+// card's title for one shown by its id alone, which the globe then names
+// by the id, and which means nothing to a visitor.
+string called()
+{
+    if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;
+    return gTitle;
+}
+
 hover()
 {
-    string title = gTitle;
+    string title = called();
     string credit = LIVE_CREDIT;
     string stamp = "";
     if (gDataset == "") title = LIVE_LINE;
@@ -408,15 +398,14 @@ hover()
             stamp = date();
         }
     }
-    string top = "TerraViz globe\n";
-    if (gTelemetry) top += "Counts anonymous use: " + gNode + "/privacy\n";
     string tail = "";
     if (stamp != "") tail += "\n" + stamp;
+    if (gTelemetry) tail += "\nCounts anonymous use: " + gNode + "/privacy";
     string end = "";
     if (gTalk) end += "\n" + TALK_LINE;
     end += "\n" + TOUCH_LINE;
 
-    integer avail = 254 - bytes(top) - bytes(tail) - bytes(end);
+    integer avail = 254 - bytes(tail) - bytes(end);
     if (credit != "") avail -= 1;
     integer t = bytes(title);
     integer c = bytes(credit);
@@ -431,7 +420,7 @@ hover()
         title = fit(title, keepT);
         credit = fit(credit, avail - bytes(title));
     }
-    string s = top + title + tail;
+    string s = title + tail;
     if (credit != "") s += "\n" + credit;
     s += end;
     if (bytes(s) > 254) s = fit(s, 254);
@@ -455,154 +444,32 @@ later(integer s)
     if (gRetryAt == 0 || at < gRetryAt) gRetryAt = at;
 }
 
+// Asks for the dataset's card. It is asked for when the dataset changes,
+// and again only when a request failed or the node said to.
 fetch()
 {
-    if (gDataset == "" || gNode == "") return;
-    string base = gNode + "/api/v1/datasets/" + llEscapeURL(gDataset);
-    if (!gHaveRec && gRecTries < 3)
-    {
-        ++gRecTries;
-        gRecReq = llHTTPRequest(base, [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json",
-            HTTP_BODY_MAXLENGTH, BODY_MAX], "");
-    }
-    else if (gHaveRec && gVideo && gDuration <= 0.0 && gManTries < 4)
-    {
-        ++gManTries;
-        gManReq = llHTTPRequest(base + "/manifest", [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json",
-            HTTP_BODY_MAXLENGTH, MANIFEST_MAX], "");
-    }
-    else return;
+    if (gDataset == "" || gNode == "" || gTries >= TRIES) return;
+    if (gReq) return;
+    ++gTries;
+    gReq = llHTTPRequest(gNode + "/api/exhibit/v1/datasets/" + llEscapeURL(gDataset), [HTTP_METHOD, "GET",
+        HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, CARD_MAX + 1], "");
     // A request Second Life throttled gets no key and never an answer.
-    if (gRecReq == NULL_KEY && gManReq == NULL_KEY) later(30);
+    if (gReq == NULL_KEY) later(30);
 }
 
-// A field's string value from the record in gBody, which may have been
-// cut short, up to `max` characters of it. Only matches before gStop
-// count: every field read comes before `createdAt`, and nothing before it
-// is an object, so no key inside one (probingInfo's, enriched's) can be
-// taken for a field.
-string field(string name, integer max)
+// A card's string, or "" for a field it lacks. The node takes out what a
+// script can't hold, so no value can be read as a JSON_ constant.
+string value(string card, string name)
 {
-    gLastCut = FALSE;
-    integer i = llSubStringIndex(gBody, "\"" + name + "\":\"");
-    if (i == -1 || (gStop != -1 && i > gStop)) return "";
-    i += llStringLength(name) + 4;
-    string raw = llGetSubString(gBody, i, i + max + 16);
-    // The closing quote is the first one not escaped. Most values hold no
-    // escape at all, and in one with no backslash before its first quote,
-    // that quote closes it. In one that does, JSON can't hold a raw tab,
-    // so two tabs stand in for each escaped quote (after each escaped
-    // backslash, where there is one), which keeps every index, and the
-    // first quote left is the one that closes the value.
-    integer at = llSubStringIndex(raw, "\"");
-    integer bs = llSubStringIndex(raw, "\\");
-    integer esc = bs != -1 && (at == -1 || bs < at);
-    if (esc)
-    {
-        if (llSubStringIndex(raw, "\\\\") == -1) at = llSubStringIndex(llReplaceSubString(raw, "\\\"", "\t\t", 0), "\"");
-        else at = llSubStringIndex(llReplaceSubString(llReplaceSubString(raw, "\\\\", "\t\t", 0),
-            "\\\"", "\t\t", 0), "\"");
-    }
-    if (at == 0) return "";
-    if (at > 0 && at <= max) raw = llGetSubString(raw, 0, at - 1);
-    else
-    {
-        // Longer than kept, or cut off by BODY_MAX: end at a space, which
-        // can't fall inside an escape. A value with no space, such as a
-        // time or a long link, is dropped rather than read cut, and
-        // "About" says some of the record is at its page.
-        raw = llGetSubString(raw, 0, max - 1);
-        integer sp = llStringLength(raw) - 1;
-        while (sp > 0 && llGetSubString(raw, sp, sp) != " ") --sp;
-        if (sp <= 0) { gCut = TRUE; return ""; }
-        raw = llGetSubString(raw, 0, sp - 1);
-        gLastCut = TRUE;
-        gCut = TRUE;
-    }
-    // A value with no escape is its own text. One with an escape is read
-    // by the JSON reader, one copy at a time.
-    if (!esc) return raw;
-    raw = "[\"" + raw + "\"]";
-    raw = llJsonGetValue(raw, [0]);
-    if (raw == JSON_INVALID) return "";
-    return raw;
-}
-
-// Text from HTML, as some records' organizations and abstracts are:
-// tags go, the common entities are read, and runs of spaces fold.
-// Each step is taken only when there is something for it to do, since
-// every one copies the text.
-string plain(string s)
-{
-    // A tag is a < before a letter, / or !, up to its >, or to the end
-    // when a cut left it open. Any other <, as in "size < 2.5", is text.
-    // The text is split at each < once, rather than copied once a tag.
-    if (llSubStringIndex(s, "<") != -1)
-    {
-        list parts = llParseStringKeepNulls(s, ["<"], []);
-        s = "";
-        list out = [llList2String(parts, 0)];
-        integer n = llGetListLength(parts);
-        integer i;
-        for (i = 1; i < n; ++i)
-        {
-            string p = llList2String(parts, i);
-            if (p == "" || llSubStringIndex(TAG_START, llGetSubString(p, 0, 0)) == -1) out += ["<" + p];
-            else
-            {
-                // A tag runs on to the next > there is, past any < inside
-                // it, which is rare enough to be joined back up as it comes.
-                integer b = llSubStringIndex(p, ">");
-                while (b == -1 && i + 1 < n)
-                {
-                    ++i;
-                    p += "<" + llList2String(parts, i);
-                    b = llSubStringIndex(p, ">");
-                }
-                if (b == -1) i = n;
-                else
-                {
-                    string name = llToLower(llList2String(llParseString2List(llGetSubString(p, 0, b - 1),
-                        [" ", "\n", "/"], []), 0));
-                    if (llListFindList(INLINE, [name]) == -1) out += [" "];
-                    out += [llDeleteSubString(p, 0, b)];
-                }
-            }
-        }
-        parts = [];
-        s = llDumpList2String(out, "");
-    }
-    if (llSubStringIndex(s, "&") != -1)
-    {
-        s = llReplaceSubString(s, "&nbsp;", " ", 0);
-        s = llReplaceSubString(s, "&nbsp", " ", 0);
-        s = llReplaceSubString(s, "&quot;", "\"", 0);
-        s = llReplaceSubString(s, "&#39;", "'", 0);
-        s = llReplaceSubString(s, "&lt;", "<", 0);
-        s = llReplaceSubString(s, "&gt;", ">", 0);
-        s = llReplaceSubString(s, "&amp;", "&", 0);
-    }
-    if (llSubStringIndex(s, "\t") != -1) s = llReplaceSubString(s, "\t", " ", 0);
-    while (llSubStringIndex(s, "  ") != -1) s = llReplaceSubString(s, "  ", " ", 0);
-    return llStringTrim(s, STRING_TRIM);
-}
-
-// The canonical page for a dataset names its slug when it has a usable
-// one, as the app builds the link, and its id otherwise.
-string ref(string slug)
-{
-    integer n = llStringLength(slug);
-    if (n < 3 || n > 64 || llSubStringIndex("abcdefghijklmnopqrstuvwxyz", llGetSubString(slug, 0, 0)) == -1) return gDataset;
-    integer i;
-    for (i = 1; i < n; ++i)
-        if (llSubStringIndex("abcdefghijklmnopqrstuvwxyz0123456789-", llGetSubString(slug, i, i)) == -1) return gDataset;
-    return slug;
+    string v = llJsonGetValue(card, [name]);
+    if (v == JSON_INVALID) return "";
+    return v;
 }
 
 // Answers whoever paused, played or moved the clip, with the date the
 // globe now shows: the clip's seconds mean nothing to a visitor. A dataset
 // with no dates gets the plain word, as does one whose clip length isn't
-// known: not yet, or never, for a video on Vimeo.
+// known: not yet, or never, for a video with no playlist to read.
 moved(key who)
 {
     string d = "";
@@ -627,7 +494,7 @@ moved(key who)
 
 // The globe shows a choice without asking the node first, since holding
 // the node's reply ran it out of memory (in-world, October 2026). So this
-// script, which reads the record anyway, puts it back on the live Earth
+// script, which reads the card anyway, puts it back on the live Earth
 // when the page can't show it, and tells the owner why and whoever chose
 // it that it can't be shown. The request names the dataset, so a globe
 // that has gone on to another since leaves that one up, which is why
@@ -643,59 +510,78 @@ unshowable(string why)
     llMessageLinked(LINK_THIS, MSG_CONTROL, "earth " + gDataset, NULL_KEY);
 }
 
-record()
+// What a card says, kept. A reply that isn't a card, or one longer than
+// a card can be, changes nothing. An older node answers with the app's
+// page, but so does any node while its Functions are down (a spent daily
+// quota, say), so it is asked again a minute later, and only once the
+// tries are spent is the owner told, once.
+card(string b, integer cut)
 {
-    // Where the fields this script reads end. A record without it was cut
-    // before it by BODY_MAX, so a field not found may be one not read.
-    gStop = llSubStringIndex(gBody, ",\"createdAt\":");
-    integer whole = gStop != -1;
-    if (!whole) gCut = TRUE;
-    gRef = ref(field("slug", 70));
-    string format = field("format", 40);
-    gVideo = llSubStringIndex(format, "video/") == 0;
-    // Named, and neither a video nor an image: a tour, which the page
-    // refuses. A format not read says nothing.
-    gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;
-    gCuts = 0;
-    gAbstract = field("abstractTxt", ABSTRACT_MAX);
-    if (gLastCut) gCuts = gCuts | 1;
-    gWho = field("attributionText", 300);
-    if (gWho == "") gWho = field("rightsHolder", 300);
-    // The organization, which comes first, is the credit only when the
-    // record says nothing later: it may not be the credit a record cut
-    // short would have given.
-    if (gWho == "" && whole) gWho = field("organization", 400);
-    if (gLastCut) gCuts = gCuts | 2;
-    gSpdx = field("licenseSpdx", 120);
-    if (gLastCut) gCuts = gCuts | 4;
-    gLicUrl = field("licenseUrl", 300);
-    gStatement = field("licenseStatement", 600);
-    if (gLastCut) gCuts = gCuts | 8;
-    list a = instant(field("startTime", 40));
-    list b = instant(field("endTime", 40));
-    gDated = a != [] && b != [];
+    string kind = llJsonGetValue(b, ["kind"]);
+    if (cut || kind == JSON_INVALID)
+    {
+        if (gTries < TRIES) { later(60); return; }
+        // A card already read stands (a retry's), so there is nothing to
+        // tell, and the owner is still to be told of the next that fails.
+        if (!gToldNode && !gHaveRec)
+        {
+            llOwnerSay("[exhibit] " + gNode + " sent no dataset card. A node older than the exhibit's reads has "
+                + "none, and one whose Functions are down sends its page instead. The hover text shows titles "
+                + "alone, and About gives the dataset's page.");
+            gToldNode = TRUE;
+        }
+        return;
+    }
+    // The node says whether the page can show it, which the kind alone
+    // doesn't: a video it can't reach is a video. The kinds are an open
+    // set, and this script shows only the two it knows.
+    if (kind == "tour") { unshowable("is a tour, which drives the full app rather than a globe"); return; }
+    if (llJsonGetValue(b, ["showable"]) != JSON_TRUE || (kind != "video" && kind != "image"))
+    {
+        unshowable("is a dataset (" + kind + ") the page can't show");
+        return;
+    }
+    gChose = NULL_KEY;   // it can be shown, so nobody needs telling
+    gVideo = kind == "video";
+    gCardTitle = value(b, "title");
+    gPage = value(b, "page");
+    if (llGetSubString(gPage, 0, 0) != "/") gPage = "/dataset/" + gDataset;
+    gWho = value(b, "credit");
+    gSpdx = value(b, "license");
+    gLicText = value(b, "licenseText");
+    // A JSON true reads as JSON_TRUE: (integer) of it is 0.
+    gCut = llJsonGetValue(b, ["truncated"]) == JSON_TRUE;
+    gAbstract = value(b, "abstract");
+    if (llStringLength(gAbstract) > ABSTRACT_MAX)
+    {
+        // At a space in the last half, where there is one, as the node cuts.
+        integer sp = ABSTRACT_MAX;
+        while (sp > ABSTRACT_MAX / 2 && llOrd(gAbstract, sp) != 32) --sp;
+        if (sp <= ABSTRACT_MAX / 2) sp = ABSTRACT_MAX;
+        gAbstract = llStringTrim(llGetSubString(gAbstract, 0, sp - 1), STRING_TRIM_TAIL) + "...";
+        gCut = TRUE;
+    }
+    list a = instant(value(b, "startTime"));
+    list e = instant(value(b, "endTime"));
+    gDated = a != [] && e != [];
     if (gDated)
     {
         gStartDay = llList2Integer(a, 0); gStartSec = llList2Integer(a, 1);
-        gEndDay = llList2Integer(b, 0); gEndSec = llList2Integer(b, 1);
+        gEndDay = llList2Integer(e, 0); gEndSec = llList2Integer(e, 1);
         if (gEndDay < gStartDay || (gEndDay == gStartDay && gEndSec < gStartSec)) gDated = FALSE;
     }
-    string p = field("period", 40);
+    string p = value(b, "period");
     period(p);
     gFrames = p == "P1D" || p == "P1M" || p == "P1Y";
+    // The clip's exact length, or 0 when the node has none, as for a
+    // single file.
+    gDuration = (float)value(b, "exactDuration");
+    if (gDuration < 0.0) gDuration = 0.0;
+    // The node's read of the length didn't settle, and it says when to ask
+    // again. The rest of the card stands meanwhile, showing the range.
+    integer retry = (integer)value(b, "retry");
+    if (gVideo && gDuration == 0.0 && retry > 0) later(retry);
     gHaveRec = TRUE;
-}
-
-// The HTML out of the text a record carries, done once the record itself
-// has been let go, since it is the most this script ever holds. A value
-// cut short says so after the HTML has gone, since a cut can fall inside a
-// tag, which goes with it.
-tidy()
-{
-    gAbstract = plain(gAbstract) + llList2String(["", "..."], (gCuts & 1) != 0);
-    gWho = plain(gWho) + llList2String(["", "..."], (gCuts & 2) != 0);
-    gSpdx = plain(gSpdx) + llList2String(["", "..."], (gCuts & 4) != 0);
-    gStatement = plain(gStatement) + llList2String(["", "..."], (gCuts & 8) != 0);
 }
 
 // Chat to one visitor, in pieces that fit a chat line, cut between words.
@@ -733,6 +619,7 @@ about(key av)
     gLastAboutAt = t;
 
     if (gDataset == "") { say(av, LIVE_ABOUT + " TerraViz: " + gNode); return; }
+    string title = called();
     if (llGetInventoryType(gDataset) == INVENTORY_NOTECARD)
     {
         // Without copy it would move to the first visitor, and without
@@ -741,7 +628,7 @@ about(key av)
         integer perms = llGetInventoryPermMask(gDataset, MASK_OWNER);
         if ((perms & PERM_COPY) && ((perms & PERM_TRANSFER) || av == llGetOwner()))
         {
-            llRegionSayTo(av, 0, "Here is a notecard about " + gTitle + ".");
+            llRegionSayTo(av, 0, "Here is a notecard about " + title + ".");
             llGiveInventory(av, gDataset);
             return;
         }
@@ -754,19 +641,18 @@ about(key av)
     string link = gNode + "/dataset/" + gDataset;
     if (gFor != gDataset || !gHaveRec)
     {
-        say(av, gTitle + ". More about it: " + link);
+        say(av, title + ". More about it: " + link);
         return;
     }
-    link = gNode + "/dataset/" + gRef;
+    link = gNode + gPage;
     // Lines in a list, joined once, rather than a string copied whole for
     // each line added.
-    list lines = [gTitle];
+    list lines = [title];
     string r = range();
-    if (r != "") lines = [gTitle + " (" + r + ")"];
+    if (r != "") lines = [title + " (" + r + ")"];
     if (gAbstract != "") lines += [gAbstract];
     if (gWho != "") lines += ["Credit: " + gWho];
-    // The licence on one line, its own line breaks and empty parts gone.
-    string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\n"), ["\n"], []), " ");
+    string lic = llStringTrim(gSpdx + " " + gLicText, STRING_TRIM);
     if (lic != "") lines += ["Licence: " + lic];
     lic = "";
     if (gCut) lines += ["Some of this was too long to give here. All of it is at " + link];
@@ -775,7 +661,7 @@ about(key av)
 }
 
 // The most memory used since the profiler was started, kept for "/9
-// memory": reading a record and answering "About" are when this script
+// memory": reading a card and answering "About" are when this script
 // needs the most.
 peak()
 {
@@ -788,18 +674,16 @@ forget()
     gFor = gDataset;
     gHaveRec = FALSE;
     gVideo = FALSE;
-    gUnshowable = FALSE;
     gDated = FALSE;
     gDuration = 0.0;
     gFrames = FALSE;
-    gRef = gDataset;
-    gWho = ""; gSpdx = ""; gLicUrl = ""; gStatement = ""; gAbstract = "";
+    gPage = "/dataset/" + gDataset;
+    gCardTitle = "";
+    gWho = ""; gSpdx = ""; gLicText = ""; gAbstract = "";
     gCut = FALSE;
-    gRecTries = 0;
-    gManTries = 0;
+    gTries = 0;
     gRetryAt = 0;
-    gRecReq = NULL_KEY;
-    gManReq = NULL_KEY;
+    gReq = NULL_KEY;
 }
 
 default
@@ -807,7 +691,7 @@ default
     state_entry()
     {
         llListen(CHAN, "", llGetOwner(), "");
-        llSetText("TerraViz globe", <1.0, 1.0, 1.0>, 1.0);
+        llSetText("", <1.0, 1.0, 1.0>, 1.0);
         gShown = "";
         llMessageLinked(LINK_THIS, MSG_HELLO, "", NULL_KEY);
     }
@@ -817,6 +701,14 @@ default
     changed(integer c)
     {
         if (c & CHANGED_OWNER) llResetScript();
+        // A region restart drops a request in flight, which then never
+        // answers, so it is asked again; and the timer is set again, for a
+        // retry only scheduled or a clip's moving date.
+        if (c & CHANGED_REGION_START)
+        {
+            if (gReq) { gReq = NULL_KEY; later(10); }
+            pace();
+        }
     }
 
     link_message(integer sender, integer n, string str, key id)
@@ -840,7 +732,10 @@ default
         gRate = (float)llJsonGetValue(str, ["rate"]);
         gPaused = (integer)llJsonGetValue(str, ["paused"]);
         gTelemetry = (integer)llJsonGetValue(str, ["telemetry"]);
-        gNode = llJsonGetValue(str, ["node"]);
+        // A node the owner hasn't been told about gets its own word.
+        string node = llJsonGetValue(str, ["node"]);
+        if (node != gNode) gToldNode = FALSE;
+        gNode = node;
         // The globe names who changed what it shows: who chose a dataset,
         // told if it can't be shown, or who paused, played or moved the
         // clip, told the date it now shows. A key is true only when it is
@@ -858,61 +753,37 @@ default
 
     http_response(key req, integer status, list meta, string body)
     {
-        if (req == gRecReq)
+        if (req != gReq) return;
+        gReq = NULL_KEY;
+        // Only the node's own 404, which says so in its JSON, means there is
+        // no such dataset: anything between here and the node can answer 404.
+        if (status == 404)
+            if (llJsonGetValue(body, ["error"]) == "not_found") { unshowable("isn't a dataset on the node"); pace(); return; }
+        // Second Life answers a reply that isn't the JSON asked for with
+        // its own 415 rather than handing it over (found in-world): the
+        // app's page from a node with no cards, or from one whose
+        // Functions are down. That is no card, as card() treats it.
+        if (status == 415) { card("", TRUE); hover(); pace(); return; }
+        // A failure (a 503, or Second Life's 499 for a timeout) is asked
+        // again, as many times as TRIES allows, and the owner is told,
+        // once a node, with the status, when the last fails too, unless a
+        // card was read before it (a retry's), which still stands.
+        if (status != 200)
         {
-            gRecReq = NULL_KEY;
-            if (status == 404) { unshowable("isn't a dataset on the node"); pace(); return; }
-            if (status != 200) { later(30); pace(); return; }
+            if (gTries < TRIES) later(30);
+            else if (!gToldNode && !gHaveRec)
+            {
+                llOwnerSay("[exhibit] " + gNode + " didn't answer for " + gDataset + " after " + (string)TRIES
+                    + " tries (HTTP " + (string)status + "). The hover text shows the title alone.");
+                gToldNode = TRUE;
+            }
+        }
+        else
+        {
             llScriptProfiler(PROFILE_SCRIPT_MEMORY);
-            gBody = body;
-            body = "";
-            record();
-            gBody = "";
-            tidy();
+            card(body, llListFindList(meta, [HTTP_BODY_TRUNCATED]) != -1);
             peak();
-            if (gUnshowable) { unshowable("is a tour, which drives the full app rather than a globe"); pace(); return; }
-            gChose = NULL_KEY;   // it can be shown, so nobody needs telling
-            fetch();
         }
-        else if (req == gManReq)
-        {
-            gManReq = NULL_KEY;
-            // A failure (a 503, or Second Life's 499 for a timeout) says
-            // nothing about whose manifest it is, so it is asked again on
-            // the schedule below rather than judged by the id check.
-            if (status != 200)
-            {
-                if (gManTries < 4) later(16 << (gManTries - 1));
-                hover();
-                pace();
-                return;
-            }
-            integer i = llSubStringIndex(body, "\"duration\":");
-            if (i != -1) gDuration = (float)llGetSubString(body, i + 11, i + 40);
-            if (gDuration < 0.0) gDuration = 0.0;
-            // Only a length the node read from its own bundle is exact. A
-            // manifest it passes on from Vimeo carries Vimeo's own id, and
-            // Vimeo's length in whole seconds (12 for a clip of 12.1 s),
-            // from which a date drifts with every loop the page plays: so
-            // unknown, and the range shows. A mention of Vimeo, as in its
-            // stream's address, counts too, as a second guard; a false
-            // alarm only shows the range.
-            string mid = "";
-            integer j = llSubStringIndex(body, "\"id\":\"");
-            if (j != -1)
-            {
-                mid = llGetSubString(body, j + 6, j + 140);
-                integer q = llSubStringIndex(mid, "\"");
-                if (q > 0) mid = llGetSubString(mid, 0, q - 1);
-                else mid = "";
-            }
-            if (mid != gDataset || llSubStringIndex(body, "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }
-            // A length of 0 is unknown, and can be the node's for a moment
-            // while its bucket is slow, which it keeps for 15 s: so ask again,
-            // then show the range.
-            if (gDuration == 0.0 && gManTries < 4) later(16 << (gManTries - 1));
-        }
-        else return;
         hover();
         pace();
     }
@@ -932,7 +803,7 @@ default
     {
         if (llToLower(llStringTrim(msg, STRING_TRIM)) != "memory") return;
         string most = "";
-        if (gPeak) most = ", and at most " + (string)(gPeak / 1024) + " KB while reading a record or answering About";
+        if (gPeak) most = ", and at most " + (string)(gPeak / 1024) + " KB while reading a card or answering About";
         llOwnerSay("[exhibit] Info script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64" + most + ".");
     }
 }

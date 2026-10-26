@@ -166,7 +166,7 @@ export const OUTPUT_SEEK_SETTLE_MS = 1000
  * trimmed away in the time we are asking the trim to work, so a seek is
  * the only tool left and suppressing it would strand the output.
  */
-const SETTLING_SEEK_THRESHOLD_S =
+export const SETTLING_SEEK_THRESHOLD_S =
   SIBLING_HARD_SEEK_THRESHOLD_S + SYNC_MAX_RATE_TRIM * (OUTPUT_SEEK_SETTLE_MS / 1000)
 
 /**
@@ -412,6 +412,17 @@ export interface PlayheadSync {
    * next call counted as one of the loop's intervals.
    */
   dropPendingSeek(): void
+  /**
+   * Count a seek the caller made on `video` itself, outside `sync`, as
+   * this layer's own: its settle window covers the restart, and its cost
+   * is measured into the floor. It counts as a call for telling a stop
+   * from a slow frame, since the caller is steering when it makes one.
+   * For the web clock's turn at a loop's
+   * seam, which a seek this layer never saw would otherwise leave the
+   * next call to answer with one of its own (found in review, in
+   * Chromium on the real streams).
+   */
+  noteSeek(video: SyncTarget): void
 }
 
 /**
@@ -480,6 +491,21 @@ export function createPlayheadSync(nowMs: () => number = () => performance.now()
       // The caller stopped calling on purpose, so the gap before its next
       // call is not one of the loop's intervals either.
       lastCallAtMs = Number.NEGATIVE_INFINITY
+    },
+
+    noteSeek(video) {
+      // A different element is a different measurement, as in `sync`.
+      if (video !== steering) {
+        steering = video
+        lastSeekCostS = 0
+      }
+      lastSeekAtMs = nowMs()
+      awaitingSeek = true
+      // And a call: the caller is steering now. Left at the last `sync`,
+      // a turn made on the first frame back from a stop, or from a pause
+      // (which clears it), read the gap before it as a stop at the next
+      // call, and its cost was dropped unmeasured (found in review).
+      lastCallAtMs = lastSeekAtMs
     },
 
     sync(video, state) {

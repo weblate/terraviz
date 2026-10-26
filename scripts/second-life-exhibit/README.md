@@ -33,10 +33,10 @@ item 4 and §9 Phase 2.
 | `terraviz-exhibit.lsl` | **The globe script.** Owns the address, the clock and the media: the smoke test's globe, taking requests from the other two. The only one with settings to edit. |
 | `terraviz-exhibit-visitors.lsl` | **The visitors script.** Touches and menus, the hold, talks, and who is at the globe. |
 | `terraviz-exhibit-info.lsl` | **The info script.** The floating text, and "About". |
-| `exhibit.test.ts` | Holds the three scripts to each other and to the node: their link messages, the state they share, the commands a visitor may send, the record fields read. `../second-life-probe/globe.test.ts` holds the globe script's address to the output page. |
+| `exhibit.test.ts` | Holds the three scripts to each other and to the node: their link messages, the state they share, the commands a visitor may send, the card fields read, and what the node keeps for copies already rezzed. `../second-life-probe/globe.test.ts` holds the globe script's address to the output page. |
 
 A script in Second Life has 64 KB in all, which is why there are three:
-one script reading a dataset's record while also holding menus,
+one script reading what the node says about a dataset while also holding menus,
 notecards and the visitor list would run out.
 
 ## Before you start
@@ -50,6 +50,14 @@ notecards and the visitor list would run out.
   `terraviz-exhibit.lsl`, is `https://terraviz.zyra-project.org`. The
   probe kit's README says how to point it at a preview deploy instead.
   The other two scripts take the node from the globe script.
+- **A node with the exhibit's reads.** The info script reads a dataset's
+  card, a reply of at most 2 KB that the node writes for this exhibit
+  (`/api/exhibit/v1/datasets/<id>`). A node that predates the cards
+  answers with the app's page instead, as does any node while its
+  Functions are down; Second Life refuses a page where JSON was asked
+  for, with its own HTTP 415. The floating text then shows the title alone and
+  "About" gives the dataset's page. The info script asks again a minute
+  later, and after four tries tells you once.
 
 ## Setting it up
 
@@ -59,8 +67,8 @@ notecards and the visitor list would run out.
    `NODE` in the globe script first if you need to. The order doesn't
    matter: each asks the others for what it missed.
 3. Within a few seconds the sphere stands its poles upright and shows
-   the live Earth, and the floating text reads `TerraViz globe`, the
-   live Earth's line and its credit. Chat shows the visitors script's
+   the live Earth, and the floating text gives the live Earth's line
+   and its credit. Chat shows the visitors script's
    summary of what the notecards gave: with none, no presenters and the
    five built-in datasets.
 4. Add any of the notecards below, and say `/9 presenters` to check what
@@ -81,7 +89,7 @@ menu that opens is theirs alone:
 |---|---|---|
 | About | everyone | The abstract, credit and licence, in their own chat, or a notecard the owner wrote. |
 | Datasets | whoever may act | The menu of datasets, nine to a page. |
-| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, where the info script knows it: not for a dataset with no dates, nor for a video on Vimeo, whose length it isn't given. |
+| Pause / Play | whoever may act, a dataset showing | Every visitor stops on, or starts from, the same frame. The reply gives the date the globe shows, where the info script knows it: not for a dataset with no dates, nor for a video whose exact length the node can't read. |
 | Back 10 s, Forward 10 s, Start over | the same | Move through the animation. |
 | Live Earth | the same | Back to today's clouds and the real day and night. |
 | Turn... | whoever may act | A menu for turning the globe, for everyone at it, which comes back after each press: |
@@ -135,14 +143,18 @@ reaches a script, for the same reason a left-click doesn't, so the menu
 turns it instead. A drag handle beside the globe is planned
 (`docs/SECOND_LIFE_COMPAT.md` §9, Phase 2, "Left out for now").
 
-**The floating text** holds 254 bytes, in this order:
+**The floating text** holds 254 bytes, in this order, here for a
+dataset a `datasets` notecard names "Wildfire Smoke Overhead
+(2026-08-12)" (the title is the name the globe was given, from the menu,
+a notecard, a preset or `/9 show <id> <name>`; for one `/9 show` names by
+its id alone, the dataset's own title once its card arrives, and the id
+until then or on a node without cards):
 
 ```
-TerraViz globe
-Counts anonymous use: https://terraviz.zyra-project.org/privacy   (only with telemetry on)
-Earthquakes - 2001-2015
-14 Sep 2004
-Credit: NOAA Pacific Tsunami Warning Center, USGS National Earthquake Information Cent...
+Wildfire Smoke Overhead (2026-08-12)
+12 Aug 2026, 06:00 UTC
+Counts anonymous use: https://terraviz.zyra-project.org/privacy    (only with telemetry on)
+Credit: NOAA/NWS/NCEP Rapid Refresh Forecast System (RRFS), distributed via NOAA O...
 Talk in progress                                                   (only during one)
 Right-click, Touch for more
 ```
@@ -166,18 +178,23 @@ start to the end, evenly through the clip, the first at the start and
 the last at the end, so the label changes with the frame. Any other
 is the start plus the share of its span played, the arithmetic of the
 app's own label. Until the node has said how long the clip is, and for
-an image, it shows the dataset's range instead. So does a video hosted
-on Vimeo, such as Sea temperature: the node gives its length in whole
+an image, it shows the dataset's range instead. The length is the one
+the node reads from the stream's own playlists, its own HLS bundle's or
+a Vimeo stream's, such as Sea temperature's: Vimeo's API gives whole
 seconds, which isn't quite the stream's, and a date worked out from it
-would drift from the picture with every loop. Only the node knows a
-dataset is on Vimeo; the script trusts a length only from a manifest
-carrying the dataset's own id, which the node writes into every
-manifest it builds and Vimeo's don't carry. A manifest the node fails
-to send, an error or a timeout, is asked for again, up to four tries in
-all, as is a length the node reports as 0.
+would drift from the picture with every loop. Every visitor's copy of
+the page loops on that same length, read from the stream it plays. A
+video with no playlist to read, a single file, shows its range. When
+the node couldn't read
+the length in time, the card says when to ask again, and the info
+script does. A card the node fails to send, an error or a
+timeout, is asked for again too, up to four tries in all. If none of
+them brings a card, the owner is told once for that node (with the
+HTTP status, when there was one), and the hover text shows the title
+alone.
 
-The credit is the record's attribution, or else its rights holder, or
-else its organization, with the licence after it. A record that names
+The credit is the dataset's attribution, or else its rights holder, or
+else its organization, with the licence after it. A dataset that names
 none of them, as some imported ones don't, has no credit line; "About"
 still gives its licence statement.
 
@@ -274,12 +291,17 @@ The probe kit's README describes each, under
 [Commands](../second-life-probe/README.md#commands). Here `/9 rotation`
 also sets where the globe goes back to once visitors leave, and
 `/9 show` shows the dataset at once rather than asking the node first:
-the info script reads its record next, and if the node has no such
-dataset, or it is a tour, it tells you, tells whoever chose it from the
+the info script reads its card next, and if the node has no such
+dataset, or it is a tour or one the page can't show, it tells you, tells whoever chose it from the
 menu that it can't be shown, and puts the globe back on the live Earth,
 unless someone has chosen another since. (The globe script runs too close to its 64 KB to hold the
-node's reply; see Things that will trip you up.) The owner can always
-act, and doesn't take the hold. Besides those:
+node's reply; see Things that will trip you up.) `/9 rate` takes up to
+12.8, but on a short clip a high rate keeps visitors' copies apart:
+each pass round the clip restarts the video, and a clip of a few
+seconds at 12.8 restarts several times a second, so copies never
+settle ([the grammar's clock](../../docs/EMBED_URL_GRAMMAR.md) says
+why). The owner can always act, and doesn't take the hold. Besides
+those:
 
 | Command | What it does |
 |---|---|
@@ -289,7 +311,7 @@ act, and doesn't take the hold. Besides those:
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters and datasets, and the four settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
-| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a record or answering About. |
+| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a card or answering About. |
 | `/9 help` | The globe script's list. |
 
 ## What leaves the object
@@ -339,8 +361,8 @@ stand at the globe.
 5. **Pause.** They pause. The reply should give the date the globe now
    shows, the floating text's date should stop and match the frame, and
    both views should show the same frame. On a dataset with no dates,
-   such as Air Traffic, or a video on Vimeo, such as `/9 show sst`, the
-   reply just says it paused.
+   such as Air Traffic, the reply just says it paused. A video on
+   Vimeo, such as `/9 show sst`, has a moving date like any other.
 6. **About.** They choose About. They should get the abstract, the
    credit, the licence and a link, in their own chat, in a few pieces.
    Nobody else should see it. Then add a notecard named
@@ -361,13 +383,14 @@ stand at the globe.
    it should go back to the live Earth, upright and facing as it did
    before. It shouldn't during a talk.
 9. **Memory, and a date with a time.** `/9 show 01KQG64Y0999GTWAQQ1MZ99HAE`,
-   Hurricane Maria 2017, whose record is longer than the info script
-   reads and which has a frame every 15 minutes. The floating text
+   Hurricane Maria 2017, which has a long abstract and a frame every 15
+   minutes. The floating text and About should lead with "Hurricane
+   Maria - 2017", the card's title, not the id. The floating text
    should show a date and a UTC time, from 17 Sep 2017, 00:00 UTC to
    25 Sep 2017, 23:45 UTC across the clip. Choose About, then
    `/9 memory`. Every script should report well under 64 KB. The peaks
    are the numbers that matter, the globe script's while showing a
-   dataset and the info script's while reading a record or answering
+   dataset and the info script's while reading a card or answering
    About: say what they were.
 
 When you report results, say which viewer and version (Help → About)
@@ -387,14 +410,16 @@ each avatar used, and what steps 2 and 9 showed.
   one. A copy a script makes counts too, until Second Life collects it.
   So only the info script asks the node anything, the globe script
   shows a choice without checking it first, and the info script reads
-  only the first 3 KB of a record and copies as little of it as it can.
-  With those changes, `/9 memory` read in-world: the globe script 54 KB,
-  and at most 57 while showing a dataset; the info script 55, and at
-  most 58 while reading a record or answering About; the visitors script
-  49. That leaves about 6 KB at each script's busiest, so code added to
-  any of them needs measuring again.
+  the node's card for a dataset, at most 2 KB with its text already
+  plain, rather than the dataset's record. Before the card, `/9 memory`
+  read in-world: the globe script 54 KB, and at most 57 while showing a
+  dataset; the info script 55, and at most 58 while reading the first
+  3 KB of a record or answering About; the visitors script 49. The
+  info script reading the card hasn't been measured in-world yet, which
+  step 9 of the smoke test does. About 6 KB at each script's busiest is
+  all there was, so code added to any of them needs measuring again.
 - **The info script checks a choice after it is shown.** For a second or
-  two, a dataset the node doesn't have, or a tour, is in every visitor's
+  two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With
   telemetry on, each page still in its first minute reports that
   failure, and with `/9 steer query` each reloads twice. The info script
@@ -410,17 +435,15 @@ each avatar used, and what steps 2 and 9 showed.
   a clip left looping for hours it can drift further, since the script
   wraps on the length the node reports and each viewer's page on the
   video's own, which can differ slightly (`SECOND_LIFE_COMPAT.md` §7).
-- **A long record is read only in part.** The info script reads its
-  first 3,072 bytes. On the node in October 2026 that holds every field
-  it needs in 78% of records, and the dates in 95%. It keeps the first
-  500 characters of an abstract, which cuts most of them (135 of the 143
-  on the node then), 600 of a licence statement and 300 of a credit. A
-  value cut short ends `...`, and "About" then says the rest is at the
-  dataset's page, as it does when a link too long to keep is left out. In a longer record, a field past the cut is missing, from
-  the end of what the node writes: first the credit, which it writes
-  last, then the licence, then the period and the dates. A lost credit doesn't fall
-  back to the organization, which might not be the credit the record
-  gives, and a lost period shows a yearly dataset's date to the day.
+- **Long text is cut.** The node cuts what doesn't fit a card at a
+  word, ending `...`: a credit past 200 bytes, a licence statement past
+  400 with its address, and the abstract to what the rest of the card
+  leaves. The info script keeps the first 500 characters of the
+  abstract, which cuts most of them (135 of the 143 on the node in
+  October 2026). "About" then says the rest is at the dataset's page.
+  A date or a period is never cut: one the node couldn't read whole is
+  left out, and the floating text shows no date, or a yearly dataset's
+  date to the day.
 - **Display names don't make presenters.** If someone in `presenters`
   isn't recognised, check their username in their profile.
 

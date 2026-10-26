@@ -59,6 +59,11 @@ export interface MediaSource {
   /** The steerable half — `null` for a still image, which has no
    *  playhead to correct. */
   readonly video: SyncTarget | null
+  /** The length every copy of this media loops on, when the source
+   *  states one: an HLS stream's playlist total
+   *  (`HLSService.playlistDurationS`). `null`, or absent, and a clock
+   *  loops on the element's own `duration`. */
+  readonly loopS?: () => number | null
   dispose(): void
 }
 
@@ -328,6 +333,7 @@ export function createDefaultMediaLoader(opts: DefaultMediaLoaderOptions = {}): 
         kind: 'video',
         element: video,
         video,
+        loopS: () => hls.playlistDurationS(),
         dispose: () => {
           done = true
           hls.destroy()

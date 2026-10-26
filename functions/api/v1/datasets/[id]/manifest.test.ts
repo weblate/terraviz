@@ -180,12 +180,18 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     expect(res.headers.get('cache-control')).toContain('max-age=300')
     const body = await readJson<VideoBody>(res)
     expect(body.kind).toBe('video')
+    // Vimeo's own id, never the dataset's: the exhibit's older info scripts
+    // trust a manifest's length only when its id is the dataset's, which
+    // is how they tell Vimeo's whole seconds from the node's own reading
+    // (docs/protocol/README.md). "Fixing" this would undo that.
     expect(body.id).toBe('100')
     expect(body.title).toBe('Upstream Title')
     expect(body.duration).toBe(600)
     expect(body.hls).toBe('https://cdn.test/hls.m3u8')
     expect(body.files).toHaveLength(1)
     expect(body.files[0]).toMatchObject({ quality: '720p', link: 'https://cdn.test/720.mp4' })
+    // Pinned for the exhibit's older info scripts, as in the HLS case.
+    expect(Object.keys(body).slice(0, 4)).toEqual(['kind', 'id', 'title', 'duration'])
     // The frontend never used `dash`; manifest must drop it so the
     // wire shape is the union the frontend expects in Commit H.
     expect((body as unknown as { dash?: string }).dash).toBeUndefined()
@@ -421,6 +427,12 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     expect(body.files).toEqual([])
     // No bucket binding here, so the length is unknown: 0, as before.
     expect((body as { duration?: number }).duration).toBe(0)
+    // Copies of the Second Life exhibit's info script from before the
+    // exhibit reads find `id` and `duration` in the first 4,096 bytes
+    // (1,024 in later copies), and can't be updated once rezzed, so the
+    // leading keys are pinned while they may still read this way
+    // (docs/protocol/README.md).
+    expect(Object.keys(body).slice(0, 4)).toEqual(['kind', 'id', 'title', 'duration'])
   })
 
   it('reports an r2: HLS bundle’s length from its own playlists', async () => {
@@ -435,7 +447,7 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
       .run()
     const playlists: Record<string, string> = {
       'videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8':
-        '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=2160x1080\nstream_0/playlist.m3u8\n',
+        '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=2160x1080,CODECS="avc1.4d4032"\nstream_0/playlist.m3u8\n',
       'videos/DS000AAAAAAAAAAAAAAAAAAAAA/stream_0/playlist.m3u8':
         '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:6.000000,\nsegment_000.ts\n#EXTINF:4.500000,\nsegment_001.ts\n#EXT-X-ENDLIST\n',
     }
@@ -466,6 +478,15 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     ])
     // A settled reading keeps the endpoint's usual caching.
     expect(res.headers.get('cache-control')).toContain('max-age=')
+
+    // A bundle with a sound track has the same sum: its element runs a
+    // frame or two past it in a browser, but a web output loops on the
+    // playlist's total, not the element's.
+    playlists['videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8'] =
+      playlists['videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8'].replace('avc1.4d4032', 'avc1.4d4032,mp4a.40.2')
+    resetHlsDurationsForTests()
+    const withAudio = await readJson<{ duration: number }>(await onRequestGet(makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } })))
+    expect(withAudio.duration).toBe(10.5)
   })
 
   it('still answers 200 with duration 0 when R2 fails, and is not cached', async () => {
@@ -709,7 +730,19 @@ describe('resolveManifest (unit)', () => {
     if ('manifest' in result) {
       expect(result.manifest.kind).toBe('video')
     }
-    expect(fetchImpl).toHaveBeenCalledWith('https://test/video/7')
+    // The proxy never redirects, so a redirect is not followed off its host.
+    expect(fetchImpl).toHaveBeenCalledWith('https://test/video/7', { redirect: 'manual' })
+  })
+
+  it('never sends the proxy an id that is not one', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}'))
+    const result = await resolveManifest(
+      { id: 'DSXXX', format: 'video/mp4', data_ref: 'vimeo:../../admin' },
+      { VIDEO_PROXY_BASE: 'https://test/video' },
+      fetchImpl as unknown as typeof fetch,
+    )
+    expect('manifest' in result).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
 

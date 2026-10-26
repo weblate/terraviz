@@ -59,6 +59,7 @@ vi.mock('hls.js', () => {
       isSupported: vi.fn().mockReturnValue(true),
       Events: {
         MANIFEST_PARSED: 'hlsManifestParsed',
+        LEVEL_LOADED: 'hlsLevelLoaded',
         LEVEL_SWITCHED: 'hlsLevelSwitched',
         FRAG_LOADED: 'hlsFragLoaded',
         ERROR: 'hlsError',
@@ -232,6 +233,93 @@ describe('HLSService.loadStream — unsupported browser', () => {
     // canPlayType returns '' for mpegurl in happy-dom, triggering the else branch
     await expect(svc.loadStream('https://example.com/stream.m3u8', video))
       .rejects.toThrow('HLS is not supported')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The playlist's own length, which a web output's copies all loop on
+// ---------------------------------------------------------------------------
+
+describe('HLSService.playlistDurationS', () => {
+  beforeEach(async () => {
+    hlsMock.reset()
+    const { default: Hls } = await import('hls.js')
+    vi.mocked(Hls.isSupported).mockReturnValue(true)
+  })
+
+  const level = (totalduration: number, live = false) => ({ details: { totalduration, live } })
+
+  it('is the first VOD level\'s total, held when another rendition loads', async () => {
+    const svc = new HLSService()
+    const p = svc.loadStream('https://example.com/s.m3u8', document.createElement('video'))
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await p
+    expect(svc.playlistDurationS()).toBeNull()
+    // hls.js's own float sum, kept to the microsecond as the card sends it.
+    hlsMock.fire('hlsLevelLoaded', level(143.76667199999997))
+    expect(svc.playlistDurationS()).toBe(143.766672)
+    // A switch must not change the period mid-play.
+    hlsMock.fire('hlsLevelLoaded', level(143.8))
+    expect(svc.playlistDurationS()).toBe(143.766672)
+  })
+
+  it('passes over a level that states no length, so a later one can', async () => {
+    const svc = new HLSService()
+    const p = svc.loadStream('https://example.com/s.m3u8', document.createElement('video'))
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await p
+    hlsMock.fire('hlsLevelLoaded', level(0))
+    hlsMock.fire('hlsLevelLoaded', level(Number.NaN))
+    expect(svc.playlistDurationS()).toBeNull()
+    hlsMock.fire('hlsLevelLoaded', level(12.1))
+    expect(svc.playlistDurationS()).toBe(12.1)
+  })
+
+  it('takes nothing from a stream it has since replaced', async () => {
+    const svc = new HLSService()
+    const video = document.createElement('video')
+    const first = svc.loadStream('https://example.com/a.m3u8', video)
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await first
+    const stale = hlsMock.handlers.get('hlsLevelLoaded')!
+    void svc.loadStream('https://example.com/b.m3u8', video)
+    stale('hlsLevelLoaded', level(99))
+    expect(svc.playlistDurationS()).toBeNull()
+  })
+
+  it('is null on the single-file path, whose length only the element knows', async () => {
+    const svc = new HLSService()
+    const video = document.createElement('video')
+    const p = svc.loadStream('https://example.com/s.m3u8', video)
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await p
+    hlsMock.fire('hlsLevelLoaded', level(12.1))
+    void svc.loadDirect('https://example.com/s.mp4', video).catch(() => {})
+    expect(svc.playlistDurationS()).toBeNull()
+  })
+
+  it('is null for a live playlist, whose total is a window', async () => {
+    const svc = new HLSService()
+    const p = svc.loadStream('https://example.com/s.m3u8', document.createElement('video'))
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await p
+    hlsMock.fire('hlsLevelLoaded', level(30, true))
+    expect(svc.playlistDurationS()).toBeNull()
+  })
+
+  it('forgets the last stream\'s on a new load and on destroy', async () => {
+    const svc = new HLSService()
+    const video = document.createElement('video')
+    const first = svc.loadStream('https://example.com/a.m3u8', video)
+    hlsMock.fire('hlsManifestParsed', { levels: [] })
+    await first
+    hlsMock.fire('hlsLevelLoaded', level(12.1))
+    void svc.loadStream('https://example.com/b.m3u8', video)
+    expect(svc.playlistDurationS()).toBeNull()
+    hlsMock.fire('hlsLevelLoaded', level(10.8))
+    expect(svc.playlistDurationS()).toBe(10.8)
+    svc.destroy()
+    expect(svc.playlistDurationS()).toBeNull()
   })
 })
 

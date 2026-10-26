@@ -5,13 +5,16 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   EXACT_PAUSE_EPS_S,
   HELD_TOLERANCE_S,
+  SEAM_LEAD_INITIAL_S,
+  SEAM_LEAD_MAX_CLIP_S,
+  SEAM_LEAD_MAX_S,
   clipClockInputs,
   clockTargetS,
   createWebClockSteer,
   type ClipClockInputs,
 } from './webClock'
 import { MAX_WEB_RATE, type WebClock } from './webMode'
-import { syncVideoToState, type SyncTarget } from './outputSync'
+import { SETTLING_SEEK_THRESHOLD_S, syncVideoToState, type SyncTarget } from './outputSync'
 import type { MirroredDataset } from '../services/multiOutput/protocol'
 
 const LOADED_AT = 1_761_288_000_000
@@ -156,6 +159,59 @@ describe('createWebClockSteer', () => {
     expect(v.playbackRate).toBeGreaterThan(1)
   })
 
+  describe('on the period the stream states', () => {
+    // Once a stream has buffered to its end, an element's duration is the
+    // latest end of every track: 21 to 40 ms past the playlist's total with
+    // an AAC track, measured in Chromium. Wrapped on it, two copies drift
+    // apart by the difference every loop since the anchor.
+    const HOUR_AGO = AT - 3600
+
+    it('puts two copies whose elements differ in length on one target', () => {
+      const { steer } = harness()
+      const c = clock({ positionS: 0, atUnixS: HOUR_AGO })
+      // An hour at 1x on a 16 s loop: 225 loops, so 3600 s wraps to 0.
+      const withAudio = video({ duration: 16.04, currentTime: 0 })
+      const pictureOnly = video({ duration: 15.999999, currentTime: 0 })
+      expect(steer.steer(withAudio, c, LOADED_AT, LOADED_AT, 16).driftS).toBeCloseTo(0, 6)
+      expect(steer.steer(pictureOnly, c, LOADED_AT, LOADED_AT, 16).driftS).toBeCloseTo(0, 6)
+      // Wrapped on its own length, the first would be 7 s round the loop
+      // from the target.
+      expect(clockTargetS(c, LOADED_AT, LOADED_AT, 16.04)).toBeCloseTo(3600 - 224 * 16.04, 6)
+    })
+
+    it('reads an element past the period, before its own end, as the next loop\'s start', () => {
+      // On time, not 16 s ahead; it is then turned back (`at the seam`).
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const outcome = steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(0, 6), seeked: true })
+    })
+
+    it('seeks a playing copy to the target on the period, not the element\'s length', () => {
+      // Wrapped on 16.04 the seek would land 20 ms short, half the gap.
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 7 })
+      expect(steer.steer(v, clock({ positionS: 10, atUnixS: AT }), LOADED_AT, LOADED_AT, 16).seeked).toBe(true)
+      expect(v.currentTime).toBeCloseTo(10, 3)
+    })
+
+    it('seeks and holds a paused copy on the period', () => {
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 3, paused: true })
+      expect(steer.steer(v, clock({ positionS: 16.5, paused: true }), LOADED_AT, LOADED_AT, 16).seeked).toBe(true)
+      expect(v.currentTime).toBeCloseTo(0.5, 9)
+    })
+
+    it('loops on the element\'s own length when the stream states no period', () => {
+      for (const periodS of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const { steer } = harness()
+        const v = video({ duration: 16, currentTime: 15.8 })
+        const outcome = steer.steer(v, clock({ positionS: 0.5, atUnixS: AT }), LOADED_AT, LOADED_AT, periodS)
+        expect(outcome.driftS, String(periodS)).toBeCloseTo(-0.7, 6)
+      }
+    })
+  })
+
   describe('round the loop', () => {
     // Found in review: the law measured error along the line, so just
     // past a wrap a copy 0.7 s behind read as 15.3 s ahead.
@@ -202,15 +258,294 @@ describe('createWebClockSteer', () => {
       expect(v.currentTime).toBeCloseTo(10, 9)
     })
 
-    it('plays a finished element on round the loop, without a seek of its own', () => {
-      // An element at its end is at the same point of the loop as one at
-      // its start, and `play()` rewinds it there.
+    it('turns a finished element back itself, ahead by what the turn costs, then plays it', () => {
+      // Left to `play()`, which rewinds an element at its end to 0, the
+      // restart was a seek nobody timed, 170 to 300 ms a seam on a short
+      // loop (found in review, in Chromium).
       const { steer } = harness()
       const v = video({ duration: 16, currentTime: 16, paused: true })
-      const outcome = steer.steer(v, clock({ positionS: 0.1, atUnixS: AT }), LOADED_AT, LOADED_AT)
-      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-0.1, 6), seeked: false })
+      const outcome = steer.steer(v, clock({ positionS: 0.1, atUnixS: AT, rate: 2 }), LOADED_AT, LOADED_AT)
+      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-0.1, 6), seeked: true })
+      // The target plus the first turn's assumed cost, at the clock's rate.
+      expect(v.currentTime).toBeCloseTo(0.1 + SEAM_LEAD_INITIAL_S * 2, 9)
       expect(v.play).toHaveBeenCalled()
-      expect(v.currentTime).toBe(16)
+    })
+  })
+
+  describe('at the seam', () => {
+    it('turns back an element running past the period into its sound track\'s tail', () => {
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const outcome = steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(outcome.seeked).toBe(true)
+      expect(v.currentTime).toBeCloseTo(0.02 + SEAM_LEAD_INITIAL_S, 9)
+      // Still playing, so not played again.
+      expect(v.play).not.toHaveBeenCalled()
+    })
+
+    it('leads by how long the last turn stood still, as this element measured it', () => {
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT })
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      // Served after 250 ms, then playing on: 50 ms later it has moved
+      // 50 ms, so it stood still for 250.
+      ;(v as { seeking: boolean }).seeking = true
+      for (let t = 0; t < 250; t += 50) {
+        advance(50)
+        steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      }
+      ;(v as { seeking: boolean }).seeking = false
+      advance(50)
+      v.currentTime = landing + 0.05
+      steer.steer(v, at(0.37), LOADED_AT, LOADED_AT, 16)
+      // The next seam leads by 0.25 s.
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + 0.25, 6)
+    })
+
+    it('throws away a turn timed past the most one is believed to cost', () => {
+      // A gap in steering (a hidden tab) timed as the restart would send
+      // the next seam that far ahead.
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT })
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      ;(v as { seeking: boolean }).seeking = true
+      advance(5_000)
+      ;(v as { seeking: boolean }).seeking = false
+      v.currentTime = landing + 0.01
+      steer.steer(v, at(5), LOADED_AT, LOADED_AT, 16)
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      // The lead it had, not the 5 s nor the cap.
+      expect(v.currentTime).toBeCloseTo(0.03 + SEAM_LEAD_INITIAL_S, 6)
+      expect(SEAM_LEAD_MAX_S).toBeLessThan(5)
+    })
+
+    it('does not time a pause as the turn it interrupted', () => {
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      // Paused 30 ms in, for a short while, then resumed.
+      advance(30)
+      steer.steer(v, clock({ positionS: 0.1, paused: true }), LOADED_AT, LOADED_AT, 16)
+      advance(300)
+      ;(v as { paused: boolean }).paused = false
+      v.currentTime = landing + 0.05
+      steer.steer(v, clock({ positionS: landing + 0.05, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      v.currentTime = 16.03
+      steer.steer(v, clock({ positionS: 0.03, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + SEAM_LEAD_INITIAL_S, 6)
+    })
+
+    it('turns an element whose media ends just short of the period', () => {
+      // Vimeo's ends 6 µs before its playlist total, so it stops at its
+      // own end without ever passing the period.
+      const { steer } = harness()
+      const v = video({ duration: 15.999994, currentTime: 15.999994, paused: true })
+      const outcome = steer.steer(v, clock({ positionS: 15.999998, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(outcome.seeked).toBe(true)
+      expect(v.play).toHaveBeenCalled()
+    })
+
+    it('lands an element much shorter than its period at the start, not on its end again', () => {
+      const { steer } = harness()
+      const v = video({ duration: 15, currentTime: 15, paused: true })
+      steer.steer(v, clock({ positionS: 15.5, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBe(0)
+    })
+
+    it('stops timing a turn the law has seeked away from', () => {
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      // Past the settle window and before the turn has played on, the law
+      // seeks for a large error.
+      advance(2_000)
+      v.currentTime = 0.05
+      expect(steer.steer(v, clock({ positionS: 1.8, atUnixS: AT }), LOADED_AT, LOADED_AT, 16).seeked).toBe(true)
+      // Timed from the turn's landing (0.12), 2.1 s with 1.78 s played would
+      // read as a turn that stood still 320 ms, and lead the next seam by it.
+      advance(100)
+      v.currentTime = 1.9
+      steer.steer(v, clock({ positionS: 1.9, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      v.currentTime = 16.03
+      steer.steer(v, clock({ positionS: 0.03, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + SEAM_LEAD_INITIAL_S, 6)
+    })
+
+    it('times each element\'s turns for itself', () => {
+      const { steer, advance } = harness()
+      const first = video({ duration: 16.04, currentTime: 16.02 })
+      steer.steer(first, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      // A new element (a dataset switch) before the first turn is timed.
+      const next = video({ duration: 16.04, currentTime: 16.02 })
+      advance(300)
+      steer.steer(next, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(next.currentTime).toBeCloseTo(0.02 + SEAM_LEAD_INITIAL_S, 6)
+    })
+
+    it('takes off what a fast element played while it was timed', () => {
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT, rate: 2 })
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      // 150 ms later, at 2x, it has played 0.2 s of clip: 100 ms of it was
+      // playing, so it stood still for 50.
+      advance(150)
+      v.playbackRate = 2
+      v.currentTime = landing + 0.2
+      steer.steer(v, at(landing + 0.2), LOADED_AT, LOADED_AT, 16)
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + 0.05 * 2, 6)
+    })
+
+    it.each([4, 12.8])('leads a copy at %sx no deeper than a quarter second of clip', rate => {
+      // The node's bundles have one keyframe a segment, at its start, so a
+      // deeper landing decodes further, stands longer, and led deeper
+      // still at the next seam (found in review, in Chromium at 4x).
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT, rate })
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.02 + SEAM_LEAD_MAX_CLIP_S, 6)
+      // A 200 ms stall is 0.8 s of clip at 4x, and the lead stays put.
+      const landing = v.currentTime
+      advance(300)
+      v.playbackRate = rate
+      v.currentTime = landing + 0.1 * rate
+      steer.steer(v, at(landing + 0.1 * rate), LOADED_AT, LOADED_AT, 16)
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + SEAM_LEAD_MAX_CLIP_S, 6)
+      expect(SEAM_LEAD_MAX_CLIP_S).toBeLessThan(0.2 * rate)
+    })
+
+    it('leads by less than the law will seek back in the settle window', () => {
+      // A turn lands ahead by its lead; past this threshold the law seeks
+      // it back before it plays on, so the lead is never timed again.
+      expect(SEAM_LEAD_MAX_CLIP_S).toBeLessThan(SETTLING_SEEK_THRESHOLD_S)
+    })
+
+    it('measures the lead again at the next seam after one bad reading', () => {
+      // A turn that stood still 290 ms at 2x (a stall, or steering stopped
+      // while the element was frozen) would lead 0.58 s, which the law
+      // seeked back at every seam before the turn was timed (found in
+      // review, in simulation).
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT, rate: 2 })
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      let landing = v.currentTime
+      advance(300)
+      v.playbackRate = 2
+      v.currentTime = landing + 0.02
+      steer.steer(v, at(landing + 0.02), LOADED_AT, LOADED_AT, 16)
+
+      // The next seam leads by the cap, and is served after 32 ms.
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      landing = v.currentTime
+      expect(landing).toBeCloseTo(0.03 + SEAM_LEAD_MAX_CLIP_S, 6)
+      ;(v as { seeking: boolean }).seeking = true
+      advance(16)
+      steer.steer(v, at(0.062), LOADED_AT, LOADED_AT, 16)
+      advance(16)
+      ;(v as { seeking: boolean }).seeking = false
+      // Served and not yet playing on: ahead, but inside what the law trims.
+      expect(steer.steer(v, at(0.094), LOADED_AT, LOADED_AT, 16).seeked).toBe(false)
+      // Playing on 68 ms after it was served: 100 ms since the turn, 32 of
+      // them playing, so it stood still for 68. Timed until it was served,
+      // as if the frames after a seek moved at once, the turn reads 32.
+      advance(68)
+      v.playbackRate = 2
+      v.currentTime = landing + 0.064
+      steer.steer(v, at(0.23), LOADED_AT, LOADED_AT, 16)
+
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + 0.068 * 2, 6)
+    })
+
+    it('lands a turn that would fall within a hair of the period at the start', () => {
+      // An element running past its period (a sound track's tail): the
+      // period, not the element's own end, is where the loop starts again.
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      steer.steer(v, clock({ positionS: 15.8995, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBe(0)
+    })
+
+    it('throws away a turn that played further than the time allows', () => {
+      // hls.js nudging the element over a hole mid-turn: no stall to lead by.
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT })
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      advance(10)
+      v.currentTime = landing + 0.5
+      steer.steer(v, at(landing + 0.5), LOADED_AT, LOADED_AT, 16)
+      v.currentTime = 16.03
+      steer.steer(v, at(0.03), LOADED_AT, LOADED_AT, 16)
+      expect(v.currentTime).toBeCloseTo(0.03 + SEAM_LEAD_INITIAL_S, 6)
+    })
+
+    it('times a slow turn made on the first frame back from a stop', () => {
+      // Steering stopped (a hidden tab) while the element played to its
+      // end, and the first frame back turns it. The restart took 1.2 s;
+      // unmeasured, it left no floor, and half a second behind after it
+      // the law seeked again into another slow restart (found in review).
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 5 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT })
+      steer.steer(v, at(5), LOADED_AT, LOADED_AT, 16)
+      advance(60_000)
+      v.currentTime = 16.04
+      ;(v as { paused: boolean }).paused = true
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      ;(v as { seeking: boolean }).seeking = true
+      for (let t = 0; t < 1_200; t += 16) {
+        advance(16)
+        steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      }
+      ;(v as { seeking: boolean }).seeking = false
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      advance(16)
+      const outcome = steer.steer(v, at(landing + 0.5), LOADED_AT, LOADED_AT, 16)
+      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-0.5, 6), seeked: false })
+    })
+
+    it('lets the restart settle rather than seek again for it', () => {
+      // Without telling the layer, a copy with no seek measured yet read
+      // the restart as an error past its threshold and seeked every loop.
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      ;(v as { seeking: boolean }).seeking = true
+      advance(100)
+      ;(v as { seeking: boolean }).seeking = false
+      // Landed 170 ms behind, past the 150 ms hard-seek threshold.
+      v.currentTime = 0.05
+      advance(16)
+      const outcome = steer.steer(v, clock({ positionS: 0.22, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-0.17, 6), seeked: false })
+      expect(v.playbackRate).toBeGreaterThan(1)
+    })
+
+    it('does not turn an element still seeking', () => {
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02, seeking: true })
+      expect(steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16).seeked).toBe(false)
+      expect(v.currentTime).toBe(16.02)
     })
   })
 

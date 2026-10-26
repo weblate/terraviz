@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { serializeDataset } from '../../functions/api/v1/_lib/dataset-serializer'
+import { CARD_BUDGET, CARD_SKELETON } from '../../functions/api/v1/_lib/exhibit-reads'
 import type { DatasetRow } from '../../functions/api/v1/_lib/catalog-store'
 
 // LSL compiles only in-world, so nothing here runs the scripts. What the
@@ -182,23 +183,30 @@ describe('second-life exhibit scripts', () => {
     const act = body(globe, 'act(key who, integer owner, string msg)')
     const show = act.slice(act.indexOf('if (cmd == "show")'), act.indexOf('if (cmd == "earth"'))
     expect(show).toMatch(/\n\s+show\(who, dataset, described\);/)
-    // The info script, which reads the record anyway, puts the globe back
+    // The info script, which reads the card anyway, puts the globe back
     // on the live Earth when the node has no such dataset or it is a tour,
     // as a script's own request, and tells the owner and whoever chose it.
     const unshowable = body(info, 'unshowable(string why)')
     expect(unshowable).toContain('llMessageLinked(LINK_THIS, MSG_CONTROL, "earth " + gDataset, NULL_KEY);')
     expect(unshowable).toContain('llOwnerSay(')
     expect(unshowable).toMatch(/if \(gChose\)\n\s+if \(gChose != llGetOwner\(\)\)\n\s+llRegionSayTo\(gChose, 0, /)
-    // Only for the record it asked for, and only once it has read it.
-    const reply = info.slice(info.indexOf('if (req == gRecReq)'), info.indexOf('else if (req == gManReq)'))
-    expect(reply).toContain('if (status == 404) { unshowable(')
+    // Only for the card it asked for, and a 404 only when the node's own
+    // envelope says so: a proxy's 404 says nothing about the dataset.
+    const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
+    expect(reply).toMatch(/if \(req != gReq\) return;\n\s+gReq = NULL_KEY;/)
+    expect(reply).toMatch(/if \(status == 404\)\n\s+if \(llJsonGetValue\(body, \["error"\]\) == "not_found"\) \{ unshowable\(/)
+    // Shown only when the node says the page can show it, and only a kind
+    // this script knows: the kinds are an open set, so one a later node
+    // adds is refused rather than shown.
+    const card = body(info, 'card(string b, integer cut)')
+    const gate = 'if (llJsonGetValue(b, ["showable"]) != JSON_TRUE || (kind != "video" && kind != "image"))'
+    expect(card).toContain('if (kind == "tour") { unshowable(')
+    expect(card).toMatch(/if \(llJsonGetValue\(b, \["showable"\]\) != JSON_TRUE \|\| \(kind != "video" && kind != "image"\)\)\n\s+\{\n\s+unshowable\(/)
     // The chooser is kept only until the node has answered about their
     // choice, and the README's account of what the scripts keep says so.
-    expect(reply).toMatch(/gChose = NULL_KEY;[^\n]*\n\s+fetch\(\);/)
+    expect(card.indexOf('gChose = NULL_KEY;')).toBeGreaterThan(card.indexOf(gate))
     expect(unshowable).toContain('gChose = NULL_KEY;')
     expect(readme).toContain('the key of whoever chose the dataset showing, until the node has said')
-    expect(reply.indexOf('record();')).toBeGreaterThan(-1)
-    expect(reply.indexOf('record();')).toBeLessThan(reply.indexOf('if (gUnshowable) { unshowable('))
     // The globe names the chooser of a new dataset in the broadcast that
     // shows it, and the info script keeps it with the dataset. A request
     // naming a dataset the globe has since gone on from is set aside, so
@@ -210,19 +218,14 @@ describe('second-life exhibit scripts', () => {
     const stale = 'if (cmd == "earth" && who == NULL_KEY && arg != "" && arg != gDataset) return;'
     expect(act).toContain(stale)
     expect(act.indexOf(stale)).toBeLessThan(act.indexOf('if (cmd == "earth" || (cmd == "rest"'))
-    expect(body(info, 'record()')).toContain(
-      'gUnshowable = format != "" && !gVideo && llSubStringIndex(format, "image/") != 0;',
-    )
-    expect(body(info, 'forget()')).toContain('gUnshowable = FALSE;')
     // "earth" is a control any script may send: it sits before the owner's
     // gate in the globe script.
     expect(act.indexOf('if (cmd == "earth"')).toBeLessThan(act.indexOf("// Everything below is the owner's."))
-    // The info script reads only as much of a record as fits beside what
-    // it holds at rest (50 KB of 64, measured in-world), and a little of
-    // an abstract.
-    expect(Number(constant(info, 'integer', 'BODY_MAX'))).toBeLessThanOrEqual(3072)
+    // The info script reads a card, which the node keeps within its budget,
+    // and keeps a little of the abstract.
+    expect(Number(constant(info, 'integer', 'CARD_MAX'))).toBe(CARD_BUDGET)
+    expect(CARD_BUDGET).toBe(2048)
     expect(Number(constant(info, 'integer', 'ABSTRACT_MAX'))).toBeLessThanOrEqual(500)
-    expect(Number(constant(info, 'integer', 'MANIFEST_MAX'))).toBeLessThanOrEqual(1024)
     // And the globe says how full showing a dataset left it.
     const shown = body(globe, 'show(key who, string id, string title)')
     const statements = shown.slice(shown.indexOf('{') + 1).split('\n').filter((line) => line.trim() !== '' && !/^\s*\/\//.test(line))
@@ -232,43 +235,116 @@ describe('second-life exhibit scripts', () => {
     expect(act).toContain('KB while showing a dataset')
   })
 
-  it('copy a record, and what it tells a visitor, as few times as they can be', () => {
+  it('read a card once, and copy what it tells a visitor as few times as it can be', () => {
     // A copy counts against a script's 64 KB until Second Life collects
-    // it, and the info script ran out in-world (October 2026). So the
-    // record is held once and let go before its text is tidied, and no
-    // function is handed it to copy.
-    const reply = info.slice(info.indexOf('if (req == gRecReq)'), info.indexOf('else if (req == gManReq)'))
-    expect(reply).toMatch(/gBody = body;\n\s+body = "";\n\s+record\(\);\n\s+gBody = "";\n\s+tidy\(\);\n\s+peak\(\);/)
-    const field = body(info, 'string field(string name, integer max)')
-    expect(field).toContain('llGetSubString(gBody, i, i + max + 16)')
-    // A value with no escape is returned as read, which most are, and
-    // only a backslash before the value's first quote is one of its own.
-    expect(field).toContain('if (!esc) return raw;')
-    expect(field).toContain('integer esc = bs != -1 && (at == -1 || bs < at);')
-    // HTML is taken out in one split rather than a copy per tag, and each
-    // step runs only when there is something for it to do.
-    const plain = body(info, 'string plain(string s)')
-    expect(plain).toContain('llParseStringKeepNulls(s, ["<"], [])')
-    expect(plain).not.toContain('out += llGetSubString')
-    // A tag runs on to the next >, past any < inside it, as it did before.
-    expect(plain).toMatch(/while \(b == -1 && i \+ 1 < n\)\n\s+\{\n\s+\+\+i;\n\s+p \+= "<" \+ llList2String\(parts, i\);/)
-    for (const gate of ['"<"', '"&"', '"\\t"']) expect(plain, gate).toContain(`if (llSubStringIndex(s, ${gate}) != -1)`)
+    // it, and the info script ran out in-world (October 2026). So the card
+    // is handed straight to the one function that reads it, and HTML,
+    // entities and cuts are the node's work, not the script's.
+    const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
+    expect(reply).toMatch(/llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);\n\s+card\(body, llListFindList\(meta, \[HTTP_BODY_TRUNCATED\]\) != -1\);\n\s+peak\(\);/)
+    for (const gone of ['string field(', 'string plain(', 'tidy()', 'gBody']) expect(info, gone).not.toContain(gone)
+    // A reply that isn't a card, as an older node's page is, or one cut at
+    // the budget, which no card is, is not read, nor asked for again.
+    const card = body(info, 'card(string b, integer cut)')
+    expect(card).toMatch(/if \(cut \|\| kind == JSON_INVALID\)\n\s+\{\n\s+if \(gTries < TRIES\) \{ later\(60\); return; \}/)
     // "About" is joined once and measured a character at a time, not
     // copied for each line added and each piece counted.
     const about = body(info, 'about(key av)')
     expect(about).not.toMatch(/text \+=/)
     expect(about).toContain('say(av, llDumpList2String(lines, "\\n"));')
-    // The licence on one line, its own line breaks folded, as before.
-    expect(about).toContain(
-      'string lic = llDumpList2String(llParseString2List(llDumpList2String([gSpdx, gStatement, gLicUrl], "\\n"), ["\\n"], []), " ");',
-    )
+    expect(about).toContain('link = gNode + gPage;')
     const say = body(info, 'say(key av, string text)')
     expect(say).toContain('llOrd(text, n)')
     expect(say).not.toContain('bytes(')
     expect(info).not.toContain('llToLower(body)')
     // And "/9 memory" says the most either took.
     expect(info).toMatch(/MSG_ABOUT\)\n\s+\{\n\s+llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);\n\s+about\(id\);\n\s+peak\(\);/)
-    expect(info).toContain('KB while reading a record or answering About')
+    expect(info).toContain('KB while reading a card or answering About')
+  })
+
+  it("name a dataset shown by its id alone by the card's title, and keep any name it was given", () => {
+    // `/9 show <id>` gives the globe no name, so it sends the id, which
+    // means nothing to a visitor (found in-world, 26 October). A menu's,
+    // a notecard's or a preset's name is the owner's choice and stays.
+    expect(body(globe, 'show(key who, string id, string title)')).toContain('if (gTitle == "") gTitle = id;')
+    const name = body(info, 'string called()')
+    expect(name).toContain('if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;')
+    expect(body(info, 'hover()')).toContain('string title = called();')
+    const about = body(info, 'about(key av)')
+    expect(about).toContain('string title = called();')
+    expect(about).not.toContain('gTitle')
+    expect(body(info, 'forget()')).toContain('gCardTitle = "";')
+  })
+
+  it('ask for a card a bounded number of times, and again when an answer was lost', () => {
+    // Every request counts against TRIES, one at a time, so a failing node
+    // is asked at most four times a dataset, never every 30 s for good.
+    const fetch = body(info, 'fetch()')
+    expect(fetch).toMatch(/if \(gDataset == "" \|\| gNode == "" \|\| gTries >= TRIES\) return;\n\s+if \(gReq\) return;\n\s+\+\+gTries;/)
+    expect(fetch).toContain('if (gReq == NULL_KEY) later(30);')
+    expect(Number(constant(info, 'integer', 'TRIES'))).toBe(4)
+    // A failure is asked again; the timer is what asks.
+    const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
+    expect(reply).toMatch(/if \(status != 200\)\n\s+\{\n\s+if \(gTries < TRIES\) later\(30\);\n\s+else if \(!gToldNode && !gHaveRec\)\n\s+\{\n\s+llOwnerSay\([^;]+;\n\s+gToldNode = TRUE;/)
+    // A card read before the failure (a retry's) still stands, so neither
+    // message is sent over it: both say the hover text shows titles alone.
+    // The latch is set only with the message, or a silent pass would keep
+    // the owner from hearing of the next dataset that gets no card.
+    expect(body(info, 'card(string b, integer cut)')).toMatch(
+      /\n\s+if \(!gToldNode && !gHaveRec\)\n\s+\{\n\s+llOwnerSay\([^;]+;\n\s+gToldNode = TRUE;\n\s+\}\n\s+return;/,
+    )
+    // The owner is told once a node, not once a script's life.
+    const state = info.slice(info.indexOf('        if (n != MSG_STATE) return;'), info.indexOf('    http_response(key req'))
+    expect(state).toMatch(/string node = llJsonGetValue\(str, \["node"\]\);\n\s+if \(node != gNode\) gToldNode = FALSE;\n\s+gNode = node;/)
+    // Second Life's 415, for a reply that isn't the JSON asked for (an
+    // older node's page, found in-world), is no card: asked again, then
+    // the owner is told the node sent none.
+    expect(reply).toMatch(/if \(status == 415\) \{ card\("", TRUE\); hover\(\); pace\(\); return; \}/)
+    expect(reply.indexOf('if (status == 415)')).toBeLessThan(reply.indexOf('if (status != 200)'))
+    expect(info).toContain('HTTP_ACCEPT, "application/json"')
+    // Once the tries are spent the owner is told, with the status, rather
+    // than the globe going quiet.
+    expect(reply).toContain('" tries (HTTP " + (string)status + "). The hover text shows the title alone."')
+    const timer = info.slice(info.indexOf('    timer()'), info.indexOf('    listen('))
+    expect(timer).toMatch(/if \(gRetryAt && llGetUnixTime\(\) >= gRetryAt\)\n\s+\{\n\s+gRetryAt = 0;\n\s+fetch\(\);/)
+    // The timer runs while a retry waits, a retry is the earliest asked
+    // for, and every dataset starts with its tries unspent.
+    expect(body(info, 'pace()')).toContain('if (moving || gRetryAt) llSetTimerEvent(TICK);')
+    expect(body(info, 'later(integer s)')).toMatch(/integer at = llGetUnixTime\(\) \+ s;\n\s+if \(gRetryAt == 0 \|\| at < gRetryAt\) gRetryAt = at;/)
+    expect(body(info, 'forget()')).toMatch(/gTries = 0;\n\s+gRetryAt = 0;\n\s+gReq = NULL_KEY;/)
+    // A region restart drops a request in flight, which is asked again,
+    // and sets the timer again whatever was waiting on it.
+    expect(info).toMatch(/if \(c & CHANGED_REGION_START\)\n\s+\{\n\s+if \(gReq\) \{ gReq = NULL_KEY; later\(10\); \}\n\s+pace\(\);\n\s+\}/)
+    // A card of exactly the budget can't read as cut.
+    expect(fetch).toContain('HTTP_BODY_MAXLENGTH, CARD_MAX + 1]')
+  })
+
+  it("read only what a card carries, as the type it has", () => {
+    // The card's names are a contract with copies already rezzed
+    // (functions/api/v1/_lib/exhibit-reads.ts), so a field this script
+    // reads that the card lacks would read "" on every node, quietly.
+    const shape = JSON.parse(CARD_SKELETON) as Record<string, unknown>
+    const card = body(info, 'card(string b, integer cut)')
+    const read = [...all(card, /value\(b, "(\w+)"\)/g), ...all(card, /llJsonGetValue\(b, \["(\w+)"\]\)/g)]
+    expect(new Set(read)).toEqual(new Set([
+      'kind', 'showable', 'title', 'page', 'credit', 'license', 'licenseText', 'truncated', 'abstract',
+      'startTime', 'endTime', 'period', 'exactDuration', 'retry',
+    ]))
+    for (const name of read) expect(Object.keys(shape), name).toContain(name)
+    // Numbers are cast, and the one boolean is compared with JSON_TRUE,
+    // since (integer) of a JSON true reads 0.
+    expect(typeof shape.exactDuration).toBe('number')
+    expect(typeof shape.retry).toBe('number')
+    expect(card).toContain('gDuration = (float)value(b, "exactDuration");')
+    expect(card).toContain('integer retry = (integer)value(b, "retry");')
+    expect(typeof shape.truncated).toBe('boolean')
+    expect(card).toContain('gCut = llJsonGetValue(b, ["truncated"]) == JSON_TRUE;')
+    expect(typeof shape.showable).toBe('boolean')
+    // The card's page is a path on the node, as its dataset link.
+    expect(card).toContain('if (llGetSubString(gPage, 0, 0) != "/") gPage = "/dataset/" + gDataset;')
+    // A length the node didn't settle is asked for again when it says.
+    expect(card).toContain('if (gVideo && gDuration == 0.0 && retry > 0) later(retry);')
+    expect(info).toContain('gNode + "/api/exhibit/v1/datasets/" + llEscapeURL(gDataset)')
   })
 
   it('answer a pause, a play or a move with the date the globe shows, not the clip\'s seconds', () => {
@@ -302,22 +378,21 @@ describe('second-life exhibit scripts', () => {
     expect(moved).toContain('if (d != "") s = "Playing from " + d + ".";')
   })
 
-  it("trust a clip's length only from a manifest the node built itself", () => {
-    // A Vimeo manifest carries Vimeo's own id and whole-second length,
-    // which the page's loop drifts from; the node writes the dataset's id
-    // into every manifest it builds (functions/api/v1/datasets/[id]/manifest.ts).
-    expect(info).toContain('if (mid != gDataset || llSubStringIndex(body, "vimeo") != -1) { gDuration = 0.0; gManTries = 4; }')
-    // A failed request carries no id, so it is retried before that check
-    // can read it as someone else's manifest and give up (found in review).
-    const answered = info.slice(info.indexOf('else if (req == gManReq)'))
-    const failed = answered.indexOf('if (status != 200)')
-    expect(failed).toBeGreaterThan(-1)
-    expect(failed).toBeLessThan(answered.indexOf('mid != gDataset'))
-    expect(answered.slice(failed, answered.indexOf('mid != gDataset'))).toContain('if (gManTries < 4) later(16 << (gManTries - 1));')
+  it("keep the dataset's id in every manifest the node builds, for copies already rezzed", () => {
+    // Info scripts rezzed before the card read a clip's length from the
+    // manifest, and trust it only when the manifest carries the dataset's
+    // own id: a Vimeo manifest carries Vimeo's id and its whole-second
+    // length, which the page's loop drifts from. Those copies can't be
+    // updated, so the node keeps writing the id into every manifest it
+    // builds (manifest.test.ts pins the leading keys).
+    expect(info).not.toContain('/manifest')
     const manifest = read('../../functions/api/v1/datasets/[id]/manifest.ts')
     expect(manifest.match(/^\s+id: row\.id,$/gm)?.length).toBeGreaterThanOrEqual(2)
     expect(manifest).toMatch(/externalVideoManifest\(row\.id,/)
-    expect(manifest).toMatch(/^\s+id: data\.id,$/m)
+    // A Vimeo manifest's id is Vimeo's own, which the proxy gives.
+    const proxy = read('../../functions/api/v1/_lib/video-proxy.ts')
+    expect(proxy).toMatch(/^\s+id: data\.id,$/m)
+    expect(manifest).toMatch(/fetchVimeoManifest\(parsed\.value, proxyBase, fetchImpl\)/)
   })
 
   it('label every button within the 24 bytes a menu allows', () => {
@@ -384,14 +459,19 @@ describe('second-life exhibit scripts', () => {
     }
   })
 
-  it('read only record fields the node writes before createdAt', () => {
-    // The info script reads a record only as far as BODY_MAX, which works
-    // because every field it needs comes before `createdAt`, which every
+  it('write before createdAt every record field copies already rezzed read', () => {
+    // Info scripts rezzed before the card read a record by position, only
+    // as far as 3,072 bytes (9,000 in the first copies), which works
+    // because every field they read comes before `createdAt`, which every
     // record has. A serializer that moved one after it would cut that
-    // field from long records. The order isn't the protocol's promise
-    // (docs/protocol/README.md); it is this node's, and this pins it.
-    const fields = all(info, /field\("(\w+)"/g)
-    expect(fields.length).toBeGreaterThan(0)
+    // field from long records for copies that can't be updated. The order
+    // isn't the protocol's promise (docs/protocol/README.md); it is this
+    // node's, and this pins it. Every version of the script read these.
+    const fields = [
+      'slug', 'format', 'abstractTxt', 'attributionText', 'rightsHolder', 'organization',
+      'licenseSpdx', 'licenseUrl', 'licenseStatement', 'startTime', 'endTime', 'period',
+    ]
+    expect(info).not.toContain('"/api/v1/datasets/"')
     const wire = serializeDataset(
       fullRow(),
       { tags: ['Air'], categories: [], keywords: ['k'], developers: [{ role: 'data', name: 'D', affiliation_url: null }], related: [] },
@@ -422,8 +502,6 @@ describe('second-life exhibit scripts', () => {
         || (Array.isArray(value) && value.every((v) => typeof v === 'string'))
       expect(flat, key).toBe(true)
     }
-    // And the script stops looking there.
-    expect(body(info, 'record()')).toContain('gStop = llSubStringIndex(gBody, ",\\"createdAt\\":");')
   })
 
   it("leave the title room in the hover text, whatever else it says", () => {
@@ -433,7 +511,16 @@ describe('second-life exhibit scripts', () => {
     // a sub-daily range, which shows while a clip's length is unknown.
     const string = (name: string) => JSON.parse(constant(info, 'string', name)) as string
     const hover = body(info, 'hover()')
-    expect(hover).toContain('"Counts anonymous use: " + gNode + "/privacy\\n"')
+    // The telemetry notice sits under the date, says what the globe does
+    // and where the policy is, and is never cut: it is counted before the
+    // title and credit share what is left, and it is drawn whole.
+    expect(hover).toMatch(/if \(stamp != ""\) tail \+= "\\n" \+ stamp;\n\s+if \(gTelemetry\) tail \+= "\\nCounts anonymous use: " \+ gNode \+ "\/privacy";/)
+    expect(hover).toContain('integer avail = 254 - bytes(tail) - bytes(end);')
+    expect(hover).toContain('string s = title + tail;')
+    expect(body(globe, 'describe()')).toContain('desc = "TerraViz globe. Counts anonymous use: " + NODE + "/privacy";')
+    // Kept short, at the maintainer's request: no line naming the globe.
+    expect(info).not.toMatch(/llSetText\("TerraViz/)
+    expect(hover).not.toContain('TerraViz globe')
     expect(hover).toContain('if (keepT < MIN_TITLE) keepT = MIN_TITLE;')
     const preview = `https://${'a'.repeat(28)}.terraviz.pages.dev`
     const production = JSON.parse(constant(globe, 'string', 'NODE')) as string
@@ -444,13 +531,13 @@ describe('second-life exhibit scripts', () => {
     const minTitle = Number(constant(info, 'integer', 'MIN_TITLE'))
     const minCredit = Number(constant(info, 'integer', 'MIN_CREDIT'))
     for (const node of [preview, production]) {
-      const top = 'TerraViz globe\n' + `Counts anonymous use: ${node}/privacy\n`
-      const left = 254 - bytes(top) - bytes(range) - bytes(end) - 1
+      const privacy = `\nCounts anonymous use: ${node}/privacy`
+      const left = 254 - bytes(range) - bytes(privacy) - bytes(end) - 1
       expect(left, node).toBeGreaterThanOrEqual(minTitle)
       // On the node the exhibit ships for, the credit keeps its floor too.
       if (node === production) expect(left - minTitle, node).toBeGreaterThanOrEqual(minCredit)
       // The live Earth's lines fit whole, with nothing cut.
-      const live = top + string('LIVE_LINE') + '\n' + string('LIVE_CREDIT') + end
+      const live = string('LIVE_LINE') + privacy + '\n' + string('LIVE_CREDIT') + end
       expect(bytes(live), node).toBeLessThanOrEqual(254)
     }
   })
