@@ -88,16 +88,29 @@ SCHEMA_BASE_URL=https://terraviz.example.org/schema/v1 npm run gen:protocol-sche
   against a node running this codebase's serializer: they can afford
   only the start of a record, so they read by position. The two globe
   scripts read `id`, `slug`, `title` and `format` from the first 2,048
-  bytes, and the exhibit's info script reads its text and time fields
-  from before `createdAt`, within the first 9,000, and a video
-  manifest's `duration` and `hls` from before its `files`, within the
-  first 4,096. Pointed at a node that orders keys differently, they
-  can miss fields.
+  bytes (the exhibit's globe script no longer reads at all). The
+  exhibit's info script, in copies from before the exhibit reads,
+  reads its text and time fields from before `createdAt`, within the
+  first 9,000 bytes (3,072 in the copies of 25 October), and a video
+  manifest's `id` and `duration` from its first 4,096 (1,024). Pointed
+  at a node that orders keys differently, they can miss fields.
   [`dataset-serializer.test.ts`](../../functions/api/v1/_lib/dataset-serializer.test.ts)
   and
   [`exhibit.test.ts`](../../scripts/second-life-exhibit/exhibit.test.ts)
-  pin the record's order, so a reorder fails a test rather than a
-  globe; the manifest's is not pinned.
+  pin the record's order, and
+  [`manifest.test.ts`](../../functions/api/v1/datasets/[id]/manifest.test.ts)
+  the manifest's leading keys, so a reorder fails a test rather than a
+  globe. Copies once rezzed can't be updated remotely, so these pins
+  stay while old copies may still read this way.
+- **The exhibit reads are where an LSL script should read instead:**
+  `GET /api/v1/exhibit/datasets/{id}`, `GET /api/v1/exhibit/datasets`
+  and `GET /api/v1/exhibit/tags`, small replies within byte budgets
+  they state, with their own contract for scripts already rezzed:
+  additive only, no field changes meaning, a breaking change gets a
+  new path ([`exhibit-reads.ts`](../../functions/api/v1/_lib/exhibit-reads.ts),
+  [`SECOND_LIFE_COMPAT.md`](../SECOND_LIFE_COMPAT.md) §9 Phase 2). They
+  are this node's convenience reads, not part of the federation
+  protocol, and not in `public/schema/v1/`.
 
 ## Versioning
 

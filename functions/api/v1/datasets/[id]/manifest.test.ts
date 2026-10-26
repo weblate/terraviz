@@ -186,6 +186,8 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     expect(body.hls).toBe('https://cdn.test/hls.m3u8')
     expect(body.files).toHaveLength(1)
     expect(body.files[0]).toMatchObject({ quality: '720p', link: 'https://cdn.test/720.mp4' })
+    // Pinned for the exhibit's older info scripts, as in the HLS case.
+    expect(Object.keys(body).slice(0, 4)).toEqual(['kind', 'id', 'title', 'duration'])
     // The frontend never used `dash`; manifest must drop it so the
     // wire shape is the union the frontend expects in Commit H.
     expect((body as unknown as { dash?: string }).dash).toBeUndefined()
@@ -421,6 +423,12 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     expect(body.files).toEqual([])
     // No bucket binding here, so the length is unknown: 0, as before.
     expect((body as { duration?: number }).duration).toBe(0)
+    // Copies of the Second Life exhibit's info script from before the
+    // exhibit reads find `id` and `duration` in the first 4,096 bytes
+    // (1,024 in later copies), and can't be updated once rezzed, so the
+    // leading keys are pinned while they may still read this way
+    // (docs/protocol/README.md).
+    expect(Object.keys(body).slice(0, 4)).toEqual(['kind', 'id', 'title', 'duration'])
   })
 
   it('reports an r2: HLS bundle’s length from its own playlists', async () => {
