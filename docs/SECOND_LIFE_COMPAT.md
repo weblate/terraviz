@@ -1459,6 +1459,18 @@ yet.
     (`loopView`), and the card sends the same sum. A copy playing HLS
     natively, with no hls.js to ask, still loops on its element's own
     length.
+  - **The loop's seam cost each copy a restart nobody timed**, done the
+    same day. An element that ran past the period into its sound
+    track's tail, or stopped at its own end, waited for the control
+    law's `play()`, which rewinds an element at its end to 0. Measured in
+    Chromium on the real streams, that restart took 50 to 250 ms, so a
+    4.3 s loop with AAC fell 170 to 300 ms behind at each seam, and a copy
+    with no seek measured yet then seeked again every loop. The steer
+    now turns the element back itself, to the target plus how long the
+    last turn stood still, and tells the playhead layer, so its settle
+    window covers the restart. Measured the same way after: seams 10 to
+    75 ms on that loop, a median lag of 10 to 17 ms, and under 20 ms on
+    Vimeo's.
 - **Found in review and not yet done:**
   - **A copy that fell back to a video's single file stays on it.**
     Its stream is not tried again once the file has loaded, and that

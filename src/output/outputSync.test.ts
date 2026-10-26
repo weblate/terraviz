@@ -467,6 +467,22 @@ describe('createPlayheadSync', () => {
     expect(controller.sync(video, state).seeked).toBe(true)
   })
 
+  it('treats a seek the caller noted as its own, settle window and all', () => {
+    // The web clock's turn at a loop's seam: made on the element directly,
+    // and without the note the next call seeked again for the restart.
+    let now = 0
+    const controller = createPlayheadSync(() => now)
+    const video = target({ currentTime: 50 - BEHIND_S })
+    const state = inputs()
+    controller.noteSeek(video)
+    now = 10
+    expect(controller.sync(video, state).seeked).toBe(false)
+    // Past the window, an error past the threshold is corrected again.
+    now = OUTPUT_SEEK_SETTLE_MS + 20
+    video.currentTime = 50 - BEHIND_S
+    expect(controller.sync(video, state).seeked).toBe(true)
+  })
+
   it('does not start the window on a call that did not seek', () => {
     // Stamping every call would suppress the *first* seek after a quiet
     // period, which is the one that matters.

@@ -435,7 +435,10 @@ export class HLSService {
         // switch can't change the period mid-play.
         this.hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
           if (generation !== this.loadGeneration || this.playlistTotalS !== null) return
-          const total = data.details.totalduration
+          // To the microsecond, as the exhibit's card sends it, so the two
+          // hold one number by construction rather than by every playlist
+          // writing six decimals or fewer.
+          const total = Math.round(data.details.totalduration * 1e6) / 1e6
           if (!data.details.live && Number.isFinite(total) && total > 0) this.playlistTotalS = total
         })
 

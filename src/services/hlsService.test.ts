@@ -255,11 +255,12 @@ describe('HLSService.playlistDurationS', () => {
     hlsMock.fire('hlsManifestParsed', { levels: [] })
     await p
     expect(svc.playlistDurationS()).toBeNull()
+    // hls.js's own float sum, kept to the microsecond as the card sends it.
     hlsMock.fire('hlsLevelLoaded', level(143.76667199999997))
-    expect(svc.playlistDurationS()).toBe(143.76667199999997)
+    expect(svc.playlistDurationS()).toBe(143.766672)
     // A switch must not change the period mid-play.
     hlsMock.fire('hlsLevelLoaded', level(143.8))
-    expect(svc.playlistDurationS()).toBe(143.76667199999997)
+    expect(svc.playlistDurationS()).toBe(143.766672)
   })
 
   it('passes over a level that states no length, so a later one can', async () => {

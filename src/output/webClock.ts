@@ -44,9 +44,15 @@
  * element *as seen from the target* (`loopView`): every position is
  * measured round the loop and re-centred so the target sits mid-clip,
  * and a seek is turned back into the real position. The error it sees is
- * then always the short way round. An element that played to its end is
- * at the same point of the loop as one at its start, and the law's
- * `play()` rewinds it there, so the loop needs no case of its own.
+ * then always the short way round.
+ *
+ * **The seam is turned here.** An element that plays past the period
+ * (into its sound track's tail) or stops at its own end is turned back
+ * by this steer, to the target plus what the last turn cost, and the
+ * layer is told (`noteSeek`). Left to the law's `play()`, which rewinds
+ * an element at its end to 0, the restart was a seek nobody had timed,
+ * and a short loop fell 170 to 300 ms behind at every seam (found in
+ * review, in Chromium on the real streams).
  *
  * **One period for every copy.** The loop is the stream's playlist
  * total, the `#EXTINF`s summed (`HLSService.playlistDurationS`), not the
@@ -104,6 +110,16 @@ export const HELD_TOLERANCE_S = 1 / 60
  *  than the time written would otherwise be re-seeked after every
  *  landing, forever (found in review). */
 export const PAUSED_RESEEKS = 1
+
+/** What turning an element back at the loop's seam is taken to cost until
+ *  one turn has been timed: the restart measured 50 to 250 ms in Chromium
+ *  on the real streams, and a fixed 0.13 s lead there brought each seam
+ *  from 170 to 300 ms behind to within 45 ms (found in review). */
+export const SEAM_LEAD_INITIAL_S = 0.1
+
+/** The most a timed turn is believed to cost. A turn that took longer was
+ *  a stall, and leading by it would put the copy that far ahead. */
+export const SEAM_LEAD_MAX_S = 0.5
 
 /** A position the loop counts as its start: a seek written a hair short
  *  of the end, where the millisecond rounding of the law's target can
@@ -266,8 +282,17 @@ export function createWebClockSteer(
 ): WebClockSteer {
   // The web output's own playhead memory. Not the mirror's: that one is
   // handed the real element, and the law here has to see `loopView`.
-  const playhead = createPlayheadSync(deps.monotonicMs)
+  const monotonicMs = deps.monotonicMs ?? (() => performance.now())
+  const playhead = createPlayheadSync(monotonicMs)
   let view: LoopView | null = null
+  /** What turning this element back at the seam last cost: how long it
+   *  stood still, from the seek until it played on, and the turn still
+   *  being timed, from when and where. */
+  let seamCost: {
+    element: SyncTarget
+    seconds: number
+    pending: { sinceMs: number; landingS: number } | null
+  } | null = null
   /** The paused target this steer last seeked to, on which element, and
    *  how many times it has seeked there again. Held so a readback a hair
    *  off does not earn a seek every frame, but only within
@@ -292,12 +317,52 @@ export function createWebClockSteer(
         if (!view || view.element !== video) view = loopView(video)
         view.centreS = targetS
         view.periodS = d
+
+        // The seam. An element past the period is in the tail its sound
+        // track runs on, and one stopped at its own end waits for a
+        // `play()` that rewinds it to 0: either way the restart, 50 to
+        // 250 ms in Chromium on the real streams, was a seek the layer
+        // never saw. It left a short loop 170 to 300 ms behind after each
+        // seam, and a copy with no seek measured yet seeked again every
+        // loop (found in review). So the element is turned back here, to
+        // where the clock will be once the turn is served, and the layer
+        // is told, so its settle window covers the restart.
+        const now = monotonicMs()
+        if (seamCost?.element !== video) seamCost = { element: video, seconds: SEAM_LEAD_INITIAL_S, pending: null }
+        // Timed until the element plays on, not only until the seek is
+        // served: the frames after it take a while to move too, and timing
+        // the seek alone led each seam about 50 ms short. What the element
+        // played since the turn is taken off, so the cost is the stall.
+        const pending = seamCost.pending
+        if (pending && !video.seeking && video.currentTime > pending.landingS) {
+          const playedS = (video.currentTime - pending.landingS) / (video.playbackRate || 1)
+          const stoodS = (now - pending.sinceMs) / 1000 - playedS
+          seamCost.seconds = Math.min(SEAM_LEAD_MAX_S, Math.max(0, stoodS))
+          seamCost.pending = null
+        }
+        const atItsEnd = video.paused && video.currentTime >= video.duration - END_AS_START_S
+        if (!video.seeking && (video.currentTime >= d || atItsEnd)) {
+          const driftS = view.currentTime - d / 2
+          const landing = wrap(targetS + seamCost.seconds * clock.rate, d)
+          const landingS = landing > d - END_AS_START_S ? 0 : landing
+          video.currentTime = landingS
+          // After the seek: `play()` on an element at its end rewinds it.
+          if (video.paused) video.play()
+          playhead.noteSeek(view)
+          seamCost.pending = { sinceMs: now, landingS }
+          return { kind: 'playing', driftS, seeked: true }
+        }
+
         const inputs = clipClockInputs(d / 2, d, clock.rate)
-        return playhead.sync(view, {
+        const outcome = playhead.sync(view, {
           dataset: { ...CLIP, ...inputs.span },
           primary: inputs.primary,
           playback: inputs.playback,
         })
+        // A seek of the law's own moves the element off the turn being
+        // timed, so that turn can no longer be.
+        if (outcome.seeked) seamCost.pending = null
+        return outcome
       }
 
       // A seek left outstanding when the clock paused would otherwise be
