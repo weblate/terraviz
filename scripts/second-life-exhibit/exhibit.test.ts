@@ -285,7 +285,13 @@ describe('second-life exhibit scripts', () => {
     expect(Number(constant(info, 'integer', 'TRIES'))).toBe(4)
     // A failure is asked again; the timer is what asks.
     const reply = info.slice(info.indexOf('    http_response(key req'), info.indexOf('    timer()'))
-    expect(reply).toMatch(/if \(status != 200\)\n\s+\{\n\s+if \(gTries < TRIES\) later\(30\);\n\s+else if \(!gToldNode\)/)
+    expect(reply).toMatch(/if \(status != 200\)\n\s+\{\n\s+if \(gTries < TRIES\) later\(30\);\n\s+else if \(!gToldNode && !gHaveRec\)\n\s+\{\n\s+llOwnerSay\([^;]+;\n\s+gToldNode = TRUE;/)
+    // A card read before the failure (a retry's) still stands, so neither
+    // message is sent over it: both say the hover text shows titles alone.
+    expect(body(info, 'card(string b, integer cut)')).toContain('if (!gToldNode && !gHaveRec)')
+    // The owner is told once a node, not once a script's life.
+    const state = info.slice(info.indexOf('        if (n != MSG_STATE) return;'), info.indexOf('    http_response(key req'))
+    expect(state).toMatch(/string node = llJsonGetValue\(str, \["node"\]\);\n\s+if \(node != gNode\) gToldNode = FALSE;\n\s+gNode = node;/)
     // Second Life's 415, for a reply that isn't the JSON asked for (an
     // older node's page, found in-world), is no card: asked again, then
     // the owner is told the node sent none.

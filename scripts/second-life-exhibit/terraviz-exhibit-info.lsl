@@ -133,7 +133,7 @@ integer gRetryAt;
 string  gShown;        // the hover text as last set
 integer gPeak;         // the most memory used reading a card or answering About
 string  gWarned;       // the dataset whose notecard the owner was last warned about
-integer gToldNode;     // the owner has been told the node sent no card, or didn't answer
+integer gToldNode;     // the owner has been told this node sent no card, or didn't answer
 key     gChose;        // who chose the dataset shown, until the node has said whether it can be
 key     gLastAbout;
 integer gLastAboutAt;
@@ -521,7 +521,8 @@ card(string b, integer cut)
     if (cut || kind == JSON_INVALID)
     {
         if (gTries < TRIES) { later(60); return; }
-        if (!gToldNode)
+        // A card already read stands (a retry's), so there is nothing to tell.
+        if (!gToldNode && !gHaveRec)
             llOwnerSay("[exhibit] " + gNode + " sent no dataset card. A node older than the exhibit's reads has "
                 + "none, and one whose Functions are down sends its page instead. The hover text shows titles "
                 + "alone, and About gives the dataset's page.");
@@ -728,7 +729,10 @@ default
         gRate = (float)llJsonGetValue(str, ["rate"]);
         gPaused = (integer)llJsonGetValue(str, ["paused"]);
         gTelemetry = (integer)llJsonGetValue(str, ["telemetry"]);
-        gNode = llJsonGetValue(str, ["node"]);
+        // A node the owner hasn't been told about gets its own word.
+        string node = llJsonGetValue(str, ["node"]);
+        if (node != gNode) gToldNode = FALSE;
+        gNode = node;
         // The globe names who changed what it shows: who chose a dataset,
         // told if it can't be shown, or who paused, played or moved the
         // clip, told the date it now shows. A key is true only when it is
@@ -759,11 +763,12 @@ default
         if (status == 415) { card("", TRUE); hover(); pace(); return; }
         // A failure (a 503, or Second Life's 499 for a timeout) is asked
         // again, as many times as TRIES allows, and the owner is told,
-        // once, with the status, when the last fails too.
+        // once a node, with the status, when the last fails too, unless a
+        // card was read before it (a retry's), which still stands.
         if (status != 200)
         {
             if (gTries < TRIES) later(30);
-            else if (!gToldNode)
+            else if (!gToldNode && !gHaveRec)
             {
                 llOwnerSay("[exhibit] " + gNode + " didn't answer for " + gDataset + " after " + (string)TRIES
                     + " tries (HTTP " + (string)status + "). The hover text shows the title alone.");
