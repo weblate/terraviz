@@ -529,6 +529,40 @@ describe('createPlayheadSync', () => {
     expect(controller.sync(second, inputs()).seeked).toBe(false)
   })
 
+  it('times a noted seek made on the first call after a stop', () => {
+    // Steering stopped (a hidden tab), and the first thing on the way back
+    // was the caller's own seek. Measured from the last `sync`, the next
+    // call read the gap as a stop and dropped the seek unmeasured, so a
+    // slow restart left no floor and the law seeked again (found in
+    // review).
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const video = target({ currentTime: 50 })
+    controller.sync(video, inputs())
+    clock.now = 60_000
+    controller.noteSeek(video)
+    standStill(controller, video, clock, 61_200)
+    clock.now += OUTPUT_SEEK_SETTLE_MS
+    video.currentTime = 49.5
+    expect(controller.sync(video, inputs()).seeked).toBe(false)
+  })
+
+  it('times a noted seek made on the first call after a pause', () => {
+    // A pause clears the call time on purpose, so the pause is not an
+    // interval; the seek that ends it still is one to time.
+    const clock = { now: 0 }
+    const controller = createPlayheadSync(() => clock.now)
+    const video = target({ currentTime: 50 })
+    controller.sync(video, inputs())
+    controller.dropPendingSeek()
+    clock.now = 30_000
+    controller.noteSeek(video)
+    standStill(controller, video, clock, 31_200)
+    clock.now += OUTPUT_SEEK_SETTLE_MS
+    video.currentTime = 49.5
+    expect(controller.sync(video, inputs()).seeked).toBe(false)
+  })
+
   it("does not carry the last element's cost to a new one's note", () => {
     const clock = { now: 0 }
     const controller = createPlayheadSync(() => clock.now)

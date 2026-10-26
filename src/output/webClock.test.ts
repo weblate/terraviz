@@ -498,6 +498,32 @@ describe('createWebClockSteer', () => {
       expect(v.currentTime).toBeCloseTo(0.03 + SEAM_LEAD_INITIAL_S, 6)
     })
 
+    it('times a slow turn made on the first frame back from a stop', () => {
+      // Steering stopped (a hidden tab) while the element played to its
+      // end, and the first frame back turns it. The restart took 1.2 s;
+      // unmeasured, it left no floor, and half a second behind after it
+      // the law seeked again into another slow restart (found in review).
+      const { steer, advance } = harness()
+      const v = video({ duration: 16.04, currentTime: 5 })
+      const at = (t: number) => clock({ positionS: t, atUnixS: AT })
+      steer.steer(v, at(5), LOADED_AT, LOADED_AT, 16)
+      advance(60_000)
+      v.currentTime = 16.04
+      ;(v as { paused: boolean }).paused = true
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      const landing = v.currentTime
+      ;(v as { seeking: boolean }).seeking = true
+      for (let t = 0; t < 1_200; t += 16) {
+        advance(16)
+        steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      }
+      ;(v as { seeking: boolean }).seeking = false
+      steer.steer(v, at(0.02), LOADED_AT, LOADED_AT, 16)
+      advance(16)
+      const outcome = steer.steer(v, at(landing + 0.5), LOADED_AT, LOADED_AT, 16)
+      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(-0.5, 6), seeked: false })
+    })
+
     it('lets the restart settle rather than seek again for it', () => {
       // Without telling the layer, a copy with no seek measured yet read
       // the restart as an error past its threshold and seeked every loop.

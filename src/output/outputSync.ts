@@ -415,7 +415,9 @@ export interface PlayheadSync {
   /**
    * Count a seek the caller made on `video` itself, outside `sync`, as
    * this layer's own: its settle window covers the restart, and its cost
-   * is measured into the floor. For the web clock's turn at a loop's
+   * is measured into the floor. It counts as a call for telling a stop
+   * from a slow frame, since the caller is steering when it makes one.
+   * For the web clock's turn at a loop's
    * seam, which a seek this layer never saw would otherwise leave the
    * next call to answer with one of its own (found in review, in
    * Chromium on the real streams).
@@ -499,6 +501,11 @@ export function createPlayheadSync(nowMs: () => number = () => performance.now()
       }
       lastSeekAtMs = nowMs()
       awaitingSeek = true
+      // And a call: the caller is steering now. Left at the last `sync`,
+      // a turn made on the first frame back from a stop, or from a pause
+      // (which clears it), read the gap before it as a stop at the next
+      // call, and its cost was dropped unmeasured (found in review).
+      lastCallAtMs = lastSeekAtMs
     },
 
     sync(video, state) {
