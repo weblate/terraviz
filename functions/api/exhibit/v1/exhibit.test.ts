@@ -145,9 +145,9 @@ const BROKEN_DB = { prepare() { throw new Error('D1 is down') } }
 
 const bytesOf = (text: string): number => new TextEncoder().encode(text).byteLength
 
-/** A bucket holding one HLS bundle of 6 + 0.2 seconds, or failing. */
+/** A bucket holding one HLS bundle of 6 + 0.2 seconds with no audio, or failing. */
 function bucket(mode: 'ok' | 'fail'): PlaylistBucket {
-  const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=4096x2048\nstream_0/playlist.m3u8\n'
+  const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=4096x2048,CODECS="avc1.640033"\nstream_0/playlist.m3u8\n'
   const variant = '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000000,\ns0.ts\n#EXTINF:0.200000,\ns1.ts\n#EXT-X-ENDLIST\n'
   const files: Record<string, string> = {
     'videos/DS/U/master.m3u8': master,
@@ -162,19 +162,45 @@ function bucket(mode: 'ok' | 'fail'): PlaylistBucket {
   }
 }
 
+/** The fetch a test gets unless it arranges its own. */
+let unarranged: ReturnType<typeof vi.fn>
+
 beforeEach(() => {
   resetExhibitListForTests()
   resetHlsDurationsForTests()
   // A card for a Vimeo row asks the video proxy and Vimeo: no test may
-  // reach the network, so any fetch a test didn't arrange fails.
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  // reach the network, and one that does without arranging it fails,
+  // rather than passing on the retry card a failed fetch makes.
+  unarranged = vi.fn(async (input: RequestInfo | URL) => {
     throw new Error(`unexpected fetch: ${String(input)}`)
-  }))
+  })
+  vi.stubGlobal('fetch', unarranged)
 })
 afterEach(() => {
   resetExhibitListForTests()
   vi.unstubAllGlobals()
+  expect(unarranged).not.toHaveBeenCalled()
 })
+
+/** The video proxy and Vimeo for one video, as a fetch, the way Vimeo
+ *  serves it: the player's address answers 302 with the CDN's, whose
+ *  master names video-only variants (`hls-duration.test.ts` has the
+ *  fuller playlists and the refusals). */
+function vimeoFetch(proxy = 'https://video-proxy.zyra-project.org/video') {
+  const at = 'https://skyfire.vimeocdn.com/a/b/c/playlist.m3u8'
+  const routes: Record<string, () => Response | Promise<Response>> = {
+    [`${proxy}/920241809`]: () => Response.json({ id: '920241809', duration: 12, hls: 'https://player.vimeo.com/play/x/hls.m3u8' }),
+    'https://player.vimeo.com/play/x/hls.m3u8': () => new Response(null, { status: 302, headers: { location: at } }),
+    [at]: () => new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,FRAME-RATE=30.000,CODECS="avc1.640020"\n../../../x/media.m3u8?sig=1\n'),
+    'https://skyfire.vimeocdn.com/x/media.m3u8?sig=1': () =>
+      new Response('#EXTM3U\n#EXTINF:6.000000,\na.mp4\n#EXTINF:6.100000,\nb.mp4\n#EXT-X-ENDLIST\n'),
+  }
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const route = routes[String(input)]
+    if (!route) throw new Error(`unexpected fetch: ${String(input)}`)
+    return route()
+  })
+}
 
 describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
   it('has exactly the contract\'s fields, in order, with their types', async () => {
@@ -305,8 +331,9 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
   })
 
   it('says whether the page can show it, which the kind alone does not', async () => {
+    vi.stubGlobal('fetch', vimeoFetch())
     const sqlite = setup([
-      { id: ULID(1), format: 'video/mp4', data_ref: 'vimeo:1' },
+      { id: ULID(1), format: 'video/mp4', data_ref: 'vimeo:920241809' },
       { id: ULID(2), format: 'video/mp4', data_ref: 'peer:NODE1/x' },
       { id: ULID(3), format: 'image/png', data_ref: 'vimeo:2' },
       // The manifest reads the format as written, case and all.
@@ -385,33 +412,41 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
 
   it('reads a Vimeo stream\'s exact length from its own playlists, not the API\'s whole seconds', async () => {
     // As Vimeo served the real-time sea surface temperature: the API says
-    // 12, the stream's segments sum to 12.1 (hls-duration.test.ts has the
-    // fuller playlists and the refusals).
-    const at = 'https://skyfire.vimeocdn.com/a/b/c/playlist.m3u8'
-    const variantAt = 'https://skyfire.vimeocdn.com/x/media.m3u8?sig=1'
-    const routes: Record<string, () => Response> = {
-      'https://video-proxy.zyra-project.org/video/920241809': () =>
-        Response.json({ id: '920241809', duration: 12, hls: 'https://player.vimeo.com/play/x/hls.m3u8' }),
-      'https://player.vimeo.com/play/x/hls.m3u8': () => {
-        const res = new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n../../../x/media.m3u8?sig=1\n')
-        Object.defineProperty(res, 'url', { value: at })
-        return res
-      },
-      [variantAt]: () => {
-        const res = new Response('#EXTM3U\n#EXTINF:6.000000,\na.mp4\n#EXTINF:6.100000,\nb.mp4\n#EXT-X-ENDLIST\n')
-        Object.defineProperty(res, 'url', { value: variantAt })
-        return res
-      },
-    }
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const route = routes[String(input)]
-      if (!route) throw new Error(`unexpected fetch: ${String(input)}`)
-      return route()
-    }))
+    // 12, the stream's segments sum to 12.1.
+    vi.stubGlobal('fetch', vimeoFetch())
     const sqlite = setup([{ id: ULID(1), data_ref: 'vimeo:920241809' }])
-    const { body, res } = await card(sqlite, ULID(1))
+    // Handed to waitUntil, as the bucket's read is.
+    const waitUntil = vi.fn()
+    const { body, res } = await call<ExhibitCard>(getCard as never, sqlite, `/api/exhibit/v1/datasets/${ULID(1)}`, {
+      params: { id: ULID(1) }, waitUntil,
+    })
     expect(body).toMatchObject({ exactDuration: 12.1, retry: 0 })
     expect(res.headers.get('Cache-Control')).toBe('public, max-age=60')
+    expect(waitUntil).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks the video proxy the node names, not the default one', async () => {
+    const proxied = vimeoFetch('https://proxy.staging.test/video')
+    vi.stubGlobal('fetch', proxied)
+    const sqlite = setup([{ id: ULID(1), data_ref: 'vimeo:920241809' }])
+    expect((await card(sqlite, ULID(1), { VIDEO_PROXY_BASE: 'https://proxy.staging.test/video' })).body.exactDuration).toBe(12.1)
+    expect(String(proxied.mock.calls[0][0])).toBe('https://proxy.staging.test/video/920241809')
+  })
+
+  it('asks nothing about a Vimeo row the page can\'t show', async () => {
+    const sqlite = setup([{ id: ULID(1), format: 'image/png', data_ref: 'vimeo:920241809' }])
+    expect((await card(sqlite, ULID(1))).body).toMatchObject({ showable: false, exactDuration: 0, retry: 0 })
+    // afterEach holds that nothing was fetched.
+  })
+
+  it('is settled, with no length, for a Vimeo video that is gone', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })))
+    const sqlite = setup([{ id: ULID(1), data_ref: 'vimeo:920241809' }])
+    const { body, res } = await card(sqlite, ULID(1))
+    expect(body).toMatchObject({ exactDuration: 0, retry: 0 })
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=60')
+    vi.mocked(console.warn).mockRestore()
   })
 
   it('asks the script to try again when the video proxy fails for a Vimeo row', async () => {

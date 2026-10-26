@@ -949,14 +949,18 @@ expect 0 from:
 
 For a bundle the node hosts itself (`r2:` HLS) it is the bundle's own
 playlists' `#EXTINF`s summed, to the microsecond
-(`functions/api/v1/_lib/hls-duration.ts`). For `vimeo:` it is Vimeo's
+(`functions/api/v1/_lib/hls-duration.ts`), when every variant names
+its codecs and none carries audio. A bundle with audio is 0: measured
+in Chromium, those end 21 to 40 ms past the sum, since a browser's
+`duration` is the latest end of every track. For `vimeo:` it is Vimeo's
 figure, which is whole seconds and so can be up to a second off the
 length a player reads from the stream itself (12 for a clip that plays
 12.1). A reader that loops the clip and needs the two to agree should
 not trust it for a `vimeo:` asset; the exhibit's card does the
 summing for it (`exactDuration`, `readVimeoDuration`), reading the
 Vimeo stream's own playlists. Browsers ignore it, since a player
-reads the length from the playlist. A Second Life globe's script uses it to turn a clip position
+reads the length from the playlist. Second Life info scripts from
+before the exhibit's card used it to turn a clip position
 into a date ([`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §7
 item 4).
 

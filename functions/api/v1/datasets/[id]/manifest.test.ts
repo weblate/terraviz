@@ -447,7 +447,7 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
       .run()
     const playlists: Record<string, string> = {
       'videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8':
-        '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=2160x1080\nstream_0/playlist.m3u8\n',
+        '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=2160x1080,CODECS="avc1.4d4032"\nstream_0/playlist.m3u8\n',
       'videos/DS000AAAAAAAAAAAAAAAAAAAAA/stream_0/playlist.m3u8':
         '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:6.000000,\nsegment_000.ts\n#EXTINF:4.500000,\nsegment_001.ts\n#EXT-X-ENDLIST\n',
     }
@@ -478,6 +478,13 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     ])
     // A settled reading keeps the endpoint's usual caching.
     expect(res.headers.get('cache-control')).toContain('max-age=')
+
+    // A bundle with audio ends past the sum in a browser, so it has none.
+    playlists['videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8'] =
+      playlists['videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8'].replace('avc1.4d4032', 'avc1.4d4032,mp4a.40.2')
+    resetHlsDurationsForTests()
+    const withAudio = await readJson<{ duration: number }>(await onRequestGet(makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } })))
+    expect(withAudio.duration).toBe(0)
   })
 
   it('still answers 200 with duration 0 when R2 fails, and is not cached', async () => {

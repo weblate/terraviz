@@ -843,13 +843,29 @@ The work, smallest first:
        (`hls-duration.ts`, `readVimeoDuration`), and the info script
        reads the card rather than the manifest (Phase 2's "The
        exhibit's own reads from the node"). The node's seven Vimeo
-       videos, all real-time ones, read 12.1, 12.066667, 143.766672
+       videos, all real-time ones, read 12.1, 12.066667, 143.766667
        and 10.8 s where the API said 12, 144 and 11, every rendition
-       alike, and now show a moving date. The manifest's `duration`
-       keeps Vimeo's figure. `stream:`
-       and single files still report 0, and any reading can be 0 for
-       a moment when the bucket is slow, which the manifest caches for
-       15 s rather than five minutes;
+       alike, and now show a moving date (seen in-world on sea surface
+       temperature the same day). The manifest's `duration` keeps
+       Vimeo's figure. **What a page loops on was then measured, not
+       assumed**, in Chromium 153 with the repo's hls.js 1.6, since
+       the sum is only what the player holds until its last segment
+       buffers, and after that a browser's `duration` is the latest
+       end of every track. For all seven, and for the node's bundles
+       without audio, the stream started at 0 and ended on the sum
+       within 6 µs (143.766666 against 143.766672; the card now moves
+       a sum onto the frame grid its master names, so it says
+       143.766667). Vimeo's B-frames didn't shift it, since the edit
+       list is applied. The node's bundles carrying AAC did not agree:
+       they started 21 ms in and ended 21 to 40 ms past the sum, one
+       AAC frame or two, which on a 4.3 s clip is a dozen frames off
+       inside a minute. So a bundle with audio, or whose variants
+       don't name their codecs, has no length and shows its range.
+       Second Life's browser is an older Chromium, which nobody has
+       measured. `stream:` and single files still report 0, and any
+       reading can be 0 for a moment when the bucket, the video proxy
+       or Vimeo is slow, which the manifest caches for 15 s rather than
+       five minutes;
      - show the dataset's date range when the exact date can't be
        worked out, which covers those.
    - **The slow-link behaviour is page work, not the controller's.** It
@@ -1724,20 +1740,26 @@ driven by its owner in chat, with none of the visitor controls.
       `YYYY-MM-DDTHH:MM:SS[.fff]Z` (an instant written to more places
       is kept to the millisecond), or `""`. `period` is an ISO 8601
       duration the node could parse, or `""`.
-    - `exactDuration` is the clip's exact length in seconds, read
-      from the stream's own playlists: an HLS bundle the node holds,
-      or a Vimeo stream, whose API gives only whole seconds (added the
-      same day, once the in-world test showed a Vimeo dataset's range
-      where the app shows a date). 0 when the node has no exact length,
-      as for a single file. It isn't read for a row the page can't
-      show. `retry` is 15 when the length read didn't settle (an R2 or
-      network error, the video proxy failing, or the read's time
+    - `exactDuration` is the clip's exact length in seconds, the one
+      the page loops on, or 0 when the node has none. **0 means only
+      that**: which rows have a length is the node's to widen, and
+      neither value says where a video is hosted. Today the length is
+      read from the stream's own playlists, for an HLS bundle the node
+      holds or a Vimeo stream, whose API gives only whole seconds
+      (Vimeo added the same day, once the in-world test showed a Vimeo
+      dataset's range where the app shows a date), and only for a
+      stream that is picture alone ("The date needs the clip's length"
+      above says why). A single file has none. It isn't read for a
+      row the page can't show. `retry` is a number of seconds, 15
+      today, when the length read didn't settle (an R2 or network
+      error, the video proxy or Vimeo failing, or the read's time
       limit), and 0 otherwise. It means ask again after that many
       seconds, and such a card is never kept by a cache, which could
       otherwise answer the second ask with the first reading. A single
-      0 couldn't tell "never" from "not yet". The
-      manifest's own `duration`, which is Vimeo's whole seconds for a
-      Vimeo row, keeps its meaning; this field has a name of its own.
+      0 couldn't tell "never" from "not yet". A Vimeo video that is gone
+      (the proxy's 404) is "never". The manifest's own `duration`, which
+      is Vimeo's whole seconds for a Vimeo row, keeps its meaning; this
+      field has a name of its own.
     - `credit` is the first of the attribution text, the rights
       holder and the organization with any text once its HTML is out.
       `license` is the SPDX id, as the record's `licenseSpdx` and
@@ -1892,6 +1914,20 @@ driven by its owner in chat, with none of the visitor controls.
       `Cache-Control` saves the node nothing; it is for browsers:
       `public, max-age=60`, and `no-store` for a card with a `retry`
       and for errors.
+    - A card for a Vimeo row asks outside the node. In an isolate that
+      hasn't read that video in ten minutes, it calls the video proxy
+      (which asks Vimeo's API), Vimeo's player address, which redirects,
+      the CDN's master and each of its variants (seven today), within
+      two seconds. Every playlist must come from Vimeo's own hosts over
+      HTTPS. Each redirect hop is checked before it is asked, and no
+      body is read past a megabyte. So a Vimeo row's moving date depends
+      on the proxy and on Vimeo answering a Worker. When either fails, a
+      card says `retry`, which a script spends its four tries on before
+      showing the range. A refusal (a host off the list, renditions that
+      disagree, audio) shows the range for ten minutes and is logged,
+      without the signed addresses. The asking is bounded by the script,
+      which reads a card only when the dataset changes: four cards at
+      most per choice.
     - The first menu read walked every public row on every request. On
       D1's free plan that spends the day's reads at about one request
       every 17 seconds. A list per isolate is enough at exhibit

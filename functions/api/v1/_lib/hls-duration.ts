@@ -17,8 +17,16 @@
  *
  * **The length is the media playlist's `#EXTINF`s summed**, which is
  * what hls.js holds as the level's `totalduration`, and so what a
- * stream's `duration` reads until its last segment has buffered. It is
- * kept to the microsecond, the precision the playlists are written in,
+ * stream's `duration` reads until its last segment has buffered. Once
+ * it has, a browser's `duration` is the latest end of every track it
+ * buffered, and the two agree only for a stream that is picture alone:
+ * measured in Chromium 153 with hls.js 1.6 in October 2026, the node's
+ * bundles without audio and Vimeo's seven videos ended on the sum to the
+ * microsecond, starting at 0, and the bundles carrying AAC started
+ * 21 ms in and ended 21 to 40 ms past it. So a master whose variants
+ * carry audio, or don't say what they carry (`CODECS`), and a media
+ * playlist named directly, which can't say, are all unknown. It is kept
+ * to the microsecond, the precision the playlists are written in,
  * because a copy looping on this number beside one looping on the
  * player's would otherwise drift apart a little on every loop.
  * TerraViz's encoders write the same `#EXTINF`s on every rendition
@@ -48,11 +56,11 @@
  *   remembered after the response has gone.
  *
  * **0 means unknown, and anything uncertain is unknown.** No binding, a
- * missing or oversized playlist, a variant outside the master's own
- * folder, a playlist with no `#EXT-X-ENDLIST` (a live window, whose
- * total is not the clip's), an `#EXTINF` that is not a plain decimal or
- * that no segment follows, a segment no `#EXTINF` comes before, an R2
- * error or the time limit all give 0.
+ * missing or oversized playlist, audio or unnamed codecs, a variant
+ * outside the master's own folder, a playlist with no `#EXT-X-ENDLIST`
+ * (a live window, whose total is not the clip's), an `#EXTINF` that is
+ * not a plain decimal or that no segment follows, a segment no `#EXTINF`
+ * comes before, an R2 error or the time limit all give 0.
  * That is what the manifest reported before, so a reader is never worse
  * off than it was, and none of it costs the manifest itself. The last
  * two are reported as not `settled`, so the manifest is cached only
@@ -62,20 +70,26 @@
  * HLS address the video proxy gives (`video-proxy.ts`), for a clip the
  * node doesn't host: Vimeo's API gives a length in whole seconds (12 for
  * a clip of 12.1 s), a page loops on the stream's own, and a date worked
- * out from the first drifts from the picture with every loop. Every
- * rendition of the node's seven Vimeo videos summed to the same length in
- * October 2026, so the first variant stands for all of them here too.
- * Because the addresses come from outside, every one read must be HTTPS
- * on one of Vimeo's own hosts (`REMOTE_PLAYLIST_HOST`), checked again
- * after a redirect, and a variant must sit on the master's own origin.
- * The time limit is longer (`REMOTE_READ_BUDGET_MS`), since three
- * round trips cross the internet, and the memory is keyed on the Vimeo
- * id, since the stream's address is signed and changes. A proxy that
- * doesn't answer, a refused or failed fetch, or the time limit reads as
- * not `settled`.
+ * out from the first drifts from the picture with every loop. Nothing
+ * here promises Vimeo's renditions agree, and a visitor may play any of
+ * them, so **every variant is read**, at once, and they must all be one
+ * length at one frame rate. The sum is then moved onto the frame grid
+ * the master names (`onFrameGrid`), since summed microseconds can land
+ * a few off the frame the media ends on. Because the addresses come from
+ * outside, every one read must be HTTPS on one of Vimeo's own hosts
+ * (`REMOTE_PLAYLIST_HOST`), redirects are followed one hop at a time so
+ * each is checked before it is asked, and a body is counted as it
+ * arrives, so none is read past the size limit. A variant may sit on any
+ * of those hosts. The time limit is longer (`REMOTE_READ_BUDGET_MS`),
+ * and the memory is keyed on the Vimeo id, since the stream's address is
+ * signed and changes. A proxy or a playlist that fails, or answers 200
+ * with something that isn't a playlist, and the time limit read as not
+ * `settled`; a video that is gone (404) and everything refused are a
+ * settled 0, each logged with why, but never with an address's path or
+ * query, which are signed.
  */
 
-import { fetchVimeoManifest } from './video-proxy'
+import { requestVimeoManifest } from './video-proxy'
 
 /** A playlist larger than this is not read. ffmpeg's playlists run
  *  about 30 bytes a segment and the incremental writer's about 130, so
@@ -87,14 +101,24 @@ export const MAX_PLAYLIST_BYTES = 1024 * 1024
  *  milliseconds. */
 export const READ_BUDGET_MS = 500
 
-/** How long a Vimeo reading waits for the proxy and the playlists:
- *  three round trips across the internet, on a path (the exhibit's card)
+/** How long a Vimeo reading waits for the proxy and the playlists: the
+ *  proxy (which asks Vimeo's API), the player's redirect, the master and
+ *  its variants, all across the internet, on a path (the exhibit's card)
  *  no browser waits on. */
 export const REMOTE_READ_BUDGET_MS = 2000
 
 /** The hosts a remote stream's playlists are read from: Vimeo's player,
  *  which redirects, and its CDN. Anything else reads as unknown. */
 export const REMOTE_PLAYLIST_HOST = /(^|\.)(vimeo\.com|vimeocdn\.com)$/i
+
+/** The most redirects one remote playlist is followed through, each hop
+ *  checked against `REMOTE_PLAYLIST_HOST` before it is asked. Vimeo's
+ *  player address takes one. */
+export const MAX_REMOTE_REDIRECTS = 5
+
+/** The most variants a remote master may list. Every one is read, at
+ *  once; Vimeo's list seven. */
+export const MAX_REMOTE_VARIANTS = 16
 
 /** A Vimeo video id as the proxy takes one. */
 const VIMEO_ID = /^[0-9]{1,20}$/
@@ -217,23 +241,6 @@ export function mediaPlaylistDuration(text: string): number | null {
   return Number.isFinite(seconds) ? seconds : null
 }
 
-/** The address of a master playlist's first variant, or `null` if it
- *  lists none. I-frame playlists carry their address in an attribute
- *  and are not variants. */
-export function firstVariantUri(text: string): string | null {
-  const lines = playlistLines(text)
-  if (!lines) return null
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue
-    for (let j = i + 1; j < lines.length; j++) {
-      if (lines[j] === '') continue
-      return lines[j].startsWith('#') ? null : lines[j]
-    }
-    return null
-  }
-  return null
-}
-
 /**
  * The bucket key a variant's relative address points at, from the key
  * of the master that names it, or `null` for anything but a plain path
@@ -281,57 +288,256 @@ function allowedRemote(url: URL): boolean {
   return url.protocol === 'https:' && REMOTE_PLAYLIST_HOST.test(url.hostname)
 }
 
+/** Why a remote reading is a settled 0, for the log. It never carries an
+ *  address's path or query: Vimeo's are signed and work as a password
+ *  for about an hour. */
+type Refusal = (why: string) => void
+
+async function discard(res: Response): Promise<void> {
+  await res.body?.cancel().catch(() => {})
+}
+
+/** A body's text, or `null` once it passes `MAX_PLAYLIST_BYTES`. Counted
+ *  as it arrives, so a body with no `Content-Length`, or a compressed one
+ *  whose `Content-Length` is the compressed size, is never read past the
+ *  limit. */
+async function boundedText(res: Response): Promise<string | null> {
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_PLAYLIST_BYTES) {
+    await discard(res)
+    return null
+  }
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_PLAYLIST_BYTES) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let at = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, at)
+    at += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
 /**
- * A remote playlist's text and the address it was finally served from
- * (a relative variant resolves against that), or `null` for an address
- * this module won't read, one redirected off Vimeo's hosts, or a body
- * over the size limit. Throws on a failed fetch or a status other than
- * 200, which the caller reports as not settled.
+ * A remote playlist's text and the address it was served from (a
+ * relative variant resolves against that), following redirects one hop
+ * at a time so every hop is checked before it is asked, or `null` for a
+ * settled 0: an address this module won't read, a redirect off Vimeo's
+ * hosts, too many redirects, a playlist that is gone (404 or 410), or a
+ * body over the size limit. Throws on a failed fetch, any other status
+ * than 200, or a 200 that isn't a playlist (a bot check's page, say),
+ * which the caller reports as not settled.
  */
-async function fetchPlaylist(fetchImpl: typeof fetch, address: URL): Promise<{ text: string; url: URL } | null> {
-  if (!allowedRemote(address)) return null
-  const res = await fetchImpl(address.href, { redirect: 'follow' })
-  const served = res.url ? new URL(res.url) : address
-  if (!allowedRemote(served)) {
-    await res.body?.cancel().catch(() => {})
-    return null
+async function fetchPlaylist(
+  fetchImpl: typeof fetch,
+  address: URL,
+  refuse: Refusal,
+): Promise<{ text: string; url: URL } | null> {
+  let url = address
+  for (let hop = 0; ; hop++) {
+    if (!allowedRemote(url)) {
+      refuse(`${url.protocol}//${url.hostname} is not one of Vimeo's hosts`)
+      return null
+    }
+    const res = await fetchImpl(url.href, { redirect: 'manual' })
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      await discard(res)
+      const location = res.headers.get('location')
+      if (location === null || hop >= MAX_REMOTE_REDIRECTS) {
+        refuse(location === null ? `${url.hostname} redirected nowhere` : `more than ${MAX_REMOTE_REDIRECTS} redirects`)
+        return null
+      }
+      try {
+        url = new URL(location, url)
+      } catch {
+        refuse(`${url.hostname} redirected to an address that is not one`)
+        return null
+      }
+      continue
+    }
+    if (res.status === 404 || res.status === 410) {
+      await discard(res)
+      refuse(`${url.hostname} answered ${res.status}`)
+      return null
+    }
+    if (res.status !== 200) {
+      await discard(res)
+      throw new Error(`${url.hostname} answered ${res.status}`)
+    }
+    const text = await boundedText(res)
+    if (text === null) {
+      refuse(`a playlist from ${url.hostname} over ${MAX_PLAYLIST_BYTES} bytes`)
+      return null
+    }
+    if (playlistLines(text) === null) throw new Error(`${url.hostname} answered 200 with something that isn't a playlist`)
+    return { text, url }
   }
-  if (res.status !== 200) {
-    await res.body?.cancel().catch(() => {})
-    throw new Error(`playlist answered ${res.status}`)
+}
+
+export interface Variant {
+  uri: string
+  frameRate: string | null
+  codecs: string | null
+}
+
+/** A master's variants, each with its frame rate and codecs as written,
+ *  or `null` when one has no address. I-frame playlists carry their
+ *  address in an attribute and are not variants. */
+export function masterVariants(text: string): Variant[] | null {
+  const lines = playlistLines(text)
+  if (!lines) return null
+  const variants: Variant[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue
+    let uri: string | null = null
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j] === '') continue
+      if (!lines[j].startsWith('#')) uri = lines[j]
+      break
+    }
+    if (uri === null) return null
+    variants.push({ uri, frameRate: attribute(lines[i], 'FRAME-RATE'), codecs: attribute(lines[i], 'CODECS') })
   }
-  const length = Number(res.headers.get('content-length'))
-  if (Number.isFinite(length) && length > MAX_PLAYLIST_BYTES) {
-    await res.body?.cancel().catch(() => {})
-    return null
+  return variants
+}
+
+/** One attribute's value from a tag's attribute list, quotes taken off.
+ *  The list is walked in order, a quoted string taken whole, so a comma
+ *  inside one (as in `CODECS`) never starts another attribute. */
+function attribute(tag: string, name: string): string | null {
+  const list = tag.slice(tag.indexOf(':') + 1)
+  for (const [, key, value] of list.matchAll(/([A-Z0-9-]+)=("[^"]*"|[^,]*),?/g)) {
+    if (key === name) return value.startsWith('"') ? value.slice(1, -1) : value
   }
-  const text = await res.text()
-  return text.length > MAX_PLAYLIST_BYTES ? null : { text, url: served }
+  return null
+}
+
+/** The codecs a variant may name and still have its sum be the length a
+ *  browser loops on: video ones. */
+const VIDEO_CODEC = /^(avc1|avc3|hvc1|hev1|dvh1|dvhe|av01|vp09)(\.|$)/i
+
+/**
+ * Why a master's variants can't state the length a browser loops on, or
+ * `null` when they can. The sum is the picture's, and once a stream has
+ * buffered to its end a browser's `duration` is the latest end of every
+ * track it holds. Measured in Chromium in October 2026, the node's
+ * bundles that carry AAC started 21 ms in and ended 21 to 40 ms past
+ * the sum, and those that don't ended on it. So audio, an audio
+ * rendition, and a variant that doesn't say what it carries all read as
+ * unknown.
+ */
+function unstatedLength(master: string, variants: Variant[]): string | null {
+  const lines = playlistLines(master) ?? []
+  if (lines.some(l => l.startsWith('#EXT-X-MEDIA:') && attribute(l, 'TYPE') === 'AUDIO')) return 'an audio rendition'
+  for (const v of variants) {
+    if (v.codecs === null) return 'a variant that does not name its codecs'
+    if (!v.codecs.split(',').every(c => VIDEO_CODEC.test(c.trim()))) return `a variant carrying ${v.codecs}`
+  }
+  return null
+}
+
+/**
+ * A FRAME-RATE as the frames per second it stands for, or `null` for
+ * none or one that isn't a plain decimal. It is written to three
+ * decimals, so the NTSC rates (29.970 and so on) are taken as the
+ * fractions they are.
+ */
+export function framesPerSecond(value: string | null): number | null {
+  if (value === null || !EXTINF_SECONDS.test(value)) return null
+  const fps = Number(value)
+  if (!(fps > 0 && fps <= 1000)) return null
+  for (const n of [24000, 30000, 48000, 60000, 120000]) {
+    if (Math.abs(fps - n / 1001) < 0.0015) return n / 1001
+  }
+  return fps
+}
+
+/**
+ * `seconds` moved onto the frame grid when it lies within a thousandth
+ * of a frame of it, otherwise as it is. The playlists round each
+ * segment's length to the microsecond, and summed those can land a few
+ * microseconds off the frame the media ends on: 4,313 frames at 30 fps
+ * sum to 143.766672, and the media, and so a browser's `duration` once
+ * the stream has buffered to its end, ends at 143.766667.
+ */
+export function onFrameGrid(seconds: number, fps: number | null): number {
+  if (fps === null) return seconds
+  const frames = seconds * fps
+  const whole = Math.round(frames)
+  if (whole < 1 || Math.abs(frames - whole) > 1e-3) return seconds
+  return Math.round((whole / fps) * 1e6) / 1e6
 }
 
 /** A remote stream's length from its master (or media) playlist at
- *  `address`: the first variant, on the master's own origin. */
-async function readFromUrl(fetchImpl: typeof fetch, address: string): Promise<number> {
+ *  `address`: every variant read, and all of them the same length to the
+ *  microsecond at one frame rate, since a visitor may play any. */
+async function readFromUrl(fetchImpl: typeof fetch, address: string, refuse: Refusal): Promise<number> {
   let start: URL
   try {
     start = new URL(address)
   } catch {
+    refuse('the video proxy gave an address that is not one')
     return 0
   }
-  const top = await fetchPlaylist(fetchImpl, start)
+  const top = await fetchPlaylist(fetchImpl, start, refuse)
   if (top === null) return 0
-  if (!isMasterPlaylist(top.text)) return mediaPlaylistDuration(top.text) ?? 0
-  const uri = firstVariantUri(top.text)
-  if (uri === null) return 0
-  let variant: URL
-  try {
-    variant = new URL(uri, top.url)
-  } catch {
+  if (!isMasterPlaylist(top.text)) {
+    refuse('a media playlist, which cannot say whether it carries audio')
     return 0
   }
-  if (variant.origin !== top.url.origin) return 0
-  const media = await fetchPlaylist(fetchImpl, variant)
-  return media === null ? 0 : mediaPlaylistDuration(media.text) ?? 0
+  const variants = masterVariants(top.text)
+  if (variants === null || variants.length === 0) {
+    refuse('a master with a variant that has no address, or none')
+    return 0
+  }
+  if (variants.length > MAX_REMOTE_VARIANTS) {
+    refuse(`a master listing ${variants.length} variants`)
+    return 0
+  }
+  const unstated = unstatedLength(top.text, variants)
+  if (unstated !== null) {
+    refuse(unstated)
+    return 0
+  }
+  let urls: URL[]
+  try {
+    urls = variants.map(v => new URL(v.uri, top.url))
+  } catch {
+    refuse('a variant address that is not one')
+    return 0
+  }
+  const lengths = await Promise.all(urls.map(async url => {
+    const media = await fetchPlaylist(fetchImpl, url, refuse)
+    if (media === null) return null
+    const seconds = mediaPlaylistDuration(media.text)
+    if (seconds === null) refuse('a variant whose length cannot be stated')
+    return seconds
+  }))
+  const known = lengths.filter((l): l is number => l !== null)
+  if (known.length !== lengths.length) return 0
+  const first = known[0]
+  if (known.some(l => l !== first)) {
+    refuse(`variants of different lengths (${[...new Set(known)].join(', ')} s)`)
+    return 0
+  }
+  const rates = new Set(variants.map(v => v.frameRate))
+  if (rates.size > 1) {
+    refuse(`variants at different frame rates (${[...rates].join(', ')})`)
+    return 0
+  }
+  return onFrameGrid(first, framesPerSecond(variants[0].frameRate))
 }
 
 function conventionalVariantKey(key: string): string | null {
@@ -347,10 +553,11 @@ async function readFromBucket(bucket: PlaylistBucket, key: string): Promise<numb
     (error: unknown) => ({ error }),
   )
   const top = await readPlaylist(bucket, key)
-  if (top === null) return 0
-  if (!isMasterPlaylist(top)) return mediaPlaylistDuration(top) ?? 0
-  const uri = firstVariantUri(top)
-  const variantKey = uri === null ? null : resolvePlaylistKey(key, uri)
+  // A media playlist can't say whether its segments carry audio.
+  if (top === null || !isMasterPlaylist(top)) return 0
+  const variants = masterVariants(top)
+  if (variants === null || variants.length === 0 || unstatedLength(top, variants) !== null) return 0
+  const variantKey = resolvePlaylistKey(key, variants[0].uri)
   if (variantKey === null) return 0
   let media: string | null
   if (guess !== null && variantKey === guessKey) {
@@ -407,10 +614,21 @@ export async function readVimeoDuration(
 ): Promise<HlsDurationReading> {
   if (!VIMEO_ID.test(vimeoId)) return { seconds: 0, settled: true }
   const fetchImpl = options.fetchImpl ?? fetch
+  const refuse: Refusal = why => console.warn(`[hls-duration] Vimeo ${vimeoId}: ${why}, so its length reads as unknown`)
   const read = async (): Promise<number> => {
-    const manifest = await fetchVimeoManifest(vimeoId, proxyBase, fetchImpl)
-    if (!manifest) throw new Error('the video proxy gave no manifest')
-    return typeof manifest.hls === 'string' && manifest.hls !== '' ? readFromUrl(fetchImpl, manifest.hls) : 0
+    const { status, manifest } = await requestVimeoManifest(vimeoId, proxyBase, fetchImpl)
+    // The proxy passes on Vimeo's 404 for a video that is gone. Anything
+    // else that isn't a manifest is the proxy failing, asked again later.
+    if (status === 404) {
+      refuse('the video proxy answered 404')
+      return 0
+    }
+    if (!manifest) throw new Error(`the video proxy answered ${status}`)
+    if (typeof manifest.hls !== 'string' || manifest.hls === '') {
+      refuse('the video proxy gave no HLS address')
+      return 0
+    }
+    return readFromUrl(fetchImpl, manifest.hls, refuse)
   }
   return measure(options.memo ?? remoteMemo, vimeoId, read, options, REMOTE_READ_BUDGET_MS)
 }
