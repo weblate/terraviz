@@ -1471,6 +1471,22 @@ yet.
     window covers the restart. Measured the same way after: seams 11 to
     75 ms on that loop, a median lag of 10 to 17 ms, and under 20 ms on
     Vimeo's.
+  - **Above rate 1 the lead dug into a keyframe interval**, done the
+    same day. The node's bundles have one keyframe a segment, at its
+    start, so a turn landing x seconds in decodes from 0 to x first, and
+    a lead of the stall times the rate landed deep: at 4x a landing
+    0.7 s in stood 184 ms where the restart at 0 stood about 100, a
+    longer stall led deeper still, and Ocean Circulation's picture was
+    frozen 22% of the time (11% before the lead), never settling at
+    12.8x. The lead is now held to a quarter second of clip, below the
+    settle threshold, which also stops a lead the law would seek back
+    before the turn is timed from sticking for the element's life.
+    Measured after, single runs in Chromium: Ocean at 4x frozen 15% of
+    the time with a median lag of 228 ms (11% and 365 ms before the lead,
+    22% and 78 ms with it uncapped), so it trades a little of each; COVID
+    from 18% to 5%; Vimeo 3 to 4% (6 to 10% uncapped) with a median lag
+    of 26 to 32 ms; rate 1 unchanged. Nothing keeps sync at 12.8x on a 4.3 s loop,
+    capped or not.
 - **Found in review and not yet done:**
   - **A copy that fell back to a video's single file stays on it.**
     Its stream is not tried again once the file has loaded, and that

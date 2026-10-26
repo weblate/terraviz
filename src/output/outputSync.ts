@@ -166,7 +166,7 @@ export const OUTPUT_SEEK_SETTLE_MS = 1000
  * trimmed away in the time we are asking the trim to work, so a seek is
  * the only tool left and suppressing it would strand the output.
  */
-const SETTLING_SEEK_THRESHOLD_S =
+export const SETTLING_SEEK_THRESHOLD_S =
   SIBLING_HARD_SEEK_THRESHOLD_S + SYNC_MAX_RATE_TRIM * (OUTPUT_SEEK_SETTLE_MS / 1000)
 
 /**

@@ -171,8 +171,8 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 - **`debug` and `paused`** follow the
   [truthy convention](#stability-guarantees) exactly as `embed` does.
 - **Paused is exact; playing is close.** Paused copies seek to `t`
-  itself. Playing copies steer their video toward the target the way
-  the desktop outputs do, the short way round the loop. They stay
+  itself. Playing copies steer their video toward the target with the
+  desktop outputs' control law, the short way round the loop. They stay
   within a fraction of a second once settled, but not on the same
   frame.
 - **A shared clock needs `at`.** Without it each copy times `t` from

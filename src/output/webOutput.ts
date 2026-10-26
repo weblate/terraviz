@@ -341,7 +341,8 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
         return NOT_READY
       }
       const before = video.currentTime
-      // The period every copy agrees on, where the stream states one.
+      // The stream's own period, where it states one: copies agree on it
+      // wherever the renditions do.
       const outcome = clockSteer.steer(video, current.clock, nowMs(), clockReadAtMs, media?.loopS?.() ?? null)
       // A seek changes the decoded frame without the scene knowing, and
       // so does a seek *landing*. A paused element counts as static, so

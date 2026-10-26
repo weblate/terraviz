@@ -760,9 +760,9 @@ export class HLSService {
 
   /**
    * The stream's length as its playlist states it: the first VOD level's
-   * `#EXTINF`s summed, as hls.js holds them. `null` before a level has
-   * loaded, for a live playlist, and on the native-HLS and single-file
-   * paths, where only the element knows.
+   * `#EXTINF`s summed, as hls.js holds them, kept to the microsecond.
+   * `null` before a level has loaded, for a live playlist, and on the
+   * native-HLS and single-file paths, where only the element knows.
    *
    * Every copy of a stream reads the same number, whichever rendition it
    * loads first, wherever the renditions agree: TerraViz's encoders write
@@ -772,7 +772,8 @@ export class HLSService {
    * this number until the stream has buffered to its end, and then the
    * latest end of every track, which measured 21 to 40 ms past it on the
    * node's bundles carrying AAC. A web output therefore loops on this
-   * (`src/output/webClock.ts`), and the exhibit's card sends the same sum
+   * (`src/output/webClock.ts`), and for the node's own bundles and the
+   * Vimeo streams it has checked the exhibit's card sends the same sum
    * (`functions/api/v1/_lib/hls-duration.ts`), so a Second Life script's
    * date and every copy's picture keep one period.
    */

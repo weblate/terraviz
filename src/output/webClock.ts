@@ -64,9 +64,10 @@
  * its last segment arrived, copies on different engines looped on
  * different periods and drifted apart by the difference every loop since
  * the anchor, and the exhibit's card could not name the period at all.
- * The playlist's total is the same for every copy, whichever rendition it
- * plays, and is what the card sends (the maintainer's decision, 26
- * October 2026). Only a stream with no playlist to state one (a single
+ * The playlist's total is one number for every copy that reads one,
+ * wherever the renditions agree (the node's own bundles, and the Vimeo
+ * streams the card has checked), and for those it is what the card sends
+ * (the maintainer's decision, 26 October 2026). Only a stream with no playlist to state one (a single
  * file, or a browser playing HLS natively) loops on its element's own
  * length.
  *
@@ -117,10 +118,32 @@ export const PAUSED_RESEEKS = 1
  *  from 170 to 300 ms behind to within 45 ms (found in review). */
 export const SEAM_LEAD_INITIAL_S = 0.1
 
-/** The most a timed turn is believed to cost. One timed longer was a
- *  stall or a gap in steering (a hidden tab), not the restart, and is
- *  thrown away: leading by it would put the copy that far ahead. */
+/** The most a timed turn is believed to cost. One that stood still longer
+ *  was a stall, or steering stopping (a hidden tab) while the element was
+ *  frozen, not the restart, and is thrown away: leading by it would put
+ *  the copy that far ahead. A shorter stop with the element frozen is
+ *  timed as the turn, and costs at most one seam, since the lead is
+ *  capped (`SEAM_LEAD_MAX_CLIP_S`) and the next turn is timed again. */
 export const SEAM_LEAD_MAX_S = 0.5
+
+/** The furthest a turn leads into the clip, in the clip's own seconds,
+ *  whatever the stall times the rate. The node's bundles have one keyframe
+ *  a segment, at its start, so a turn landing x seconds in decodes from 0
+ *  to x first: at 4x a landing 0.7 s in stood 184 ms and one 2.1 s in
+ *  349, where the restart at 0 stood about 100, and since a longer stall
+ *  led deeper the lead fed itself, freezing a copy for 22% of the time at
+ *  4x and never settling at 12.8x (found in review, in Chromium on the
+ *  real streams). A quarter second decodes in about 30 ms, and leaves
+ *  rate 1 as it was, where the stall itself is 50 to 250 ms. What the
+ *  lead does not cover is the trim's, inside the settle window.
+ *
+ *  It must stay under `SETTLING_SEEK_THRESHOLD_S`, and a test holds it
+ *  there. A turn lands ahead by its lead until the stall eats into it,
+ *  and a lead past that threshold is seeked back on the first frame the
+ *  seek lands, before the element plays on, so the turn is never timed
+ *  and the lead never corrected: two seeks a seam for the element's life
+ *  (found in review, in simulation). */
+export const SEAM_LEAD_MAX_CLIP_S = 0.25
 
 /** A position the loop counts as its start: a seek written a hair short
  *  of the end, where the millisecond rounding of the law's target can
@@ -338,16 +361,22 @@ export function createWebClockSteer(
         if (pending && !video.seeking && video.currentTime > pending.landingS) {
           const playedS = (video.currentTime - pending.landingS) / (video.playbackRate || 1)
           const stoodS = (now - pending.sinceMs) / 1000 - playedS
-          if (stoodS <= SEAM_LEAD_MAX_S) seamCost.seconds = Math.max(0, stoodS)
+          // Below zero is no stall either: the element played further than
+          // the time allows, as when hls.js nudges it over a hole.
+          if (stoodS >= 0 && stoodS <= SEAM_LEAD_MAX_S) seamCost.seconds = stoodS
           seamCost.pending = null
         }
         const atItsEnd = video.paused && video.currentTime >= video.duration - END_AS_START_S
         if (!video.seeking && (video.currentTime >= d || atItsEnd)) {
           const driftS = view.currentTime - d / 2
-          const landing = wrap(targetS + seamCost.seconds * clock.rate, d)
+          const landing = wrap(targetS + Math.min(seamCost.seconds * clock.rate, SEAM_LEAD_MAX_CLIP_S), d)
           // Past the element's own end as well as the period's: an element
           // shorter than its stated period would otherwise land on its end,
           // stop there, and be turned again every frame (found in review).
+          // That holds the turn to one seek. A shortfall of more than a
+          // frame still costs seeks while the target is past the element's
+          // end, since the law seeks there and the engine stops it on its
+          // end; real streams fall short by microseconds (Vimeo's by 6 µs).
           const end = Math.min(d, video.duration) - END_AS_START_S
           const landingS = landing > end ? 0 : landing
           video.currentTime = landingS
