@@ -236,6 +236,8 @@ export class HLSService {
    * review).
    */
   private loadGeneration = 0
+  /** The playlist's own length, once a level has loaded (`playlistDurationS`). */
+  private playlistTotalS: number | null = null
   /** Where a fatal error is reported as telemetry. */
   private readonly reportTelemetry: (err: Error) => void
 
@@ -342,6 +344,7 @@ export class HLSService {
    */
   loadStream(hlsUrl: string, video: HTMLVideoElement, mobile = false, maxWidth?: number): Promise<void> {
     this.sourceUrl = hlsUrl
+    this.playlistTotalS = null
     const generation = ++this.loadGeneration
     return new Promise((resolve, reject) => {
       // This promise settles on `MANIFEST_PARSED`, so anything that
@@ -425,6 +428,15 @@ export class HLSService {
           }
 
           succeed()
+        })
+
+        // The length a web output's copies all loop on, from the first
+        // level to load and held for the stream's life, so a rendition
+        // switch can't change the period mid-play.
+        this.hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+          if (generation !== this.loadGeneration || this.playlistTotalS !== null) return
+          const total = data.details.totalduration
+          if (!data.details.live && Number.isFinite(total) && total > 0) this.playlistTotalS = total
         })
 
         this.hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
@@ -613,6 +625,7 @@ export class HLSService {
    */
   loadDirect(mp4Url: string, video: HTMLVideoElement): Promise<void> {
     this.sourceUrl = mp4Url
+    this.playlistTotalS = null
     const generation = ++this.loadGeneration
     return new Promise((resolve, reject) => {
       // Tear down any hls.js instance before taking this element over.
@@ -742,6 +755,26 @@ export class HLSService {
     return false
   }
 
+  /**
+   * The stream's length as its playlist states it: the first VOD level's
+   * `#EXTINF`s summed, as hls.js holds them. `null` before a level has
+   * loaded, for a live playlist, and on the native-HLS and single-file
+   * paths, where only the element knows.
+   *
+   * Every copy of a stream reads the same number, whichever rendition it
+   * plays, since TerraViz's encoders and Vimeo write the same `#EXTINF`s
+   * on every one. The element's `duration` does not hold still: it is
+   * this number until the stream has buffered to its end, and then the
+   * latest end of every track, which measured 21 to 40 ms past it on the
+   * node's bundles carrying AAC. A web output therefore loops on this
+   * (`src/output/webClock.ts`), and the exhibit's card sends the same sum
+   * (`functions/api/v1/_lib/hls-duration.ts`), so a Second Life script's
+   * date and every copy's picture keep one period.
+   */
+  playlistDurationS(): number | null {
+    return this.playlistTotalS
+  }
+
   /** Tear down the HLS instance, stop playback, and remove the video element from the DOM. */
   destroy(): void {
     // Before anything else: the native paths keep their `error`
@@ -752,6 +785,7 @@ export class HLSService {
     this.loadGeneration++
     this.fatalErrorHandler = null
     this.pendingFatalError = null
+    this.playlistTotalS = null
     if (this.hls) {
       this.hls.destroy()
       this.hls = null

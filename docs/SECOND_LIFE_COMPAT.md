@@ -843,26 +843,30 @@ The work, smallest first:
        (`hls-duration.ts`, `readVimeoDuration`), and the info script
        reads the card rather than the manifest (Phase 2's "The
        exhibit's own reads from the node"). The node's seven Vimeo
-       videos, all real-time ones, read 12.1, 12.066667, 143.766667
+       videos, all real-time ones, read 12.1, 12.066667, 143.766672
        and 10.8 s where the API said 12, 144 and 11, every rendition
        alike, and now show a moving date (seen in-world on sea surface
        temperature the same day). The manifest's `duration` keeps
-       Vimeo's figure. **What a page loops on was then measured, not
+       Vimeo's figure. **What a page looped on was then measured, not
        assumed**, in Chromium 153 with the repo's hls.js 1.6, since
        the sum is only what the player holds until its last segment
        buffers, and after that a browser's `duration` is the latest
        end of every track. For all seven, and for the node's bundles
-       without audio, the stream started at 0 and ended on the sum
-       within 6 µs (143.766666 against 143.766672; the card now moves
-       a sum onto the frame grid its master names, so it says
-       143.766667). Vimeo's B-frames didn't shift it, since the edit
-       list is applied. The node's bundles carrying AAC did not agree:
-       they started 21 ms in and ended 21 to 40 ms past the sum, one
-       AAC frame or two, which on a 4.3 s clip is a dozen frames off
-       inside a minute. So a bundle with audio, or whose variants
-       don't name their codecs, has no length and shows its range.
-       Second Life's browser is an older Chromium, which nobody has
-       measured. `stream:` and single files still report 0, and any
+       without audio, the stream started at 0 and ended within 6 µs of
+       the sum (143.766666 against 143.766672); Vimeo's B-frames didn't
+       shift it, since the edit list is applied. The node's bundles
+       carrying AAC did not agree: hls.js puts the stream's zero at the
+       audio's first sample, so the picture started one AAC frame
+       (21 ms) in, and the element ended 21 to 40 ms past the sum, which
+       on a 4.3 s clip is a dozen frames a minute. That is 50 of the
+       node's 119 bundles, 13 of them dated, 12 of those with a silent
+       track. Rather than give those no length, **the page now loops on
+       the playlist's total** (`HLSService.playlistDurationS`, the
+       maintainer's decision, 26 October 2026), which is the same for
+       every copy whatever the tracks, and the card sends that sum.
+       That also closes "Each copy loops on its own idea of the clip's
+       length" below. Second Life's browser is an older Chromium, which
+       nobody has measured. `stream:` and single files still report 0, and any
        reading can be 0 for a moment when the bucket, the video proxy
        or Vimeo is slow, which the manifest caches for 15 s rather than
        five minutes;
@@ -1439,30 +1443,28 @@ yet.
     1024-wide faces and slow links. Data-encoded datasets have one
     rendition by design, so they would always need buffering or stepping.
 - **Found in review and not yet done:**
-  - **Each copy loops on its own idea of the clip's length.** With
-    hls.js, `duration` is the playlist's total until the stream ends,
-    then the furthest buffered end across tracks, so it can differ
-    between copies, and on one copy before and after its last segment.
-    Copies then wrap on different periods, and the gap grows with
-    every loop since the `at` anchor, not since the page loaded: in
-    simulation, a 1 ms difference on a 16 s loop with a day-old anchor
-    put copies 5.4 s apart. A copy's own target also jumps when its
-    `duration` updates. The difference is unmeasured: logging
-    `duration` before and after the last segment on the production
-    stream would settle it. The fix is one period every copy agrees on
-    whichever rendition it plays, such as the playlist's total
-    duration, used both where the target wraps (`clockTargetS`) and
-    where the error is measured round the loop (`loopView`). The
-    manifest now carries that number for the node's own bundles (item
-    4 above), to the microsecond, so the page can read it alongside the
-    stream. A page using it still needs the element's own length
-    whenever the manifest says 0.
+  - **Each copy looped on its own idea of the clip's length.** *Done
+    26 October 2026.* With hls.js, `duration` is the playlist's total
+    until the stream ends, then the furthest buffered end across
+    tracks, so it could differ between copies, and on one copy before
+    and after its last segment. Copies then wrapped on different
+    periods, and the gap grows with every loop since the `at` anchor,
+    not since the page loaded: in simulation, a 1 ms difference on a
+    16 s loop with a day-old anchor put copies 5.4 s apart. Measured
+    since, the difference was 21 to 40 ms on the node's bundles
+    carrying AAC (item 4 above). The page now loops on the playlist's
+    total, held from the first level hls.js loads
+    (`HLSService.playlistDurationS`), both where the target wraps
+    (`clockTargetS`) and where the error is measured round the loop
+    (`loopView`), and the card sends the same sum. A copy playing HLS
+    natively, with no hls.js to ask, still loops on its element's own
+    length.
   - **A copy that fell back to a video's single file stays on it.**
-    Its stream is not tried again once the file has loaded, and the clock
-    wraps on each element's own length. If the file and the stream differ
-    in length, that copy loops on a different period from the others,
-    the same drift as above, and the same fix (one agreed period) covers
-    it.
+    Its stream is not tried again once the file has loaded, and that
+    copy's clock wraps on the file's own length, since a file states no
+    other. If the file and the stream differ in length, that copy loops
+    on a different period from the others, the drift the agreed period
+    removed for every other copy.
   - **Startup costs a segment it throws away.** hls.js downloads a
     probe segment to measure bandwidth, about 3.4 MB at 1440, before
     loading from the start and then seeking to the clock.
@@ -1747,9 +1749,10 @@ driven by its owner in chat, with none of the visitor controls.
       read from the stream's own playlists, for an HLS bundle the node
       holds or a Vimeo stream, whose API gives only whole seconds
       (Vimeo added the same day, once the in-world test showed a Vimeo
-      dataset's range where the app shows a date), and only for a
-      stream that is picture alone ("The date needs the clip's length"
-      above says why). A single file has none. It isn't read for a
+      dataset's range where the app shows a date): the `#EXTINF`s
+      summed, which is the period the page loops on whatever the
+      stream's tracks ("The date needs the clip's length" above says
+      why). A single file has none. It isn't read for a
       row the page can't show. `retry` is a number of seconds, 15
       today, when the length read didn't settle (an R2 or network
       error, the video proxy or Vimeo failing, or the read's time
@@ -1926,8 +1929,8 @@ driven by its owner in chat, with none of the visitor controls.
       Vimeo answering a Worker. When either fails, a card says `retry`,
       which a script spends its four tries on before showing the range,
       and the isolate doesn't ask again for ten seconds whoever calls. A
-      refusal (a host off the list, renditions that disagree, audio)
-      shows the range for ten minutes. Both are logged, without the
+      refusal (a host off the list, renditions that disagree) shows the
+      range for ten minutes. Both are logged, without the
       signed addresses. A well-behaved script reads a card only when the
       dataset changes, four cards at most per choice; what bounds anyone
       else is the per-reading caps and the brief memory, since the card

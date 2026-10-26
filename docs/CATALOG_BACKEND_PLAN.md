@@ -949,10 +949,12 @@ expect 0 from:
 
 For a bundle the node hosts itself (`r2:` HLS) it is the bundle's own
 playlists' `#EXTINF`s summed, to the microsecond
-(`functions/api/v1/_lib/hls-duration.ts`), when every variant names
-its codecs and none carries audio. A bundle with audio is 0: measured
-in Chromium, those end 21 to 40 ms past the sum, since a browser's
-`duration` is the latest end of every track. For `vimeo:` it is Vimeo's
+(`functions/api/v1/_lib/hls-duration.ts`). That is the period a web
+output's copies loop on (`src/output/webClock.ts`), which is the
+playlist's total rather than the element's `duration`: once a stream
+has buffered to its end, `duration` is the latest end of every track,
+and measured in Chromium that ran 21 to 40 ms past the sum on the
+bundles carrying AAC. For `vimeo:` it is Vimeo's
 figure, which is whole seconds and so can be up to a second off the
 length a player reads from the stream itself (12 for a clip that plays
 12.1). A reader that loops the clip and needs the two to agree should

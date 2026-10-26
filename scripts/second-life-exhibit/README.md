@@ -182,10 +182,10 @@ an image, it shows the dataset's range instead. The length is the one
 the node reads from the stream's own playlists, its own HLS bundle's or
 a Vimeo stream's, such as Sea temperature's: Vimeo's API gives whole
 seconds, which isn't quite the stream's, and a date worked out from it
-would drift from the picture with every loop. A video with no playlist
-to read, a single file, shows its range, and so does one with a sound
-track: a browser loops on whichever of picture and sound ends last,
-which runs a frame or two past the picture's length. When the node couldn't read
+would drift from the picture with every loop. Every visitor's copy of
+the page loops on that same length, whichever rendition it plays. A
+video with no playlist to read, a single file, shows its range. When
+the node couldn't read
 the length in time, the card says when to ask again, and the info
 script does. A card the node fails to send, an error or a
 timeout, is asked for again too, up to four tries in all. If none of

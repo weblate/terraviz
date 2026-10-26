@@ -42,6 +42,8 @@ function deferredLoader() {
   const disposed: string[] = []
   const elements = new Map<string, { tag: string }>()
   const videos = new Map<string, SyncTarget>()
+  /** The period each stream states, as `HLSService.playlistDurationS` would. */
+  const periods = new Map<string, number>()
   const loader: MediaLoader = {
     load: ds =>
       new Promise<MediaSource>((resolve, reject) => {
@@ -52,14 +54,20 @@ function deferredLoader() {
         pending.push({
           url: ds.url,
           resolve: () =>
-            resolve({ kind: 'video', element: element as never, video, dispose: () => disposed.push(ds.url) }),
+            resolve({
+              kind: 'video',
+              element: element as never,
+              video,
+              loopS: () => periods.get(ds.url) ?? null,
+              dispose: () => disposed.push(ds.url),
+            }),
           reject,
         })
       }),
   }
   const resolve = (url: string) => pending.find(p => p.url === url)!.resolve()
   const reject = (url: string) => pending.find(p => p.url === url)!.reject(new Error('404'))
-  return { loader, pending, disposed, elements, videos, resolve, reject }
+  return { loader, pending, disposed, elements, videos, periods, resolve, reject }
 }
 
 function harness(
@@ -679,6 +687,21 @@ describe('steering', () => {
     h.show('#dataset=A&t=50')
     v.currentTime = 50
     expect(h.out.steer().driftS).toBeCloseTo(0, 6)
+  })
+
+  it('loops on the period the stream states, not the element\'s own length', async () => {
+    const h = harness()
+    const v = await playing(h, '#dataset=A&t=15.99')
+    // Buffered to its end with an AAC track: the element runs past the
+    // playlist's 16 s, and every copy must still wrap on 16.
+    ;(v as { duration: number }).duration = 16.04
+    h.media.periods.set(url('A'), 16)
+    h.advance(20)
+    v.currentTime = 0.01
+    expect(h.out.steer().driftS).toBeCloseTo(0, 6)
+    // Wrapped on the element's 16.04, the same copy reads 40 ms out.
+    h.media.periods.delete(url('A'))
+    expect(h.out.steer().driftS).toBeCloseTo(0.04, 6)
   })
 
   it('asks for a frame when a paused seek lands, not only when it is made', async () => {

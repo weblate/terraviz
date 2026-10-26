@@ -156,6 +156,50 @@ describe('createWebClockSteer', () => {
     expect(v.playbackRate).toBeGreaterThan(1)
   })
 
+  describe('on the period the stream states', () => {
+    // Once a stream has buffered to its end, an element's duration is the
+    // latest end of every track: 21 to 40 ms past the playlist's total with
+    // an AAC track, measured in Chromium. Wrapped on it, two copies drift
+    // apart by the difference every loop since the anchor.
+    const HOUR_AGO = AT - 3600
+
+    it('puts two copies whose elements differ in length on one target', () => {
+      const { steer } = harness()
+      const c = clock({ positionS: 0, atUnixS: HOUR_AGO })
+      // An hour at 1x on a 16 s loop: 225 loops, so 3600 s wraps to 0.
+      const withAudio = video({ duration: 16.04, currentTime: 0 })
+      const pictureOnly = video({ duration: 15.999999, currentTime: 0 })
+      expect(steer.steer(withAudio, c, LOADED_AT, LOADED_AT, 16).driftS).toBeCloseTo(0, 6)
+      expect(steer.steer(pictureOnly, c, LOADED_AT, LOADED_AT, 16).driftS).toBeCloseTo(0, 6)
+      // Wrapped on its own length, the first would be 7 s round the loop
+      // from the target.
+      expect(clockTargetS(c, LOADED_AT, LOADED_AT, 16.04)).toBeCloseTo(3600 - 224 * 16.04, 6)
+    })
+
+    it('reads an element past the period, before its own end, as the next loop\'s start', () => {
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 16.02 })
+      const outcome = steer.steer(v, clock({ positionS: 0.02, atUnixS: AT }), LOADED_AT, LOADED_AT, 16)
+      expect(outcome).toEqual({ kind: 'playing', driftS: expect.closeTo(0, 6), seeked: false })
+    })
+
+    it('seeks and holds a paused copy on the period', () => {
+      const { steer } = harness()
+      const v = video({ duration: 16.04, currentTime: 3, paused: true })
+      expect(steer.steer(v, clock({ positionS: 16.5, paused: true }), LOADED_AT, LOADED_AT, 16).seeked).toBe(true)
+      expect(v.currentTime).toBeCloseTo(0.5, 9)
+    })
+
+    it('loops on the element\'s own length when the stream states no period', () => {
+      for (const periodS of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const { steer } = harness()
+        const v = video({ duration: 16, currentTime: 15.8 })
+        const outcome = steer.steer(v, clock({ positionS: 0.5, atUnixS: AT }), LOADED_AT, LOADED_AT, periodS)
+        expect(outcome.driftS, String(periodS)).toBeCloseTo(-0.7, 6)
+      }
+    })
+  })
+
   describe('round the loop', () => {
     // Found in review: the law measured error along the line, so just
     // past a wrap a copy 0.7 s behind read as 15.3 s ahead.

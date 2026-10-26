@@ -13,11 +13,9 @@ import {
   REMOTE_READ_BUDGET_MS,
   REMOTE_READ_CEILING_MS,
   UNSETTLED_TTL_MS,
-  framesPerSecond,
   isMasterPlaylist,
   masterVariants,
   mediaPlaylistDuration,
-  onFrameGrid,
   readHlsDuration,
   readVimeoDuration,
   resetHlsDurationsForTests,
@@ -182,39 +180,16 @@ describe('mediaPlaylistDuration', () => {
 })
 
 describe('isMasterPlaylist and masterVariants', () => {
-  it('reads both writers’ masters, with each variant’s codecs and frame rate', () => {
+  it('reads both writers’ masters, every variant in order', () => {
     expect(isMasterPlaylist(MASTER)).toBe(true)
     expect(isMasterPlaylist(FFMPEG_MASTER)).toBe(true)
     expect(isMasterPlaylist(VARIANT)).toBe(false)
-    expect(masterVariants(MASTER)?.map(v => v.uri)).toEqual(['stream_0/playlist.m3u8', 'stream_1/playlist.m3u8'])
-    expect(masterVariants(FFMPEG_MASTER_AAC)).toEqual([
-      { uri: 'stream_0/playlist.m3u8', frameRate: null, codecs: 'avc1.4d4033,mp4a.40.2' },
-      { uri: 'stream_1/playlist.m3u8', frameRate: null, codecs: 'avc1.4d4032,mp4a.40.2' },
-    ])
-    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:FRAME-RATE=29.970,BANDWIDTH=1\nv/p.m3u8\n')).toEqual([
-      { uri: 'v/p.m3u8', frameRate: '29.970', codecs: null },
-    ])
-    // A quoted value is taken whole: text inside one that looks like
-    // another attribute is not that attribute.
-    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:VIDEO="v,CODECS=avc1",CODECS="avc1.64,mp4a.40.2"\nv/p.m3u8\n')?.[0].codecs)
-      .toBe('avc1.64,mp4a.40.2')
-    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:XCODECS="avc1",BANDWIDTH=1\nv/p.m3u8\n')?.[0].codecs).toBeNull()
-    // A malformed attribute ends the walk, rather than the search starting
-    // again inside a quoted value further on.
-    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:x="a,CODECS=avc1.64",CODECS="avc1.64,mp4a.40.2"\nv/p.m3u8\n')?.[0].codecs).toBeNull()
-  })
-
-  it('reads a long attribute list in time linear in its length', () => {
-    // Searched again from every offset, 40,000 characters took seconds,
-    // synchronously, past any time limit (found in review).
-    const line = '#EXT-X-STREAM-INF:' + 'A'.repeat(400_000)
-    const started = performance.now()
-    expect(masterVariants(`#EXTM3U\n${line}\nv/p.m3u8\n`)).toEqual([{ uri: 'v/p.m3u8', frameRate: null, codecs: null }])
-    expect(performance.now() - started).toBeLessThan(1000)
+    expect(masterVariants(MASTER)).toEqual(['stream_0/playlist.m3u8', 'stream_1/playlist.m3u8'])
+    expect(masterVariants(FFMPEG_MASTER_AAC)).toEqual(['stream_0/playlist.m3u8', 'stream_1/playlist.m3u8'])
   })
 
   it('skips blank lines after the tag, and refuses a variant behind another tag or with no address', () => {
-    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n\nv/p.m3u8\n')?.map(v => v.uri)).toEqual(['v/p.m3u8'])
+    expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n\nv/p.m3u8\n')).toEqual(['v/p.m3u8'])
     expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n#EXT-X-FOO\nv/p.m3u8\n')).toBeNull()
     expect(masterVariants('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n')).toBeNull()
     expect(masterVariants('not a playlist')).toBeNull()
@@ -292,44 +267,19 @@ describe('readHlsDuration', () => {
     expect(reads).toContain('videos/DS1/01UPLOAD/hi/index.m3u8')
   })
 
-  it('is a settled 0 for a media playlist named directly, which can’t say whether it carries audio', async () => {
+  it('reads a media playlist named directly, in one read', async () => {
     const reads: string[] = []
     const r = await readHlsDuration(bucket({ [VARIANT_KEY]: FFMPEG_VARIANT }, reads), VARIANT_KEY, { memo: memo() })
-    expect(r).toEqual({ seconds: 0, settled: true })
+    expect(r).toEqual({ seconds: 6.2, settled: true })
     expect(reads).toEqual([VARIANT_KEY])
   })
 
-  it('is a settled 0 for a bundle that carries audio, or doesn’t say what it carries', async () => {
-    // Measured in Chromium, a bundle with AAC ends 21 to 40 ms past the
-    // sum of its #EXTINFs, so the sum is not the length a page loops on.
-    for (const master of [
-      FFMPEG_MASTER_AAC,
-      FFMPEG_MASTER.replace(/,CODECS="[^"]*"/g, ''),
-      FFMPEG_MASTER.replace('#EXT-X-VERSION:3', '#EXT-X-VERSION:3\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="a.m3u8"'),
-      FFMPEG_MASTER.replace('avc1.4d4032', 'avc1.4d4032,ec-3'),
-    ]) {
-      const r = await readHlsDuration(bucket({ [MASTER_KEY]: master, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })
-      expect(r, master).toEqual({ seconds: 0, settled: true })
-    }
-    // The video codecs the node's encoders write, and their HEVC, AV1 and
-    // VP9 kin, are fine, in either case and spaced or not; a name that
-    // only starts like one is not; and subtitles are not a track a
-    // browser's duration counts.
-    for (const [codecs, seconds] of [
-      ['hvc1.1.6.L153.B0', 6.2],
-      ['av01.0.08M.08', 6.2],
-      ['vp09.00.10.08', 6.2],
-      ['AVC1.4D4033', 6.2],
-      ['avc1.4d4033, hvc1.1.6.L153.B0', 6.2],
-      ['avc1x.4d4033', 0],
-      ['', 0],
-    ] as const) {
-      const master = FFMPEG_MASTER.replace('avc1.4d4033', codecs)
-      expect((await readHlsDuration(bucket({ [MASTER_KEY]: master, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })).seconds, codecs)
-        .toBe(seconds)
-    }
-    const subtitled = FFMPEG_MASTER.replace('#EXT-X-VERSION:3', '#EXT-X-VERSION:3\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="s",NAME="en",URI="s.m3u8"')
-    expect((await readHlsDuration(bucket({ [MASTER_KEY]: subtitled, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })).seconds).toBe(6.2)
+  it('reads a bundle carrying audio as its sum, the period every copy loops on', async () => {
+    // Its element runs 21 to 40 ms past the sum once buffered to its end
+    // (measured in Chromium), but a web output loops on the playlist's
+    // total, not the element's, so the sum is the length to send.
+    const r = await readHlsDuration(bucket({ [MASTER_KEY]: FFMPEG_MASTER_AAC, [VARIANT_KEY]: FFMPEG_VARIANT }), MASTER_KEY, { memo: memo() })
+    expect(r).toEqual({ seconds: 6.2, settled: true })
   })
 
   it('is a settled 0 for a master with a variant that has no address', async () => {
@@ -524,32 +474,6 @@ describe('readHlsDuration', () => {
   })
 })
 
-describe('framesPerSecond and onFrameGrid', () => {
-  it('reads a FRAME-RATE, taking the NTSC rates as the fractions they are', () => {
-    expect(framesPerSecond('30.000')).toBe(30)
-    expect(framesPerSecond('25')).toBe(25)
-    expect(framesPerSecond('29.970')).toBe(30000 / 1001)
-    expect(framesPerSecond('59.940')).toBe(60000 / 1001)
-    expect(framesPerSecond('23.976')).toBe(24000 / 1001)
-    for (const bad of [null, '', 'abc', '-30', '0', '1e3', '0x1e', '30.', '5000']) expect(framesPerSecond(bad), String(bad)).toBeNull()
-  })
-
-  it('moves a length within a thousandth of a frame onto the frame the media ends on', () => {
-    // Clouds, real-time: 4,313 frames, whose #EXTINFs sum to 143.766672.
-    expect(onFrameGrid(143.766672, 30)).toBe(143.766667)
-    expect(onFrameGrid(12.1, 30)).toBe(12.1)
-    expect(onFrameGrid(10.010001, 30000 / 1001)).toBe(10.01)
-  })
-
-  it('leaves a length off the grid, or with no frame rate, as it is', () => {
-    expect(onFrameGrid(12.11, 30)).toBe(12.11)
-    expect(onFrameGrid(143.766672, null)).toBe(143.766672)
-    expect(onFrameGrid(0.0001, 30)).toBe(0.0001)
-    // A thousandth of a frame is the most it moves a length.
-    expect(onFrameGrid(363.0009 / 30, 30)).toBe(12.1)
-    expect(onFrameGrid(363.002 / 30, 30)).toBe(363.002 / 30)
-  })
-})
 
 // What Vimeo served for the real-time sea surface temperature in October
 // 2026, the signatures shortened: the player's address answers 302 with
@@ -652,10 +576,13 @@ describe('readVimeoDuration', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it('moves the sum onto the frame grid the master names', async () => {
+  it('sends the sum as the playlists write it, the period a copy of the page loops on', async () => {
+    // Clouds, real-time: 4,313 frames, whose #EXTINFs sum to 143.766672.
+    // hls.js holds that as the level's total, and the page loops on it,
+    // a few microseconds past where the media ends.
     const clouds = VIMEO_VARIANT.replace('#EXTINF:6.100000,', '#EXTINF:6.000000,').replace('#EXT-X-ENDLIST', '#EXTINF:131.766672,\nlast.mp4\n#EXT-X-ENDLIST')
     const fetchImpl = vimeo(masterOf({ attrs: VIDEO_30, text: clouds }, { attrs: VIDEO_30, text: clouds }))
-    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 143.766667, settled: true })
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 143.766672, settled: true })
   })
 
   it('remembers a reading by the Vimeo id, so the next asks nothing', async () => {
@@ -828,52 +755,26 @@ describe('readVimeoDuration', () => {
     for (const routes of [
       // 12.1 s against 12.066667 s: one frame a loop.
       vimeoRoutes({ [VIMEO_VARIANT_2]: () => new Response(longer) }),
-      masterOf({ attrs: VIDEO_30, text: VIMEO_VARIANT }, { attrs: 'FRAME-RATE=25.000,CODECS="avc1.640020"', text: VIMEO_VARIANT }),
       vimeoRoutes({ [VIMEO_VARIANT_2]: () => new Response(VIMEO_VARIANT.replace('#EXT-X-ENDLIST', '')) }),
     ]) {
       resetHlsDurationsForTests()
       expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 0, settled: true })
     }
     expect(logged()).toMatch(/variants of different lengths \(12\.1, 12\.066667 s\)/)
-    expect(logged()).toMatch(/variants at different frame rates \("30\.000", "25\.000"\)/)
     expect(logged()).toMatch(/a variant whose length cannot be stated/)
   })
 
-  it('refuses variants at different frame rates from the master alone', async () => {
-    const fetchImpl = vimeo(masterOf({ attrs: VIDEO_30, text: VIMEO_VARIANT }, { attrs: 'CODECS="avc1.640020"', text: VIMEO_VARIANT }))
-    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
-    expect(fetchImpl.mock.calls.map(c => String(c[0]))).toEqual([`${PROXY}/920241809`, VIMEO_HLS, VIMEO_MASTER_AT])
-    expect(logged()).toMatch(/frame rates \("30\.000", none\)/)
-  })
-
-  it('logs a playlist\'s own text only quoted and cut short', async () => {
-    const fetchImpl = vimeo(masterOf({ attrs: `FRAME-RATE=30.000,CODECS="mp4a.40.2\u001b[31m forged line${'x'.repeat(500)}"`, text: VIMEO_VARIANT }))
-    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
-    const text = logged()
-    expect(text).not.toMatch(/\u001b|x{100}/)
-    expect(text).toContain('\\u001b[31m')
-  })
-
-  it('is a settled 0 for a stream that carries audio, or doesn\'t say what it carries', async () => {
+  it('reads a stream with a sound track as its sum, and a media playlist named directly', async () => {
+    // The page loops on the playlist's total whatever the tracks, so
+    // neither audio nor a master that names no codecs changes the period.
     for (const routes of [
       masterOf({ attrs: 'FRAME-RATE=30.000,CODECS="avc1.640020,mp4a.40.2"', text: VIMEO_VARIANT }),
-      masterOf({ attrs: 'FRAME-RATE=30.000', text: VIMEO_VARIANT }),
-      vimeoRoutes({
-        [VIMEO_MASTER_AT]: () => new Response(VIMEO_MASTER.replace('#EXT-X-INDEPENDENT-SEGMENTS', '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="a/media.m3u8"')),
-      }),
-      // A media playlist can't say whether its segments carry audio.
+      masterOf({ attrs: 'BANDWIDTH=1', text: VIMEO_VARIANT }),
       vimeoRoutes({ [VIMEO_MASTER_AT]: () => new Response(VIMEO_VARIANT) }),
     ]) {
       resetHlsDurationsForTests()
-      const fetchImpl = vimeo(routes)
-      expect(await readVimeoDuration('920241809', PROXY, { fetchImpl })).toEqual({ seconds: 0, settled: true })
-      // Refused from the master, before any variant is asked.
-      expect(fetchImpl.mock.calls.map(c => String(c[0]))).toEqual([`${PROXY}/920241809`, VIMEO_HLS, VIMEO_MASTER_AT])
+      expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: vimeo(routes) })).toEqual({ seconds: 12.1, settled: true })
     }
-    expect(logged()).toMatch(/a variant carrying "avc1\.640020,mp4a\.40\.2"/)
-    expect(logged()).toMatch(/a variant that does not name its codecs/)
-    expect(logged()).toMatch(/an audio rendition/)
-    expect(logged()).toMatch(/a playlist with no variants/)
   })
 
   it('is a settled 0 for a stream with no address', async () => {

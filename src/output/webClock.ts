@@ -48,6 +48,22 @@
  * at the same point of the loop as one at its start, and the law's
  * `play()` rewinds it there, so the loop needs no case of its own.
  *
+ * **One period for every copy.** The loop is the stream's playlist
+ * total, the `#EXTINF`s summed (`HLSService.playlistDurationS`), not the
+ * element's `duration`, which holds that number only until the stream has
+ * buffered to its end and then becomes the latest end of every track:
+ * measured in Chromium, 21 to 40 ms past it on the node's bundles
+ * carrying AAC, and a microsecond under it on Vimeo's (found in review,
+ * October 2026). Wrapped on `duration`, a copy changed its period once
+ * its last segment arrived, copies on different engines looped on
+ * different periods and drifted apart by the difference every loop since
+ * the anchor, and the exhibit's card could not name the period at all.
+ * The playlist's total is the same for every copy, whichever rendition it
+ * plays, and is what the card sends (the maintainer's decision, 26
+ * October 2026). Only a stream with no playlist to state one (a single
+ * file, or a browser playing HLS natively) loops on its element's own
+ * length.
+ *
  * **On a short loop, one slow seek can end seeking.** Round the loop no
  * error exceeds half the clip, and the seek-cost floor is 1.5 times the
  * last seek's cost, so a seek costing a third of the clip or more leaves
@@ -104,10 +120,16 @@ function wrap(value: number, period: number): number {
   return ((value % period) + period) % period
 }
 
-/** A duration the clock can wrap on: finite and positive. An unbounded
+/** A length the clock can wrap on: finite and positive. An unbounded
  *  stream reads `Infinity`, which `toISOString` throws on. */
-function usableDuration(video: SyncTarget): boolean {
-  return Number.isFinite(video.duration) && video.duration > 0
+function usable(seconds: number | null | undefined): seconds is number {
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+}
+
+/** The period a clip loops on: the one every copy agrees on, when the
+ *  stream states it, or else the element's own length. */
+export function loopPeriodS(video: SyncTarget, periodS: number | null | undefined): number {
+  return usable(periodS) ? periodS : video.duration
 }
 
 /**
@@ -181,17 +203,21 @@ interface LoopView extends SyncTarget {
   readonly element: SyncTarget
   /** Real position that reads as mid-clip. */
   centreS: number
+  /** The loop's length (`loopPeriodS`). Past it and before the element's
+   *  own end is the start of the next loop. */
+  periodS: number
 }
 
 function loopView(element: SyncTarget): LoopView {
   const view = {
     element,
     centreS: 0,
+    periodS: element.duration,
     get readyState() {
       return element.readyState
     },
     get duration() {
-      return element.duration
+      return view.periodS
     },
     get paused() {
       return element.paused
@@ -200,11 +226,11 @@ function loopView(element: SyncTarget): LoopView {
       return element.seeking
     },
     get currentTime() {
-      const d = element.duration
+      const d = view.periodS
       return wrap(element.currentTime - view.centreS + d / 2, d)
     },
     set currentTime(seen: number) {
-      const d = element.duration
+      const d = view.periodS
       const real = wrap(seen + view.centreS - d / 2, d)
       element.currentTime = real > d - END_AS_START_S ? 0 : real
     },
@@ -225,8 +251,10 @@ export interface WebClockSteer {
    * Steer `video` toward the clock. Called every frame, like the
    * desktop steering it reuses. `nowMs` is wall-clock time and
    * `readAtMs` when this copy read the clock (see `clockTargetS`).
+   * `periodS` is the length every copy loops on, when the stream states
+   * one (`loopPeriodS`); without it the element's own length is used.
    */
-  steer(video: SyncTarget | null, clock: WebClock, nowMs: number, readAtMs: number): SyncOutcome
+  steer(video: SyncTarget | null, clock: WebClock, nowMs: number, readAtMs: number, periodS?: number | null): SyncOutcome
 }
 
 export function createWebClockSteer(
@@ -252,17 +280,18 @@ export function createWebClockSteer(
   let held: { element: SyncTarget; targetS: number; reseeks: number } | null = null
 
   return {
-    steer(video, clock, nowMs, readAtMs) {
-      if (!video || video.readyState < SIBLING_MIN_READY_STATE || !usableDuration(video)) {
+    steer(video, clock, nowMs, readAtMs, periodS) {
+      if (!video || video.readyState < SIBLING_MIN_READY_STATE || !usable(video.duration)) {
         return { kind: 'not-ready', driftS: null, seeked: false }
       }
-      const d = video.duration
+      const d = loopPeriodS(video, periodS)
       const targetS = clockTargetS(clock, nowMs, readAtMs, d)
 
       if (!clock.paused) {
         held = null
         if (!view || view.element !== video) view = loopView(video)
         view.centreS = targetS
+        view.periodS = d
         const inputs = clipClockInputs(d / 2, d, clock.rate)
         return playhead.sync(view, {
           dataset: { ...CLIP, ...inputs.span },

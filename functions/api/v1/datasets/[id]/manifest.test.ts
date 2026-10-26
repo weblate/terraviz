@@ -479,12 +479,14 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     // A settled reading keeps the endpoint's usual caching.
     expect(res.headers.get('cache-control')).toContain('max-age=')
 
-    // A bundle with audio ends past the sum in a browser, so it has none.
+    // A bundle with a sound track has the same sum: its element runs a
+    // frame or two past it in a browser, but a web output loops on the
+    // playlist's total, not the element's.
     playlists['videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8'] =
       playlists['videos/DS000AAAAAAAAAAAAAAAAAAAAA/master.m3u8'].replace('avc1.4d4032', 'avc1.4d4032,mp4a.40.2')
     resetHlsDurationsForTests()
     const withAudio = await readJson<{ duration: number }>(await onRequestGet(makeCtx<'id'>({ env, params: { id: 'DS000AAAAAAAAAAAAAAAAAAAAA' } })))
-    expect(withAudio.duration).toBe(0)
+    expect(withAudio.duration).toBe(10.5)
   })
 
   it('still answers 200 with duration 0 when R2 fails, and is not cached', async () => {

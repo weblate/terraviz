@@ -16,22 +16,21 @@
  * length, which a script cannot read from a playlist itself.
  *
  * **The length is the media playlist's `#EXTINF`s summed**, which is
- * what hls.js holds as the level's `totalduration`, and so what a
- * stream's `duration` reads until its last segment has buffered. Once
- * it has, a browser's `duration` is the latest end of every track it
- * buffered, and the two agree only for a stream that is picture alone:
- * measured in Chromium 153 with hls.js 1.6 in October 2026, the node's
- * bundles without audio and Vimeo's seven videos ended on the sum to the
- * microsecond, starting at 0, and the bundles carrying AAC started
- * 21 ms in and ended 21 to 40 ms past it. So a master whose variants
- * carry audio, or don't say what they carry (`CODECS`), and a media
- * playlist named directly, which can't say, are all unknown. It is kept
- * to the microsecond, the precision the playlists are written in,
- * because a copy looping on this number beside one looping on the
- * player's would otherwise drift apart a little on every loop.
- * TerraViz's encoders write the same `#EXTINF`s on every rendition
- * (`cli/transcode-from-dispatch.ts`), so the first variant stands for
- * all of them.
+ * what hls.js holds as the level's `totalduration`, and so the period a
+ * web output's copies all loop on (`HLSService.playlistDurationS`,
+ * `src/output/webClock.ts`). Not the element's `duration`: that is the
+ * same number until the stream has buffered to its end, and then the
+ * latest end of every track. Measured in Chromium 153 with hls.js 1.6 in
+ * October 2026, that was within 6 µs of the sum for Vimeo's seven videos
+ * and the node's bundles without audio, and 21 to 40 ms past it for the
+ * bundles carrying AAC, whose picture hls.js places one AAC frame in. So
+ * the page loops on the sum, and this is the number to send (the
+ * maintainer's decision, 26 October 2026). It is kept to the
+ * microsecond, the precision the playlists are written in, because a
+ * copy looping on it beside one looping on a rounded figure would drift
+ * apart a little on every loop. TerraViz's encoders write the same
+ * `#EXTINF`s on every rendition (`cli/transcode-from-dispatch.ts`), so
+ * the first variant stands for all of them.
  *
  * **Read from the playlists, not stored.** A column would need a
  * migration and a backfill of every existing bundle, and every path
@@ -56,7 +55,7 @@
  *   remembered after the response has gone.
  *
  * **0 means unknown, and anything uncertain is unknown.** No binding, a
- * missing or oversized playlist, audio or unnamed codecs, a variant
+ * missing or oversized playlist, a variant
  * outside the master's own folder, a playlist with no `#EXT-X-ENDLIST`
  * (a live window, whose total is not the clip's), an `#EXTINF` that is
  * not a plain decimal or that no segment follows, a segment no `#EXTINF`
@@ -71,11 +70,9 @@
  * node doesn't host: Vimeo's API gives a length in whole seconds (12 for
  * a clip of 12.1 s), a page loops on the stream's own, and a date worked
  * out from the first drifts from the picture with every loop. Nothing
- * here promises Vimeo's renditions agree, and a visitor may play any of
- * them, so **every variant is read**, at once, and they must all be one
- * length at one frame rate. The sum is then moved onto the frame grid
- * the master names (`onFrameGrid`), since summed microseconds can land
- * a few off the frame the media ends on. Because the addresses come from
+ * here promises Vimeo's renditions agree, and a copy of the page loops on
+ * whichever it loads first, so **every variant is read**, at once, and
+ * they must all be one length to the microsecond. Because the addresses come from
  * outside, every one read must be HTTPS at the default port with no
  * credentials, on Vimeo's player or its CDN (`REMOTE_PLAYLIST_HOST`);
  * redirects are followed one hop at a time so each is checked before it
@@ -90,8 +87,8 @@
  * answers 200 with something that isn't a playlist, and the time limit
  * read as not `settled`; only the proxy's 404, a video that is gone, and
  * everything refused are a settled 0. Every one is logged with why, but
- * never with an address's path or query, which are signed, and a
- * playlist's own text only quoted and cut short.
+ * never with an address's path or query, which are signed, nor with any
+ * of a playlist's own text.
  *
  * **A failure is remembered briefly** (`UNSETTLED_TTL_MS`, on both
  * paths), so a source that is failing isn't asked again by every request
@@ -334,12 +331,6 @@ interface RemoteRead {
   fetches: number
 }
 
-/** Text from a playlist, as a log may show it: cut short and quoted, so
- *  no line break or terminal escape in it reaches the log as one. */
-function shown(text: string): string {
-  return JSON.stringify(text.slice(0, 64))
-}
-
 async function discard(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => {})
 }
@@ -433,19 +424,13 @@ async function fetchPlaylist(read: RemoteRead, address: URL): Promise<{ text: st
   }
 }
 
-export interface Variant {
-  uri: string
-  frameRate: string | null
-  codecs: string | null
-}
-
-/** A master's variants, each with its frame rate and codecs as written,
- *  or `null` when one has no address. I-frame playlists carry their
- *  address in an attribute and are not variants. */
-export function masterVariants(text: string): Variant[] | null {
+/** A master's variant addresses, in order, or `null` when one has none.
+ *  I-frame playlists carry their address in an attribute and are not
+ *  variants. */
+export function masterVariants(text: string): string[] | null {
   const lines = playlistLines(text)
   if (!lines) return null
-  const variants: Variant[] = []
+  const uris: string[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue
     let uri: string | null = null
@@ -455,89 +440,15 @@ export function masterVariants(text: string): Variant[] | null {
       break
     }
     if (uri === null) return null
-    variants.push({ uri, frameRate: attribute(lines[i], 'FRAME-RATE'), codecs: attribute(lines[i], 'CODECS') })
+    uris.push(uri)
   }
-  return variants
+  return uris
 }
 
-/** One attribute of an attribute list, matched only where the last one
- *  ended. Sticky, so a run that isn't an attribute ends the walk rather
- *  than being searched again from every offset, which took seconds of
- *  CPU, no time limit can interrupt, on a long line (found in review). */
-const NEXT_ATTRIBUTE = /([A-Z0-9-]+)=("[^"]*"|[^,]*)(?:,|$)/y
-
-/** One attribute's value from a tag's attribute list, quotes taken off.
- *  The list is walked in order, a quoted string taken whole, so a comma
- *  inside one (as in `CODECS`) never starts another attribute. */
-function attribute(tag: string, name: string): string | null {
-  const list = tag.slice(tag.indexOf(':') + 1)
-  NEXT_ATTRIBUTE.lastIndex = 0
-  for (let m = NEXT_ATTRIBUTE.exec(list); m !== null; m = NEXT_ATTRIBUTE.exec(list)) {
-    if (m[1] === name) return m[2].startsWith('"') ? m[2].slice(1, -1) : m[2]
-    if (NEXT_ATTRIBUTE.lastIndex >= list.length) break
-  }
-  return null
-}
-
-/** The codecs a variant may name and still have its sum be the length a
- *  browser loops on: video ones. */
-const VIDEO_CODEC = /^(avc1|avc3|hvc1|hev1|dvh1|dvhe|av01|vp09)(\.|$)/i
-
-/**
- * Why a master's variants can't state the length a browser loops on, or
- * `null` when they can. The sum is the picture's, and once a stream has
- * buffered to its end a browser's `duration` is the latest end of every
- * track it holds. Measured in Chromium in October 2026, the node's
- * bundles that carry AAC started 21 ms in and ended 21 to 40 ms past
- * the sum, and those that don't ended on it. So audio, an audio
- * rendition, and a variant that doesn't say what it carries all read as
- * unknown.
- */
-function unstatedLength(master: string, variants: Variant[]): string | null {
-  const lines = playlistLines(master) ?? []
-  if (lines.some(l => l.startsWith('#EXT-X-MEDIA:') && attribute(l, 'TYPE') === 'AUDIO')) return 'an audio rendition'
-  for (const v of variants) {
-    if (v.codecs === null) return 'a variant that does not name its codecs'
-    if (!v.codecs.split(',').every(c => VIDEO_CODEC.test(c.trim()))) return `a variant carrying ${shown(v.codecs)}`
-  }
-  return null
-}
-
-/**
- * A FRAME-RATE as the frames per second it stands for, or `null` for
- * none or one that isn't a plain decimal. It is written to three
- * decimals, so the NTSC rates (29.970 and so on) are taken as the
- * fractions they are.
- */
-export function framesPerSecond(value: string | null): number | null {
-  if (value === null || !EXTINF_SECONDS.test(value)) return null
-  const fps = Number(value)
-  if (!(fps > 0 && fps <= 1000)) return null
-  for (const n of [24000, 30000, 48000, 60000, 120000]) {
-    if (Math.abs(fps - n / 1001) < 0.0015) return n / 1001
-  }
-  return fps
-}
-
-/**
- * `seconds` moved onto the frame grid when it lies within a thousandth
- * of a frame of it, otherwise as it is. The playlists round each
- * segment's length to the microsecond, and summed those can land a few
- * microseconds off the frame the media ends on: 4,313 frames at 30 fps
- * sum to 143.766672, and the media, and so a browser's `duration` once
- * the stream has buffered to its end, ends at 143.766667.
- */
-export function onFrameGrid(seconds: number, fps: number | null): number {
-  if (fps === null) return seconds
-  const frames = seconds * fps
-  const whole = Math.round(frames)
-  if (whole < 1 || Math.abs(frames - whole) > 1e-3) return seconds
-  return Math.round((whole / fps) * 1e6) / 1e6
-}
-
-/** A remote stream's length from its master playlist at `address`: every
- *  variant read, and all of them the same length to the microsecond at
- *  one frame rate, since a visitor may play any. */
+/** A remote stream's length from its master (or media) playlist at
+ *  `address`: every variant read, and all of them the same length to the
+ *  microsecond, since a copy of the page loops on whichever it loaded
+ *  first. */
 async function readFromUrl(read: RemoteRead, address: string, stop: AbortController): Promise<number> {
   const refuse = read.refuse
   let start: URL
@@ -550,8 +461,9 @@ async function readFromUrl(read: RemoteRead, address: string, stop: AbortControl
   const top = await fetchPlaylist(read, start)
   if (top === null) return 0
   if (!isMasterPlaylist(top.text)) {
-    refuse('a playlist with no variants, which cannot say whether it carries audio')
-    return 0
+    const seconds = mediaPlaylistDuration(top.text)
+    if (seconds === null) refuse('a media playlist whose length cannot be stated')
+    return seconds ?? 0
   }
   const variants = masterVariants(top.text)
   if (variants === null || variants.length === 0) {
@@ -562,19 +474,9 @@ async function readFromUrl(read: RemoteRead, address: string, stop: AbortControl
     refuse(`a master listing ${variants.length} variants`)
     return 0
   }
-  const unstated = unstatedLength(top.text, variants)
-  if (unstated !== null) {
-    refuse(unstated)
-    return 0
-  }
-  const rates = new Set(variants.map(v => v.frameRate))
-  if (rates.size > 1) {
-    refuse(`variants at different frame rates (${[...rates].map(r => (r === null ? 'none' : shown(r))).join(', ')})`)
-    return 0
-  }
   let urls: URL[]
   try {
-    urls = variants.map(v => new URL(v.uri, top.url))
+    urls = variants.map(uri => new URL(uri, top.url))
   } catch {
     refuse('a variant address that is not one')
     return 0
@@ -605,7 +507,7 @@ async function readFromUrl(read: RemoteRead, address: string, stop: AbortControl
     refuse(`variants of different lengths (${[...new Set(known)].join(', ')} s)`)
     return 0
   }
-  return onFrameGrid(first, framesPerSecond(variants[0].frameRate))
+  return first
 }
 
 function conventionalVariantKey(key: string): string | null {
@@ -621,11 +523,10 @@ async function readFromBucket(bucket: PlaylistBucket, key: string): Promise<numb
     (error: unknown) => ({ error }),
   )
   const top = await readPlaylist(bucket, key)
-  // A media playlist can't say whether its segments carry audio.
-  if (top === null || !isMasterPlaylist(top)) return 0
+  if (top === null) return 0
+  if (!isMasterPlaylist(top)) return mediaPlaylistDuration(top) ?? 0
   const variants = masterVariants(top)
-  if (variants === null || variants.length === 0 || unstatedLength(top, variants) !== null) return 0
-  const variantKey = resolvePlaylistKey(key, variants[0].uri)
+  const variantKey = variants === null || variants.length === 0 ? null : resolvePlaylistKey(key, variants[0])
   if (variantKey === null) return 0
   let media: string | null
   if (guess !== null && variantKey === guessKey) {

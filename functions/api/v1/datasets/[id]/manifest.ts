@@ -44,9 +44,8 @@
  *     a moment as well as for good:
  *     Vimeo's figure for `vimeo:` (whole seconds, so up to a second
  *     off what a player reads from the stream), the sum of the bundle's own
- *     `#EXTINF`s for `r2:` HLS whose variants are picture alone
- *     (`_lib/hls-duration.ts`; one carrying audio ends past the sum in
- *     a browser, so it has 0), and 0 for `stream:` and single files.
+ *     `#EXTINF`s for `r2:` HLS (`_lib/hls-duration.ts`), the period a
+ *     web output loops on, and 0 for `stream:` and single files.
  *     Browsers ignore it, since a player reads the length from the
  *     playlist. Second Life info scripts from before the exhibit's
  *     card read it to turn a clip position into a date; the card's
