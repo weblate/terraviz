@@ -1682,11 +1682,13 @@ driven by its owner in chat, with none of the visitor controls.
   public dataset, and then `/api/v1/output/`: "output" already names
   the multi-monitor windows, their telemetry and Zyra's workflow
   outputs, and the card answers for tours, which the output page can't
-  show. They are the node's own convenience reads, as `featured` and
-  `search` are: not part of the federation protocol and not in
-  `public/schema/v1/`.
+  show. They are convenience reads of nodes running this codebase, as
+  `featured` is: not part of the federation protocol and not in
+  `public/schema/v1/`. (`search` was named beside it once, but
+  `CATALOG_FEDERATION_PROTOCOL.md` lists vector search as a candidate
+  protocol capability.)
   - **`GET /api/v1/exhibit/datasets/{id}`, a dataset's card:**
-    `{ id, page, kind, title, startTime, endTime, period,
+    `{ id, page, kind, showable, title, startTime, endTime, period,
     exactDuration, retry, credit, license, licenseText, abstract,
     truncated }`.
     - `page` is the dataset's page in the main app, `/dataset/<slug>`
@@ -1695,12 +1697,17 @@ driven by its owner in chat, with none of the visitor controls.
       without reaching scripts already rezzed.
     - `kind` is `video` for a `video/*` format, `image` for `image/*`,
       and a word of its own for anything else, `tour` today. The set
-      is open: a script shows `video` and `image` and treats any other
-      kind as one it can't show, which a test pins. A tour is a 200,
-      since the dataset exists, so the script can say why it isn't
-      shown.
+      is open. A tour is a 200, since the dataset exists, so the script
+      can say why it isn't shown.
+    - `showable` is whether the output page can show it, by the same
+      rule as the menu's (below), which `kind` alone doesn't say: a
+      video on a `peer:` reference is still a video. Added after the
+      API review of the built reads, before any script read the card.
+      A script shows a card that says `showable`, of a kind it knows,
+      which a test pins.
     - `startTime` and `endTime` are the record's, as
-      `YYYY-MM-DDTHH:MM:SS[.fff]Z`, or `""`. `period` is an ISO 8601
+      `YYYY-MM-DDTHH:MM:SS[.fff]Z` (an instant written to more places
+      is kept to the millisecond), or `""`. `period` is an ISO 8601
       duration the node could parse, or `""`.
     - `exactDuration` is the clip's exact length in seconds, from the
       node's own reading of an HLS bundle's playlist, or 0 when the
@@ -1709,14 +1716,18 @@ driven by its owner in chat, with none of the visitor controls.
       guesses it from the manifest's text. `retry` is 15 when the
       length read didn't settle (an R2 error, or the read's time
       limit), and 0 otherwise. It means ask again after that many
-      seconds. A single 0 couldn't tell "never" from "not yet". The
+      seconds, and such a card is never kept by a cache, which could
+      otherwise answer the second ask with the first reading. A single
+      0 couldn't tell "never" from "not yet". The
       manifest's own `duration`, which is Vimeo's whole seconds for a
       Vimeo row, keeps its meaning; this field has a name of its own.
-    - `credit` is the attribution text, else the rights holder, else
-      the organization. `license` is the SPDX id, as the record's
-      `licenseSpdx` and STAC's `license` are. `licenseText` is the
-      statement, then the licence's address, which is dropped whole
-      rather than cut.
+    - `credit` is the first of the attribution text, the rights
+      holder and the organization with any text once its HTML is out.
+      `license` is the SPDX id, as the record's `licenseSpdx` and
+      STAC's `license` are. `licenseText` is the statement, then the
+      licence's address, printable ASCII, which is dropped whole rather
+      than cut; a statement the address leaves no room for is dropped,
+      and counts as cut.
     - `abstract` is cut at a word. A value cut on the node ends `...`,
       and `truncated` is true when any was, so "About" can say the
       dataset's page has the rest. A script compares it with
@@ -1727,18 +1738,24 @@ driven by its owner in chat, with none of the visitor controls.
       whole or left out, since cutting `PT1H30M` to `PT1H` changes
       what it says.
     - **One text pipeline for every prose value**, tested against the
-      cases the script's own `plain()` handles today: Markdown to HTML
-      (portal abstracts are Markdown, SOS ones HTML; `marked` is
-      already a dependency), HTML to text, every entity decoded,
-      numeric ones included, tabs and line breaks to a space, control
-      characters and lone surrogates dropped, and U+FDD0 to U+FDEF
-      dropped too, since LSL's `JSON_*` constants live there and a
-      title of U+FDD0 would read back as `JSON_INVALID`. Then runs of
-      spaces fold and the ends are trimmed.
+      cases the script's own `plain()` handled: HTML to text, every
+      entity decoded once, numeric ones included, tabs and line breaks
+      to a space, control characters and lone surrogates dropped, and
+      U+FDD0 to U+FDEF dropped too, since LSL's `JSON_*` constants live
+      there and a title of U+FDD0 would read back as `JSON_INVALID`.
+      Then runs of spaces fold and the ends are trimmed. Markdown is
+      rendered for the abstract alone (portal abstracts are Markdown,
+      SOS ones HTML; `marked` is already a dependency): titles and
+      credits are text in the app, and read as Markdown "1. Hurricane
+      Maria" loses its number (found in review). A source past 8,192
+      characters is cut at a word before it is read, so the parse
+      costs a bounded share of a Worker's CPU, and the text says it was
+      cut.
     - A dataset that isn't public is a 404 with the node's envelope,
-      `error: "not_found"`, the only 404 a script acts on. A public
-      dataset the in-memory list hasn't caught up with is read on its
-      own first, so one published a moment ago isn't refused.
+      `error: "not_found"`, the only 404 a script acts on. The card
+      reads its own row, so it is as current as the dataset's record: a
+      dataset published a moment ago is found, and one retracted a
+      moment ago is a 404.
   - **`GET /api/v1/exhibit/datasets?tag=&offset=&limit=`, a page of
     the menu:** `{ total, offset, limit, tag, datasets: [{ id, title
     }] }`.
@@ -1751,7 +1768,11 @@ driven by its owner in chat, with none of the visitor controls.
       app's category filter matches, and the reply echoes the tag it
       matched. An empty parameter is the same as a missing one, a
       malformed one is a 400 `invalid_request`, an offset past `total`
-      gives no datasets, and an unknown tag gives `total: 0`.
+      gives no datasets, and an unknown tag gives `total: 0`. A tag
+      longer than the tags read ever lists is a 400, since an echo it
+      had to leave out would look like the unfiltered menu. A repeated
+      key's first value counts, and a key the node doesn't know is
+      ignored, so a later script's query reads on an older node.
     - `limit` runs from 1 to 9, defaulting to 9, frozen. A row whose id
       is longer than a ULID's 26 characters is left out rather than
       cut.
@@ -1763,10 +1784,15 @@ driven by its owner in chat, with none of the visitor controls.
     - A tag is never cut, since it is the key a script sends back. Its
       canonical form is NFC, trimmed, with control characters dropped.
       Tags are grouped and matched by it, and one whose canonical form
-      is empty or longer than 40 bytes is left out.
-    - The most common come first, ties by tag. Whole tags are dropped
-      from the least common end until the reply fits, and `more: true`
-      says so.
+      is empty, longer than 40 bytes, or holds a character beyond the
+      Basic Multilingual Plane is left out: whether Second Life carries
+      one whole, in a reply and back in an address, hasn't been checked
+      in-world.
+    - The most common come first, ties by tag, at most 30. Thirty tags
+      of 40 bytes with six-digit counts come to 2,003 bytes by their caps,
+      so the loop that drops whole tags from the least common end
+      until the reply fits is a guard; `more: true` says when tags
+      were left.
     - A tag's `count` equals the page's `total` for that tag, which a
       test holds.
     - It is a resource of its own, not a parameter of the page, so
@@ -1776,7 +1802,8 @@ driven by its owner in chat, with none of the visitor controls.
     included, and a reply's budget is their sum: a card at most 2,048
     bytes, a page 1,024, the tags 2,048.
     - The page holds by construction: nine 26-byte ids, nine 48-byte
-      titles and the envelope come to about 910 bytes.
+      titles, a 40-byte tag, six-digit numbers and the envelope come
+      to 964 bytes.
     - The card's fixed fields take about 200 bytes, and the abstract
       what's left.
     - Tests sum the caps, and hold each reply with worst-case data:
@@ -1789,22 +1816,38 @@ driven by its owner in chat, with none of the visitor controls.
       asks for. A node that breaks its promise, an older fork, or an
       error page then costs no script more than that, and
       `HTTP_BODY_TRUNCATED` tells the info script to tell the owner.
+    - Anything that fails while answering, a D1 error or a spent
+      quota among them, is a 503 `unavailable` in the node's envelope,
+      never the platform's own page, which is neither JSON nor within
+      a budget. A method other than GET or HEAD is a 405
+      `method_not_allowed`.
   - **JSON, not plain lines.** A small reply that arrives whole reads
     with one `llJsonGetValue` a field, and Second Life decodes the
     escapes. A field can be added without moving the others. What sank
     the record read was its size, not its format.
   - **What it costs the node:**
-    - One in-memory list of every public dataset with its kind, built
-      with the catalog's own `listPublicDatasets` and `getDecorations`
-      so that "public" means what the catalog means by it, rebuilt at
-      most once a minute per isolate. Pages and tags filter it.
-    - So a retracted dataset's card can still be served for up to a
-      minute, and pages from different isolates can come from lists a
-      minute apart, so a page can skip or repeat a row.
+    - One in-memory list of every public dataset with its kind and
+      tags, built with the catalog's own `listPublicDatasets` so that
+      "public" means what the catalog means by it, and the tags alone
+      rather than `getDecorations`'s five tables, rebuilt at most once
+      a minute per isolate. Pages and tags filter it; a card reads its
+      own row.
+    - Only a list already read is shared. A Worker can't hand one
+      request's I/O to another, so a read shared while in flight hangs
+      every request waiting on it if the one that started it ends
+      (`orbit-gate.ts` says so; found in review), and requests that
+      miss together each read. A failed read keeps the last good list
+      for up to ten minutes, trying again once a minute.
+    - So a retracted dataset can stay in pages for up to a minute, and
+      pages from different isolates can come from lists a minute
+      apart, so a page can skip or repeat a row. The menu, when it is
+      built, should learn to notice: the API review suggested an
+      additive `list` field, a short hash of the page's list, which a
+      script seeing it change between pages can start over on.
     - Cloudflare doesn't store a Function's reply at its edge, so
       `Cache-Control` saves the node nothing; it is for browsers:
-      `public, max-age=60`, the manifest's 15 s for a card with a
-      `retry`, and `no-store` for errors.
+      `public, max-age=60`, and `no-store` for a card with a `retry`
+      and for errors.
     - The first menu read walked every public row on every request. On
       D1's free plan that spends the day's reads at about one request
       every 17 seconds. A list per isolate is enough at exhibit

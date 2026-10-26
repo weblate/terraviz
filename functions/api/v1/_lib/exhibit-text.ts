@@ -6,22 +6,30 @@
  * prose becomes before a Second Life script is handed it, and how a value
  * is cut to a byte budget.
  *
- * **One pipeline for every prose value** (`exhibitPlainText`). Abstracts
- * written in the portal are Markdown and the SOS ones are HTML, so
- * Markdown is rendered first, which passes HTML through, and then the HTML
- * comes out by the rules the exhibit's info script used when it did this
- * itself (`plain()` in `scripts/second-life-exhibit/terraviz-exhibit-info.lsl`):
- * a tag is a `<` before a letter, `/` or `!`, up to its `>`; the inline
- * ones (`<sub>`, `<a>`, ...) run into the words beside them and any other
- * stands for a space; any other `<`, as in "size < 2.5", is text. Then the
- * entities are read, numeric ones included, and what a script can't hold
- * goes: tabs and line breaks become spaces (a line break in a title would
- * add a line to the floating text), control characters and lone surrogates
- * are dropped, and so are U+FDD0 to U+FDEF, since LSL's `JSON_*` constants
- * live there and a title of U+FDD0 would read back as `JSON_INVALID`. Runs
- * of spaces fold and the ends are trimmed. `stacPlainText` in
- * `stac-policy.ts` is not reused because it drops a raw HTML block whole,
- * text and all, which is most of an SOS abstract.
+ * **One pipeline for every prose value** (`exhibitPlainText`). HTML comes
+ * out by the rules the exhibit's info script used when it did this itself
+ * (`plain()` in `scripts/second-life-exhibit/terraviz-exhibit-info.lsl`
+ * before 26 October): a tag is a `<` before a letter, `/` or `!`, up to
+ * its `>`; the inline ones (`<sub>`, `<a>`, ...) run into the words beside
+ * them and any other stands for a space; any other `<`, as in "size <
+ * 2.5", is text. Then the entities are read, once, numeric ones included,
+ * and what a script can't hold goes: tabs and line breaks become spaces (a
+ * line break in a title would add a line to the floating text), control
+ * characters and lone surrogates are dropped, and so are U+FDD0 to U+FDEF,
+ * since LSL's `JSON_*` constants live there and a title of U+FDD0 would
+ * read back as `JSON_INVALID`. Runs of spaces fold and the ends are
+ * trimmed. `stacPlainText` in `stac-policy.ts` is not reused because it
+ * drops a raw HTML block whole, text and all, which is most of an SOS
+ * abstract.
+ *
+ * **Markdown only where it is written** (`{ markdown: true }`): abstracts
+ * from the portal are Markdown, and SOS ones HTML, which Markdown passes
+ * through. Titles and credits are plain text in the app, and read as
+ * Markdown "1. Hurricane Maria" would lose its number.
+ *
+ * **A long source is cut first** (`SOURCE_MAX`), at a word, so the parse
+ * costs a bounded share of a Worker's CPU whatever a publisher wrote; the
+ * text it gives is marked cut and ends `...`.
  *
  * **Budgets are counted as sent** (`jsonBytes`): a value's UTF-8 bytes
  * once `JSON.stringify` has escaped it, without its quotes, since that is
@@ -39,7 +47,7 @@ const INLINE_TAGS = new Set([
 ])
 
 /** The named entities the catalog's text uses, and the common ones beside them. */
-const NAMED_ENTITIES: Record<string, string> = {
+const NAMED_ENTITIES: Readonly<Record<string, string>> = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
   mdash: '—', ndash: '–', hellip: '…', middot: '·', bull: '•',
   lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
@@ -49,6 +57,14 @@ const NAMED_ENTITIES: Record<string, string> = {
 }
 
 const encoder = new TextEncoder()
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/**
+ * Characters of a source read at most. A card's longest value, the
+ * abstract, holds under 2,048 bytes of plain text, and 8,192 characters of
+ * the SOS catalog's HTML give more than that.
+ */
+export const SOURCE_MAX = 8192
 
 /** A value's UTF-8 bytes as `JSON.stringify` writes it, without its quotes. */
 export function jsonBytes(value: string): number {
@@ -80,16 +96,34 @@ function htmlToText(s: string): string {
   return out.join('')
 }
 
+const ENTITY = /&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});?/g
+
+function namedEntity(name: string): string | undefined {
+  if (Object.hasOwn(NAMED_ENTITIES, name)) return NAMED_ENTITIES[name]
+  const lower = name.toLowerCase()
+  return Object.hasOwn(NAMED_ENTITIES, lower) ? NAMED_ENTITIES[lower] : undefined
+}
+
 function decodeEntities(s: string): string {
-  return s.replace(/&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, body: string) => {
+  return s.replace(ENTITY, (whole, body: string) => {
     if (body[0] === '#') {
       const code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10)
       return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ''
     }
     // `&nbsp` with no semicolon is what some SOS abstracts write.
-    const named = NAMED_ENTITIES[body] ?? NAMED_ENTITIES[body.toLowerCase()]
-    return named ?? whole
+    return namedEntity(body) ?? whole
   })
+}
+
+/**
+ * Every entity written with its semicolon, read nowhere: Markdown passes
+ * `&nbsp;` through as an entity but escapes the `&` of a bare `&nbsp`,
+ * which would then read back as text. Decoding before Markdown instead
+ * would read each escape twice, turning `&amp;lt;b&amp;gt;` into a tag.
+ */
+function closeEntities(s: string): string {
+  return s.replace(ENTITY, (whole, body: string) =>
+    whole.endsWith(';') || (body[0] !== '#' && namedEntity(body) === undefined) ? whole : `&${body};`)
 }
 
 /** What a script can't hold, dropped, and every kind of break made a space. */
@@ -106,40 +140,67 @@ function scriptSafe(s: string): string {
   return out
 }
 
+/** `s` cut to `SOURCE_MAX` characters at a word, and whether it was. */
+function boundedSource(s: string): { source: string; cut: boolean } {
+  if (s.length <= SOURCE_MAX) return { source: s, cut: false }
+  let end = SOURCE_MAX
+  // Never half of a surrogate pair.
+  if (/[\ud800-\udbff]/.test(s[end - 1])) end -= 1
+  const space = s.lastIndexOf(' ', end)
+  if (space > end / 2) end = space
+  return { source: s.slice(0, end), cut: true }
+}
+
 /**
- * Markdown or HTML, as plain text a script can hold. The HTML rules and
- * the entities run before the Markdown as well as after: the catalog cuts
- * some fields mid-tag (an organization ending `<a href="https://visibl`),
- * which Markdown would escape into text where the script's rules drop a
- * tag left open, and `&nbsp` with no semicolon, which Markdown would hide
- * from the entity pass by escaping its `&`.
+ * HTML, or with `markdown` Markdown too, as plain text a script can hold,
+ * and whether the source was cut for length (`SOURCE_MAX`), in which case
+ * the text ends `...`. For Markdown the HTML rules run before the parse as
+ * well as after: the catalog cuts some fields mid-tag (an organization
+ * ending `<a href="https://visibl`), which Markdown would escape into text
+ * where the script's rules drop a tag left open.
  */
-export function exhibitPlainText(source: string | null | undefined): string {
-  if (!source) return ''
-  const html = marked.parse(decodeEntities(htmlToText(source)), { async: false, gfm: true }) as string
-  return scriptSafe(decodeEntities(htmlToText(html))).replace(/ {2,}/g, ' ').trim()
+export function exhibitProse(
+  value: string | null | undefined,
+  options: { markdown?: boolean } = {},
+): { text: string; cut: boolean } {
+  if (!value) return { text: '', cut: false }
+  const { source, cut } = boundedSource(value)
+  const html = options.markdown
+    ? marked.parse(closeEntities(htmlToText(source)), { async: false, gfm: true }) as string
+    : source
+  let text = scriptSafe(decodeEntities(htmlToText(html))).replace(/ {2,}/g, ' ').trim()
+  if (cut) text = `${text}...`
+  return { text, cut }
+}
+
+/** `exhibitProse`'s text alone. */
+export function exhibitPlainText(value: string | null | undefined, options: { markdown?: boolean } = {}): string {
+  return exhibitProse(value, options).text
 }
 
 /**
  * `text` in at most `cap` bytes as sent, cut at a word where one is in
- * the last third and ending `...`, and whether it was cut.
+ * the last third and ending `...`, and whether it was cut. It cuts between
+ * graphemes, so an accent or an emoji sequence stays whole, and gives ""
+ * when not even one fits beside the `...`.
  */
 export function cutProse(text: string, cap: number): { text: string; cut: boolean } {
   if (jsonBytes(text) <= cap) return { text, cut: false }
   if (cap < 4) return { text: '', cut: text !== '' }
-  const chars = Array.from(text)
+  const parts = Array.from(graphemes.segment(text), g => g.segment)
   // The longest prefix whose cut form fits, found by halving.
   let lo = 0
-  let hi = chars.length
+  let hi = parts.length
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2)
-    if (jsonBytes(chars.slice(0, mid).join('').trimEnd() + '...') <= cap) lo = mid
+    if (jsonBytes(parts.slice(0, mid).join('').trimEnd() + '...') <= cap) lo = mid
     else hi = mid - 1
   }
+  if (lo === 0) return { text: '', cut: true }
   let end = lo
-  const space = chars.lastIndexOf(' ', end - 1)
+  const space = parts.lastIndexOf(' ', end - 1)
   if (space > (end * 2) / 3) end = space
-  return { text: chars.slice(0, end).join('').trimEnd() + '...', cut: true }
+  return { text: parts.slice(0, end).join('').trimEnd() + '...', cut: true }
 }
 
 /** `value` if it matches `pattern` and fits `cap` bytes as sent, else `""`. */

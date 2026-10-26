@@ -15,14 +15,18 @@
  *
  * Errors:
  *   - 503 `binding_missing` for a missing `CATALOG_DB`.
+ *   - 503 `unavailable` for anything that fails while answering.
  */
 
 import type { CatalogEnv } from '../_lib/env'
-import { buildTags, exhibitError, exhibitJson, exhibitList } from '../_lib/exhibit-reads'
+import { buildTags, exhibitAnswer, exhibitError, exhibitJson, exhibitList } from '../_lib/exhibit-reads'
 
 export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
   if (!context.env.CATALOG_DB) {
     return exhibitError(503, 'binding_missing', 'CATALOG_DB binding is not configured on this deployment.')
   }
-  return exhibitJson(buildTags(await exhibitList(context.env.CATALOG_DB)))
+  const db = context.env.CATALOG_DB
+  return exhibitAnswer('tags', async () => exhibitJson(buildTags(await exhibitList(db))))
 }
+
+export const onRequestHead = onRequestGet

@@ -180,6 +180,10 @@ describe('GET /api/v1/datasets/{id}/manifest', () => {
     expect(res.headers.get('cache-control')).toContain('max-age=300')
     const body = await readJson<VideoBody>(res)
     expect(body.kind).toBe('video')
+    // Vimeo's own id, never the dataset's: the exhibit's older info scripts
+    // trust a manifest's length only when its id is the dataset's, which
+    // is how they tell Vimeo's whole seconds from the node's own reading
+    // (docs/protocol/README.md). "Fixing" this would undo that.
     expect(body.id).toBe('100')
     expect(body.title).toBe('Upstream Title')
     expect(body.duration).toBe(600)

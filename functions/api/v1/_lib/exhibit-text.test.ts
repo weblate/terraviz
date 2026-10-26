@@ -2,12 +2,37 @@
 // Copyright 2026 The Zyra Project
 
 import { describe, expect, it } from 'vitest'
-import { canonicalTag, cutProse, exhibitPlainText, jsonBytes, machineValue } from './exhibit-text'
+import { canonicalTag, cutProse, exhibitPlainText, exhibitProse, jsonBytes, machineValue, SOURCE_MAX } from './exhibit-text'
 
 describe('exhibitPlainText', () => {
-  it('takes Markdown out, keeping the words', () => {
-    expect(exhibitPlainText('A **bold** [link](https://example.org/x) and `code`.\n\n# Heading\n\n- one\n- two'))
-      .toBe('A bold link and code. Heading one two')
+  it('takes Markdown out, keeping the words, only where it is asked to', () => {
+    const md = 'A **bold** [link](https://example.org/x) and `code`.\n\n# Heading\n\n- one\n- two'
+    expect(exhibitPlainText(md, { markdown: true })).toBe('A bold link and code. Heading one two')
+    // A title is text: read as Markdown, it would lose its number.
+    expect(exhibitPlainText('1. Hurricane Maria')).toBe('1. Hurricane Maria')
+    expect(exhibitPlainText('# of fires per day')).toBe('# of fires per day')
+  })
+
+  it('reads each escape once, so escaped markup stays text', () => {
+    for (const markdown of [false, true]) {
+      expect(exhibitPlainText('Use the &lt;b&gt; tag', { markdown }), String(markdown)).toBe('Use the <b> tag')
+      expect(exhibitPlainText('&amp;lt; is how', { markdown }), String(markdown)).toBe('&lt; is how')
+    }
+    // A bare &nbsp is still read where Markdown would escape its &.
+    expect(exhibitPlainText('Voyager &nbsp and Cassini', { markdown: true })).toBe('Voyager and Cassini')
+  })
+
+  it('reads no name a JavaScript object carries as an entity', () => {
+    expect(exhibitPlainText('Fish &constructor; chips &toString &valueOf;')).toBe('Fish &constructor; chips &toString &valueOf;')
+  })
+
+  it('cuts a long source at a word before reading it, and says so', () => {
+    const long = 'word '.repeat(SOURCE_MAX)
+    const { text, cut } = exhibitProse(long, { markdown: true })
+    expect(cut).toBe(true)
+    expect(text.endsWith('word...')).toBe(true)
+    expect(text.length).toBeLessThanOrEqual(SOURCE_MAX + 3)
+    expect(exhibitProse('short').cut).toBe(false)
   })
 
   it('takes HTML out by the info script\'s rules: inline tags join words, others break them', () => {
@@ -64,9 +89,18 @@ describe('cutProse', () => {
     }
   })
 
-  it('never splits a character in two', () => {
-    const { text } = cutProse('😀'.repeat(30), 21)
-    expect(text).toBe('😀😀😀😀...')
+  it('never splits a character in two, nor a grapheme', () => {
+    expect(cutProse('😀'.repeat(30), 21).text).toBe('😀😀😀😀...')
+    // An accent written as its own code point stays on its letter.
+    expect(cutProse('e\u0301'.repeat(10), 8).text).toBe('e\u0301...')
+  })
+
+  it('gives nothing, not the whole text, when not one grapheme fits beside the ...', () => {
+    // Once, a cut this short searched the whole text for a space.
+    for (const [text, cap] of [['“Free to use” with credit to NOAA', 5], ['海 water and more', 4]] as const) {
+      const out = cutProse(text, cap)
+      expect(out, text).toEqual({ text: '', cut: true })
+    }
   })
 })
 

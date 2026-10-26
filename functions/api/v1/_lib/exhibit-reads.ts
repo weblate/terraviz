@@ -19,10 +19,11 @@
  * be updated remotely, so every later node serves these shapes to copies
  * running now. Under this path a change is additive only and inside the
  * budget, no field changes meaning, and a breaking change gets a new path
- * while the old one stays. `exhibit-reads.test.ts` pins the names and
- * types beside the budgets. The node's own convenience reads, as `featured`
- * and `search` are: not part of the federation protocol, and not in
- * `public/schema/v1/`.
+ * while the old one stays. `functions/api/v1/exhibit/exhibit.test.ts` pins
+ * the names and types beside the budgets. Convenience reads of nodes
+ * running this codebase, as `featured` is: not part of the federation
+ * protocol, and not in `public/schema/v1/`. Any failure answers the node's
+ * error envelope (`exhibitAnswer`), never the platform's own page.
  *
  * **Budgets are proved by summing caps.** Every field has a cap counted
  * as the body's UTF-8 bytes as sent (`jsonBytes`), and a reply's budget is
@@ -30,15 +31,16 @@
  * `...`; a machine value (an id, a path, a kind, a date, a period, a
  * licence's address) is sent whole or left out.
  *
- * **One list per isolate** (`exhibitList`): every public dataset, with its
- * kind, whether the output page can show it, and its tags, read at most
- * once every `LIST_TTL_MS` with the catalog's own `listPublicDatasets`, so
- * "public" means what the catalog means by it. Pages and tags filter it,
- * and a card is answered from it. So a retracted dataset's card can be
- * served for up to a minute after, and two pages from different isolates
- * can come from lists a minute apart. A dataset the list hasn't caught up
- * with is read on its own before a 404 (`findPublicRow`), so one published
- * a moment ago isn't refused.
+ * **One list per isolate** (`exhibitList`) for pages and tags: every
+ * public dataset, with its kind, whether the output page can show it, and
+ * its tags, read at most once every `LIST_TTL_MS` with the catalog's own
+ * `listPublicDatasets`, so "public" means what the catalog means by it.
+ * Only a list already read is shared, since a Worker can't hand one
+ * request's I/O to another: requests that miss together each read. A
+ * failed read keeps the last good list for up to `LIST_STALE_MS`. So two
+ * pages from different isolates can come from lists a minute apart, and a
+ * retracted dataset can stay in pages for a minute. A card reads its own
+ * row (`findPublicRow`), so it is as current as the dataset's record.
  */
 
 import {
@@ -49,7 +51,7 @@ import {
 } from './catalog-store'
 import { parseDataRef } from './data-ref'
 import { readHlsDuration, type HlsDurationReading } from './hls-duration'
-import { canonicalTag, cutProse, exhibitPlainText, jsonBytes, machineValue } from './exhibit-text'
+import { canonicalTag, cutProse, exhibitPlainText, exhibitProse, jsonBytes, machineValue } from './exhibit-text'
 import { SLUG_RE } from './validators'
 import type { CatalogEnv } from './env'
 
@@ -67,6 +69,7 @@ export const CARD_CAPS = {
   id: 64,
   page: 9 + 64, // "/dataset/" and a slug or an id
   kind: 16,
+  showable: 5,
   title: 200,
   startTime: 24,
   endTime: 24,
@@ -79,21 +82,29 @@ export const CARD_CAPS = {
   truncated: 5,
 } as const
 
-/** A page's caps: the id a ULID's 26, a title the 48 a dialog can list nine of. */
-export const PAGE_CAPS = { id: 26, title: 48, tag: 64, number: 6 } as const
+/** A tag longer than this is left out of `tags` rather than cut, and a
+ *  page asked for one is a 400. At 40, thirty tags fit `TAGS_BUDGET` by
+ *  their caps alone. */
+export const TAG_CAP = 40
 
-/** A tag longer than this is left out of `tags` rather than cut. */
-export const TAG_CAP = 64
+/**
+ * A page's caps: the id a ULID's 26, a title the 48 a dialog can list nine
+ * of, the echoed tag, and `total`, `offset` and `limit`, whole numbers of
+ * at most six digits (`PAGE_MAX_OFFSET`, and a catalog under a million).
+ */
+export const PAGE_CAPS = { id: 26, title: 48, tag: TAG_CAP, number: 6 } as const
 
 /** How long one isolate keeps its list. */
 export const LIST_TTL_MS = 60_000
+/** How long a list stays in use while reading a new one fails. */
+export const LIST_STALE_MS = 10 * 60_000
 
 /** Seconds a script waits before asking again for a length that didn't settle. */
 export const RETRY_SECONDS = 15
 
 /** A card with nothing in its prose: the fixed part every card spends. */
 export const CARD_SKELETON = JSON.stringify({
-  id: '', page: '', kind: '', title: '', startTime: '', endTime: '', period: '',
+  id: '', page: '', kind: '', showable: false, title: '', startTime: '', endTime: '', period: '',
   exactDuration: 0, retry: 0, credit: '', license: '', licenseText: '', abstract: '', truncated: false,
 })
 
@@ -101,6 +112,7 @@ export interface ExhibitCard {
   id: string
   page: string
   kind: string
+  showable: boolean
   title: string
   startTime: string
   endTime: string
@@ -137,8 +149,9 @@ interface ListEntry {
 /**
  * `video` for a `video/*` format, `image` for `image/*`, and a word of its
  * own for anything else: `tour` for `tour/json`, otherwise the format's
- * first part. The set is open, so a script shows `video` and `image` and
- * treats any other as one it can't.
+ * first part. The set is open. What a kind says is the media, not whether
+ * the output page can show it, which is `canShow`'s: a script shows a
+ * card that says `showable`, and only a kind it knows.
  */
 export function kindOf(format: string): string {
   const major = (format.split('/')[0] ?? '').toLowerCase()
@@ -154,14 +167,15 @@ export function kindOf(format: string): string {
  * reference and format disagree.
  */
 export function canShow(row: Pick<DatasetRow, 'format' | 'data_ref'>): boolean {
-  const kind = kindOf(row.format)
-  if (kind !== 'video' && kind !== 'image') return false
+  // The manifest's own test, case and all.
+  const video = row.format.startsWith('video/')
+  if (!video && !row.format.startsWith('image/')) return false
   const ref = parseDataRef(row.data_ref)
   if (!ref) return false
   switch (ref.scheme) {
     case 'vimeo':
     case 'stream':
-      return kind === 'video'
+      return video
     case 'url':
     case 'r2':
       return true
@@ -187,7 +201,7 @@ async function tagsFor(db: D1Database, ids: string[]): Promise<Map<string, strin
       .all<{ dataset_id: string; tag: string }>()
     for (const r of res.results ?? []) {
       const tag = canonicalTag(r.tag)
-      if (tag === '') continue
+      if (!listableTag(tag)) continue
       const list = out.get(r.dataset_id) ?? []
       if (!list.includes(tag)) list.push(tag)
       out.set(r.dataset_id, list)
@@ -206,31 +220,49 @@ async function buildList(db: D1Database): Promise<ListEntry[]> {
   return rows.map(row => entryFor(row, tags.get(row.id) ?? [])).sort(browseOrder)
 }
 
-let cached: { atMs: number; list: Promise<ListEntry[]> } | null = null
+/**
+ * A tag a script can be given and send back: not empty, within `TAG_CAP`,
+ * and inside the Basic Multilingual Plane, since whether Second Life
+ * carries a character beyond it whole, in a reply and back in an address,
+ * hasn't been checked in-world.
+ */
+function listableTag(tag: string): boolean {
+  return tag !== '' && jsonBytes(tag) <= TAG_CAP && !/[\u{10000}-\u{10FFFF}]/u.test(tag)
+}
+
+let cached: { atMs: number; list: ListEntry[] } | null = null
+let failedAtMs: number | null = null
 
 /** Forget the isolate's list, so one test's can't answer another's. */
 export function resetExhibitListForTests(): void {
   cached = null
+  failedAtMs = null
 }
 
-/** The isolate's list, read again once it is `LIST_TTL_MS` old. Requests
- *  that arrive while it is being read share the one read. */
-export function exhibitList(db: D1Database, nowMs: number = Date.now()): Promise<ListEntry[]> {
+/**
+ * The isolate's list, read again once it is `LIST_TTL_MS` old. Only a list
+ * already read is shared. When a read fails, the last good list answers
+ * for up to `LIST_STALE_MS`, and while it does no read is tried again
+ * for another `LIST_TTL_MS`, so an outage costs one read a minute.
+ */
+export async function exhibitList(db: D1Database, nowMs: number = Date.now()): Promise<ListEntry[]> {
   if (cached && nowMs - cached.atMs < LIST_TTL_MS) return cached.list
-  const list = buildList(db)
-  cached = { atMs: nowMs, list }
-  // A failed read is not kept, so the next request tries again.
-  list.catch(() => {
-    if (cached?.list === list) cached = null
-  })
-  return list
+  const usable = cached && nowMs - cached.atMs < LIST_STALE_MS ? cached.list : null
+  if (usable && failedAtMs !== null && nowMs - failedAtMs < LIST_TTL_MS) return usable
+  try {
+    const list = await buildList(db)
+    cached = { atMs: nowMs, list }
+    failedAtMs = null
+    return list
+  } catch (error) {
+    if (!usable) throw error
+    failedAtMs = nowMs
+    return usable
+  }
 }
 
-/** A public row by id: from the list, else read on its own, else null. */
+/** A public row by id, read on its own, or null. */
 export async function findPublicRow(db: D1Database, id: string): Promise<ListEntry | null> {
-  const list = await exhibitList(db)
-  const hit = list.find(e => e.row.id === id)
-  if (hit) return hit
   const row = await getPublicDataset(db, id)
   return row ? entryFor(row, []) : null
 }
@@ -249,10 +281,19 @@ export async function exactLength(
 }
 
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
+
+/** An instant as `YYYY-MM-DDTHH:MM:SS[.fff]Z`: the validators allow any
+ *  number of digits after the second, which is kept to the millisecond. */
+function instant(value: string | null): string {
+  const m = value?.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?Z$/)
+  if (!m) return ''
+  return machineValue(`${m[1]}${m[2] ? m[2].slice(0, 4) : ''}Z`, ISO_INSTANT, CARD_CAPS.startTime)
+}
 /** An ISO 8601 duration, the shape the info script's `period()` reads. */
 const ISO_DURATION = /^P(?!$)(\d+(\.\d+)?Y)?(\d+(\.\d+)?M)?(\d+(\.\d+)?W)?(\d+(\.\d+)?D)?(T(?=\d)(\d+(\.\d+)?H)?(\d+(\.\d+)?M)?(\d+(\.\d+)?S)?)?$/
 const SPDX = /^[A-Za-z0-9.+\-() ]+$/
-const ADDRESS = /^https?:\/\/[^\s"<>\\]+$/
+/** Printable ASCII only, without the quote, angle brackets or backslash. */
+const ADDRESS = /^https?:\/\/[\x21\x23-\x3b\x3d\x3f-\x5b\x5d-\x7e]+$/
 const ID = /^[A-Za-z0-9_-]+$/
 
 /** The dataset's page in the main app, as `src/utils/datasetUrl.ts` builds it. */
@@ -264,19 +305,25 @@ export function pagePath(row: Pick<DatasetRow, 'id' | 'slug'>): string {
 export function buildCard(entry: ListEntry, length: HlsDurationReading): ExhibitCard {
   const { row } = entry
   let truncated = false
-  const prose = (source: string | null, cap: number): string => {
-    const cut = cutProse(exhibitPlainText(source), cap)
-    if (cut.cut) truncated = true
+  const fit = (prose: { text: string; cut: boolean }, cap: number): string => {
+    const cut = cutProse(prose.text, cap)
+    if (cut.cut || prose.cut) truncated = true
     return cut.text
   }
 
-  const title = prose(row.title, CARD_CAPS.title)
-  const credit = prose(row.attribution_text || row.rights_holder || row.organization, CARD_CAPS.credit)
-  // The licence's address is whole or left out, and the statement gets the rest.
+  const title = fit(exhibitProse(row.title), CARD_CAPS.title)
+  // The first of these with any text once the HTML is out.
+  const who = [row.attribution_text, row.rights_holder, row.organization]
+    .map(v => exhibitProse(v))
+    .find(p => p.text !== '') ?? { text: '', cut: false }
+  const credit = fit(who, CARD_CAPS.credit)
+  // The licence's address is whole or left out, and the statement gets the
+  // rest: dropped whole when it has none, which counts as a cut.
   const address = machineValue(row.license_url?.trim(), ADDRESS, CARD_CAPS.licenseText)
   const statementCap = address ? CARD_CAPS.licenseText - jsonBytes(address) - 1 : CARD_CAPS.licenseText
-  const statement = statementCap >= 4 ? prose(row.license_statement, statementCap) : ''
-  const licenseText = [statement, address].filter(Boolean).join(' ')
+  const statement = exhibitProse(row.license_statement)
+  const statementText = fit(statement, Math.max(statementCap, 0))
+  const licenseText = [statementText, address].filter(Boolean).join(' ')
   const seconds = Number.isFinite(length.seconds) && length.seconds > 0 && length.seconds < 1e9
     ? Math.round(length.seconds * 1e6) / 1e6
     : 0
@@ -285,9 +332,10 @@ export function buildCard(entry: ListEntry, length: HlsDurationReading): Exhibit
     id: machineValue(row.id, ID, CARD_CAPS.id),
     page: pagePath(row),
     kind: entry.kind,
+    showable: entry.showable,
     title,
-    startTime: machineValue(row.start_time, ISO_INSTANT, CARD_CAPS.startTime),
-    endTime: machineValue(row.end_time, ISO_INSTANT, CARD_CAPS.endTime),
+    startTime: instant(row.start_time),
+    endTime: instant(row.end_time),
     period: machineValue(row.period, ISO_DURATION, CARD_CAPS.period),
     exactDuration: seconds,
     retry: length.settled ? 0 : RETRY_SECONDS,
@@ -300,7 +348,7 @@ export function buildCard(entry: ListEntry, length: HlsDurationReading): Exhibit
   // The abstract takes whatever the rest leaves, counted with `false`,
   // the longer of the two values `truncated` can end as.
   const room = CARD_BUDGET - byteLength({ ...card, truncated: false })
-  card.abstract = prose(row.abstract, room)
+  card.abstract = fit(exhibitProse(row.abstract, { markdown: true }), room)
   card.truncated = truncated
   return card
 }
@@ -312,14 +360,14 @@ export interface PageQuery {
 }
 
 export function buildPage(list: ListEntry[], query: PageQuery): ExhibitPage {
-  const tag = query.tag === '' ? '' : canonicalTag(query.tag)
+  const { tag } = query
   const matching = list.filter(e => e.showable && ID.test(e.row.id) && e.row.id.length <= PAGE_CAPS.id
     && (tag === '' || e.tags.includes(tag)))
   return {
     total: matching.length,
     offset: query.offset,
     limit: query.limit,
-    tag: jsonBytes(tag) <= PAGE_CAPS.tag ? tag : '',
+    tag,
     datasets: matching.slice(query.offset, query.offset + query.limit).map(e => ({
       id: e.row.id,
       title: cutProse(exhibitPlainText(e.row.title), PAGE_CAPS.title).text,
@@ -334,13 +382,13 @@ export function buildTags(list: ListEntry[]): ExhibitTags {
     for (const tag of e.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
   }
   const ranked = [...counts.entries()]
-    .filter(([tag]) => jsonBytes(tag) <= TAG_CAP)
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map(([tag, count]) => ({ tag, count }))
   let tags = ranked.slice(0, TAGS_MAX)
   let more = ranked.length > tags.length
-  // Whole tags from the least common end until the reply fits.
-  while (tags.length > 0 && byteLength({ tags, more: true }) > TAGS_BUDGET) {
+  // Whole tags from the least common end until the reply fits, measured
+  // with `false`, the longer of the two values `more` can end as.
+  while (tags.length > 0 && byteLength({ tags, more: false }) > TAGS_BUDGET) {
     tags = tags.slice(0, -1)
     more = true
   }
@@ -357,8 +405,9 @@ const CONTENT_TYPE = 'application/json; charset=utf-8'
  *  whose length read settled. Cloudflare doesn't keep a Function's reply
  *  at its edge, so this is for browsers; the saving is the list. */
 export const EXHIBIT_CACHE_CONTROL = 'public, max-age=60'
-/** For a card whose length read didn't settle, as the manifest does it. */
-export const EXHIBIT_TRANSIENT_CACHE_CONTROL = 'public, max-age=15'
+/** For a card whose length read didn't settle: never kept, since the
+ *  script asks again `retry` seconds later and wants a new reading. */
+export const EXHIBIT_TRANSIENT_CACHE_CONTROL = 'no-store'
 
 export function exhibitJson(body: unknown, cacheControl: string = EXHIBIT_CACHE_CONTROL): Response {
   return new Response(JSON.stringify(body), {
@@ -376,6 +425,20 @@ export function exhibitError(status: number, error: string, message: string): Re
   })
 }
 
+/**
+ * A route's answer, or the node's 503 envelope if anything in it throws: a
+ * failed D1 read, a quota, a parse. The platform's own error page is
+ * neither JSON nor within a budget.
+ */
+export async function exhibitAnswer(read: string, run: () => Promise<Response>): Promise<Response> {
+  try {
+    return await run()
+  } catch (error) {
+    console.error(`[exhibit] ${read} failed`, error instanceof Error ? error.message : 'UnknownError')
+    return exhibitError(503, 'unavailable', 'The node could not answer just now. Try again shortly.')
+  }
+}
+
 /** A whole number in [min, max]; `fallback` when absent or empty, since a
  *  script writes every key whether it has a value or not; else null. */
 function integerParam(raw: string | null, min: number, max: number, fallback: number): number | null {
@@ -386,10 +449,14 @@ function integerParam(raw: string | null, min: number, max: number, fallback: nu
 }
 
 /** A page's query, or what is wrong with it. An empty value is the same
- *  as a missing one. */
+ *  as a missing one, a repeated key's first value counts, and a key it
+ *  doesn't know is ignored, so a later script's query reads on this node.
+ *  The tag is matched in its canonical form, which the page echoes. */
 export function parsePageQuery(params: URLSearchParams): PageQuery | { message: string } {
-  const tag = params.get('tag') ?? ''
-  if (tag.length > 200) return { message: '`tag` must be at most 200 characters.' }
+  const raw = params.get('tag') ?? ''
+  if (raw.length > 200) return { message: '`tag` must be at most 200 characters.' }
+  const tag = raw === '' ? '' : canonicalTag(raw)
+  if (jsonBytes(tag) > TAG_CAP) return { message: `\`tag\` must be at most ${TAG_CAP} bytes.` }
   const offset = integerParam(params.get('offset'), 0, PAGE_MAX_OFFSET, 0)
   if (offset === null) return { message: `\`offset\` must be a whole number from 0 to ${PAGE_MAX_OFFSET}.` }
   const limit = integerParam(params.get('limit'), 1, PAGE_MAX_LIMIT, PAGE_DEFAULT_LIMIT)

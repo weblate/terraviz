@@ -19,18 +19,23 @@
  *   - `limit`: how many (1 to 9; default 9).
  *
  * Errors:
- *   - 400 `invalid_request` for a malformed parameter.
+ *   - 400 `invalid_request` for a malformed parameter, a tag over
+ *     `TAG_CAP` bytes among them.
  *   - 503 `binding_missing` for a missing `CATALOG_DB`.
+ *   - 503 `unavailable` for anything that fails while answering.
  */
 
 import type { CatalogEnv } from '../_lib/env'
-import { buildPage, exhibitError, exhibitJson, exhibitList, parsePageQuery } from '../_lib/exhibit-reads'
+import { buildPage, exhibitAnswer, exhibitError, exhibitJson, exhibitList, parsePageQuery } from '../_lib/exhibit-reads'
 
 export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
   if (!context.env.CATALOG_DB) {
     return exhibitError(503, 'binding_missing', 'CATALOG_DB binding is not configured on this deployment.')
   }
+  const db = context.env.CATALOG_DB
   const query = parsePageQuery(new URL(context.request.url).searchParams)
   if ('message' in query) return exhibitError(400, 'invalid_request', query.message)
-  return exhibitJson(buildPage(await exhibitList(context.env.CATALOG_DB), query))
+  return exhibitAnswer('page', async () => exhibitJson(buildPage(await exhibitList(db), query)))
 }
+
+export const onRequestHead = onRequestGet
