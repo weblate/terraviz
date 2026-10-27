@@ -186,7 +186,9 @@ afterEach(() => {
 /** The video proxy and Vimeo for one video, as a fetch, the way Vimeo
  *  serves it: the player's address answers 302 with the CDN's, whose
  *  master names video-only variants (`hls-duration.test.ts` has the
- *  fuller playlists and the refusals). */
+ *  fuller playlists and the refusals). Called as another object's
+ *  method it throws, as Workers' fetch does and Node's doesn't: every
+ *  card's Vimeo read failed on Cloudflare that way while these passed. */
 function vimeoFetch(proxy = 'https://video-proxy.zyra-project.org/video') {
   const at = 'https://skyfire.vimeocdn.com/a/b/c/playlist.m3u8'
   const routes: Record<string, () => Response | Promise<Response>> = {
@@ -196,7 +198,10 @@ function vimeoFetch(proxy = 'https://video-proxy.zyra-project.org/video') {
     'https://skyfire.vimeocdn.com/x/media.m3u8?sig=1': () =>
       new Response('#EXTM3U\n#EXTINF:6.000000,\na.mp4\n#EXTINF:6.100000,\nb.mp4\n#EXT-X-ENDLIST\n'),
   }
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async function (this: unknown, input: RequestInfo | URL) {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation: function called with incorrect `this` reference.')
+    }
     const route = routes[String(input)]
     if (!route) throw new Error(`unexpected fetch: ${String(input)}`)
     return route()
