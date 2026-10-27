@@ -31,14 +31,17 @@ item 4 and §9 Phase 2.
 
 | File | What it is |
 |---|---|
-| `terraviz-exhibit.lsl` | **The globe script.** Owns the address, the clock and the media: the smoke test's globe, taking requests from the other two. The only one with settings to edit. |
+| `terraviz-exhibit.lsl` | **The globe script.** Owns the address, the clock and the media: the smoke test's globe, taking requests from the others. The only one with settings to edit. |
 | `terraviz-exhibit-visitors.lsl` | **The visitors script.** Touches and menus, the hold, talks, and who is at the globe. |
-| `terraviz-exhibit-info.lsl` | **The info script.** The floating text, "About", and reading the dataset menu from the node for the visitors script. |
-| `exhibit.test.ts` | Holds the three scripts to each other and to the node: their link messages, the state they share, the commands a visitor may send, the card fields read, and what the node keeps for copies already rezzed. `../second-life-probe/globe.test.ts` holds the globe script's address to the output page. |
+| `terraviz-exhibit-info.lsl` | **The info script.** The floating text, and "About". |
+| `terraviz-exhibit-menu.lsl` | **The menu script.** The dataset menu from the node's catalog, which the visitors script opens. |
+| `exhibit.test.ts` | Holds the four scripts to each other and to the node: their link messages, the state they share, the commands a visitor may send, the card fields read, and what the node keeps for copies already rezzed. `../second-life-probe/globe.test.ts` holds the globe script's address to the output page. |
 
-A script in Second Life has 64 KB in all, which is why there are three:
+A script in Second Life has 64 KB in all, which is why there are four:
 one script reading what the node says about a dataset while also holding menus,
-notecards and the visitor list would run out.
+notecards and the visitor list would run out. The menu script is the
+fourth because the dataset menu, written into the visitors script first,
+stopped it at once with a Stack-Heap Collision in-world.
 
 ## Before you start
 
@@ -66,8 +69,8 @@ notecards and the visitor list would run out.
 ## Setting it up
 
 1. Rez a sphere. A default prim sphere is fine.
-2. In its Content tab, make three **New Script**s and replace their
-   text with the three `.lsl` files here, one each, saving each. Set
+2. In its Content tab, make four **New Script**s and replace their
+   text with the four `.lsl` files here, one each, saving each. Set
    `NODE` in the globe script first if you need to. The order doesn't
    matter: each asks the others for what it missed.
 3. Within a few seconds the sphere stands its poles upright and shows
@@ -247,7 +250,7 @@ Only datasets the globe can show are offered: images and videos, never
 tours. The floating text and About name a chosen dataset by its full
 title, though the menu cut it to fit.
 
-The info script reads it for the visitors script, asking only for a
+The menu script shows it and reads it from the node, asking only for a
 category and where a page starts. The categories are kept ten minutes,
 and a categories menu answered after they changed is shown again. If
 the node's catalog changes while a visitor pages through, the menu says
@@ -301,7 +304,7 @@ categories = Water, Air
 | `idle minutes` | how long after the last visitor leaves before the live Earth comes back | 1 to 1440 |
 | `hold seconds` | how long a visitor holds the globe after their last choice | 10 to 3600 |
 | `talk minutes` | how long with no presenter at the globe before a talk ends | 1 to 120 |
-| `categories` | which of the node's categories the menu offers, in that order, by name in any case, between commas, with `All datasets` among them if you want it (all of them, with "All datasets") | names the node has |
+| `categories` | which of the node's categories the menu offers, in that order, by name in any case, between commas, with `All datasets` among them if you want it (all of them, with "All datasets"); read by the menu script | names the node has |
 
 A value outside its range is ignored, with a word to the owner. A
 category the node doesn't have is left out of the menu; with none of
@@ -356,7 +359,7 @@ those:
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters, where the menu comes from, and the settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
-| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, the info script the most reading a card or a menu, or answering About, and the visitors script the most showing a menu from the node. |
+| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, the info script the most reading a card or answering About, and the menu script the most reading the node for a menu. |
 | `/9 help` | The globe script's list. |
 
 ## What leaves the object
@@ -369,10 +372,10 @@ lasts, and anyone with a menu open by key, for the five minutes the
 menu answers. The info script keeps the key of the last
 visitor who asked for "About", so a double press is answered once, and
 the key of whoever chose the dataset showing, until the node has said
-whether the globe can show it. It reads the dataset menu from the node
-asking only for a category and where a page starts, never who asked, and
-the visitors script keeps the page a visitor has open, for two
-visitors at most, while their menu answers. It tells a visitor about a dataset in
+whether the globe can show it. The menu script reads the dataset menu
+from the node asking only for a category and where a page starts, never
+who asked, and keeps the page a visitor has open, for four visitors at
+most, while their menu answers. It tells a visitor about a dataset in
 their own chat, which no one else sees. A tilt reads the position of whoever asked, once, to aim at them.
 Nothing is kept across a reset.
 
@@ -443,8 +446,8 @@ stand at the globe.
    Datasets and page through a category or two, then `/9 memory`. Every
    script should report well under 64 KB. The peaks are the numbers that
    matter, the globe script's while showing a dataset, the info
-   script's while reading a card or a menu, or answering About, and the
-   visitors script's while showing a menu: say what they were.
+   script's while reading a card or answering About, and the menu
+   script's while reading the node for a menu: say what they were.
 
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
@@ -475,15 +478,12 @@ each avatar used, and what steps 2 and 9 showed.
   left at its busiest, has the least room, so code that could go in
   another script should, and code added to any of them needs measuring
   again (step 9 of the smoke test). The dataset menu, added the same
-  day, isn't measured yet. The info script reads it and hands each
-  reply to the visitors script in lines rather than the node's JSON,
-  since a link message reaches every script in the sphere too, the
-  globe script's included: at most about 750 characters for a page, and
-  for the categories about 100 on the node in October, 1,450 at the most
-  from a node keeping its caps. The info script holds every value to
-  those caps before handing it on, so no node can make a relay much
-  longer (about 1,600 for the categories, with counts the longest an
-  integer is).
+  day, went into the visitors script first and stopped it at once with
+  a Stack-Heap Collision, so it is a fourth script, the menu script,
+  which reads the node itself. Nothing of the menu reaches the globe
+  script. The menu script's replies reach the info script, and the info
+  script's cards the menu script, each within 2 KB, and each sets the
+  other's aside at once. None of it is measured yet.
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With

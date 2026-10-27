@@ -1644,11 +1644,12 @@ driven by its owner in chat, with none of the visitor controls.
 
 *How the controller is built* (in
 [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md)):
-- **Three scripts in the globe prim, talking by link messages.** A
+- **Four scripts in the globe prim, talking by link messages.** A
   script gets 64 KB in all, and a dataset record costs about 1.8 bytes
   of it per character while held (§4.1). One script doing everything
   would hold a record while it also holds menus, notecards and visitor
-  lists, so the work is split three ways:
+  lists, so the work is split three ways, and since 27 October four,
+  for the dataset menu below:
   - **globe** owns the address, the clock and the media. It is the
     smoke-test script's core and writes the same keys, though since 27
     October not always the same `t` (below), and it is
@@ -1695,6 +1696,10 @@ driven by its owner in chat, with none of the visitor controls.
     date the globe now shows. When the node has no such dataset, or
     it is a tour, it puts the globe back on the live Earth and says
     so.
+  - **menu** owns the dataset menu read from the node's catalog, which
+    the visitors script opens for whoever chooses Datasets when the
+    globe has no `datasets` notecard ("The menu", step 2 of the
+    exhibit's reads, below). It reads the node itself.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start
@@ -2054,8 +2059,9 @@ driven by its owner in chat, with none of the visitor controls.
        held where the record took 6, and no JSON or HTML code of its
        own. Done 26 October, 185 lines shorter; `/9 memory` in-world is
        still to measure.
-    2. The menu (built 27 October, on the design of 25 October;
-       `/9 memory` in-world still to measure). The maintainer chose on
+    2. The menu (built 27 October, on the design of 25 October, as a
+       fourth script after the first build overflowed the visitors
+       script in-world; `/9 memory` still to measure). The maintainer chose on
        25 October a menu read live
        from the node over two cheaper alternatives: a page on the node
        that writes the `datasets` notecard, which the owner would redo
@@ -2092,34 +2098,38 @@ driven by its owner in chat, with none of the visitor controls.
          again; told of categories it lacks once, not at every refresh.
          A category emptied since it was listed sends the visitor back
          to the categories.
-       - **The info script reads, the visitors script shows.** The info
-         script stays the only script with an `http_response`, since a
-         reply reaches every script in the prim with a handler for one.
-         The visitors script asks it by link message (`MSG_MENU_ASK`,
-         `tags`, or `page` with the offset and the tag, in lines, with
-         the visitor's key), it asks the node, at most one request in
-         flight a visitor so a slow reply to a read they have since
-         replaced opens nothing, and it relays the reply (`MSG_MENU`). A
-         link message reaches every script in the prim too, the globe's
-         included, which has the least room, so the relay is lines rather
-         than the node's JSON: a page comes to at most about 750
-         characters, and the categories to about 100 on the node in
-         October and 1,450 at their caps. The info script holds every
-         value to the node's own cap before handing it on (found in
-         review), so a node breaking its caps can't make a relay longer,
-         or a script hold more. Moving the visitors script to a prim of
-         its own, the other way to keep the relay from the globe script,
-         was left for if this doesn't fit.
+       - **A script of its own, which reads the node itself.** It went
+         into the visitors script first, the info script reading the
+         node and relaying each reply in lines, and in-world the
+         visitors script stopped at once with a Stack-Heap Collision
+         (27 October): the menu had taken it past 64 KB before it held a
+         page. So the menu is a fourth script, `terraviz-exhibit-menu`,
+         and the visitors and info scripts are as they were but for a few
+         lines. The visitors script opens it (`MSG_MENU_OPEN`) for a
+         visitor who may act, and it hands back (`MSG_MENU_DONE`) a
+         choice, which the visitors script holds to the hold and any talk
+         as it does the notecard menu's, or the main menu, or the
+         built-in datasets. It reads the node itself, with its own
+         `http_response`: a web reply reaches every script in the prim
+         with one, so it receives the info script's cards and the info
+         script its pages, each within 2 KB, each set aside at once, and
+         nothing of the menu reaches the globe script, which has the
+         least room. That reverses this step's first rule, that the info
+         script be the only script with an `http_response`, which was
+         about scripts with no room to spare; the menu script has room.
+         It reads the `categories` line of the `settings` notecard
+         itself, and asks the node only for a category and where a page
+         starts, one read in flight a visitor, so a slow reply to a read
+         they have since replaced opens nothing.
        - **Kept, and for how long:** the categories for ten minutes,
          about 0.2 KB in October and 2.4 KB at their caps; the page a
-         visitor has open, as the info script passed it on, the one copy,
-         while their menu stays answerable (five minutes), for at most
-         two visitors at once, the oldest giving way, since a page is at
-         most about 750 characters, 1.5 KB held. Outside a talk only the
-         visitor holding the globe and the owner can open Datasets, and a
-         visitor whose page gave way gets the categories again. The
-         visitors script's `/9 memory` now says the most it used showing
-         a menu, as the other two say theirs.
+         visitor has open, as the node sent it, while their menu stays
+         answerable (five minutes), for at most four visitors at once,
+         the oldest giving way, each within its 1 KB budget. Outside a
+         talk only the visitor holding the globe and the owner can open
+         Datasets, and a visitor whose page gave way gets the categories
+         again. The menu script's `/9 memory` says the most it used
+         reading the node for a menu, as the other scripts say theirs.
        - **The page's `list`** (below) says two pages of one category
          came from different lists. While a visitor pages through one,
          the menu then says a dataset may have moved between pages, and
