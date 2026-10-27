@@ -519,6 +519,21 @@ function vimeo(routes: Record<string, Route>) {
   })
 }
 
+/**
+ * A fetch as Workers' own behaves: called as another object's method it
+ * throws, where Node's doesn't care. Every Vimeo read failed on
+ * Cloudflare that way while the tests, run in Node, passed.
+ */
+function workersFetch(routes: Record<string, Route>): typeof fetch {
+  const inner = vimeo(routes)
+  return function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation: function called with incorrect `this` reference.')
+    }
+    return inner(input, init)
+  } as typeof fetch
+}
+
 /** An answer that never comes, until the request's signal stops it. */
 const hanging: Route = init => new Promise<Response>((_, reject) => {
   init?.signal?.addEventListener('abort', () => reject(new DOMException('stopped', 'AbortError')))
@@ -565,6 +580,21 @@ describe('readVimeoDuration', () => {
     expect(text).not.toMatch(/pathsig|\?|aab1e50e/)
     return text
   }
+
+  it("calls the fetch it is given as Workers' fetch must be called", async () => {
+    expect(await readVimeoDuration('920241809', PROXY, { fetchImpl: workersFetch(vimeoRoutes()) }))
+      .toEqual({ seconds: 12.1, settled: true })
+    expect(logged()).toBe('')
+  })
+
+  it("calls the platform's own fetch, by default, as Workers' fetch must be called", async () => {
+    vi.stubGlobal('fetch', workersFetch(vimeoRoutes()))
+    try {
+      expect(await readVimeoDuration('920241809', PROXY)).toEqual({ seconds: 12.1, settled: true })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 
   it('reads every variant, where the API gives whole seconds, following the player\'s redirect itself', async () => {
     const fetchImpl = vimeo(vimeoRoutes())
