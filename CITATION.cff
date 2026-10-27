@@ -8,6 +8,10 @@ authors:
     email: eric.j.hackathorn@noaa.gov
     orcid: "https://orcid.org/0000-0002-9693-2093"
     affiliation: NOAA Global Systems Laboratory
+  - given-names: Adrian
+    family-names: Chase
+    email: adrian.chase@noaa.gov
+    affiliation: NOAA Global Systems Laboratory
 identifiers:
   - type: doi
     value: 10.5281/zenodo.20043181
