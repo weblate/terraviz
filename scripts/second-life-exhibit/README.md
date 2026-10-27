@@ -239,14 +239,19 @@ the node's categories, with how many datasets each has, and "All
 datasets", since some are in none. A category opens its datasets nine
 to a page, in the order the app's browse lists them. On a page the
 buttons are numbers and the titles are in the menu's text: most titles
-are longer than a button's 24 bytes. A category's button is its name
-when every name on that page fits one. Only datasets the globe can show
-are offered: images and videos, never tours.
+are longer than a button's 24 bytes. The numbers count from the
+category's first dataset, 10 to 18 on its second page, so a button
+pressed on an older menu answers nothing rather than the wrong dataset.
+A category's button is its name when every name on that page fits one.
+Only datasets the globe can show are offered: images and videos, never
+tours. The floating text and About name a chosen dataset by its full
+title, though the menu cut it to fit.
 
 The info script reads it for the visitors script, asking only for a
-category and where a page starts. The categories are kept ten minutes.
-If the node's catalog changes while a visitor pages through, the menu
-says a dataset may have moved between pages. When the node can't give
+category and where a page starts. The categories are kept ten minutes,
+and a categories menu answered after they changed is shown again. If
+the node's catalog changes while a visitor pages through, the menu says
+a dataset may have moved between pages. When the node can't give
 the menu (Second Life is limiting the object's web requests, the node
 answers with an error, or it is a node from before October 2026 with no
 menu to give), the visitor gets the five built-in datasets below, and
@@ -296,7 +301,7 @@ categories = Water, Air
 | `idle minutes` | how long after the last visitor leaves before the live Earth comes back | 1 to 1440 |
 | `hold seconds` | how long a visitor holds the globe after their last choice | 10 to 3600 |
 | `talk minutes` | how long with no presenter at the globe before a talk ends | 1 to 120 |
-| `categories` | which of the node's categories the menu offers, in that order, by name in any case, between commas (all of them, with "All datasets") | names the node has |
+| `categories` | which of the node's categories the menu offers, in that order, by name in any case, between commas, with `All datasets` among them if you want it (all of them, with "All datasets") | names the node has |
 
 A value outside its range is ignored, with a word to the owner. A
 category the node doesn't have is left out of the menu; with none of
@@ -351,7 +356,7 @@ those:
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters, where the menu comes from, and the settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
-| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, and the info script the most reading a card or a menu, or answering About. |
+| `/9 memory` | How much of its 64 KB each script uses. The globe script also says the most it has used showing a dataset, the info script the most reading a card or a menu, or answering About, and the visitors script the most showing a menu from the node. |
 | `/9 help` | The globe script's list. |
 
 ## What leaves the object
@@ -366,7 +371,7 @@ visitor who asked for "About", so a double press is answered once, and
 the key of whoever chose the dataset showing, until the node has said
 whether the globe can show it. It reads the dataset menu from the node
 asking only for a category and where a page starts, never who asked, and
-the visitors script keeps the page a visitor has open, for three
+the visitors script keeps the page a visitor has open, for two
 visitors at most, while their menu answers. It tells a visitor about a dataset in
 their own chat, which no one else sees. A tilt reads the position of whoever asked, once, to aim at them.
 Nothing is kept across a reset.
@@ -437,9 +442,9 @@ stand at the globe.
    25 Sep 2017, 23:45 UTC across the clip. Choose About, then open
    Datasets and page through a category or two, then `/9 memory`. Every
    script should report well under 64 KB. The peaks are the numbers that
-   matter, the globe script's while showing a dataset and the info
-   script's while reading a card or a menu, or answering About: say
-   what they were.
+   matter, the globe script's while showing a dataset, the info
+   script's while reading a card or a menu, or answering About, and the
+   visitors script's while showing a menu: say what they were.
 
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
@@ -474,7 +479,11 @@ each avatar used, and what steps 2 and 9 showed.
   reply to the visitors script in lines rather than the node's JSON,
   since a link message reaches every script in the sphere too, the
   globe script's included: at most about 750 characters for a page, and
-  for the categories about 100 on the node in October, 1,450 at the most.
+  for the categories about 100 on the node in October, 1,450 at the most
+  from a node keeping its caps. The info script holds every value to
+  those caps before handing it on, so no node can make a relay much
+  longer (about 1,600 for the categories, with counts the longest an
+  integer is).
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With

@@ -85,12 +85,12 @@ integer MSG_MENU     = 271007; // info to visitors: what the node gave, in lines
 // card arrives whole, and a reply cut short isn't one. A request reads one
 // byte more, so a card of exactly the budget can't read as cut, whichever
 // way Second Life counts the limit. Held at two bytes a character, a card
-// is the largest thing this script holds.
+// and the categories are the largest things this script holds.
 integer CARD_MAX = 2048;
-// A menu page's budget and the categories', read with a byte to spare as
-// a card is.
-integer PAGE_MAX = 1024;
-integer TAGS_MAX = 2048;
+// A menu page's budget and the categories', in bytes, read with a byte to
+// spare as a card is.
+integer PAGE_BYTES = 1024;
+integer TAGS_BYTES = 2048;
 integer MENU_REQS = 8;         // menu reads in flight at once, one a visitor
 integer TRIES = 4;            // asks for one dataset's card, a failed one or one the node said to repeat
 integer ABSTRACT_MAX = 500;    // characters of an abstract kept for "About"; the link has the rest
@@ -423,7 +423,15 @@ string fit(string s, integer max)
 // by the id, and which means nothing to a visitor.
 string called()
 {
-    if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;
+    if (gFor == gDataset && gCardTitle != "")
+    {
+        if (gTitle == "" || gTitle == gDataset) return gCardTitle;
+        // The menu's title, which the node cut to 48 bytes and ended with
+        // "...": the card's is the same title whole, or cut far later.
+        integer n = llStringLength(gTitle);
+        if (n > 3 && llGetSubString(gTitle, -3, -1) == "..."
+            && llSubStringIndex(gCardTitle, llGetSubString(gTitle, 0, n - 4)) == 0) return gCardTitle;
+    }
     return gTitle;
 }
 
@@ -716,8 +724,8 @@ about(key av)
 }
 
 // A menu read for the visitors script: "tags", or "page", the offset and
-// the tag, in lines. One in flight a visitor, so a slow reply can't open a
-// menu they have moved on from.
+// the tag, in lines. One in flight a visitor, so a slow reply to a read
+// they have since replaced with another opens nothing.
 menuAsk(key who, string what)
 {
     integer at = llListFindList(gMenuReqs, [who]);
@@ -725,12 +733,12 @@ menuAsk(key who, string what)
     if (gNode == "") { llMessageLinked(LINK_THIS, MSG_MENU, "fail\n0", who); return; }
     list w = llParseStringKeepNulls(what, ["\n"], []);
     string url = gNode + "/api/exhibit/v1/tags";
-    integer max = TAGS_MAX;
+    integer max = TAGS_BYTES;
     if (llList2String(w, 0) == "page")
     {
         url = gNode + "/api/exhibit/v1/datasets?limit=9&offset=" + (string)llList2Integer(w, 1)
             + "&tag=" + llEscapeURL(llList2String(w, 2));
-        max = PAGE_MAX;
+        max = PAGE_BYTES;
     }
     key req = llHTTPRequest(url, [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, max + 1], "");
     // Throttled: no key, and never an answer.
@@ -739,13 +747,18 @@ menuAsk(key who, string what)
     while (llGetListLength(gMenuReqs) > MENU_REQS * 2) gMenuReqs = llDeleteSubList(gMenuReqs, 0, 1);
 }
 
-// A value of a menu reply on one line, or "" for one it lacks. The node
-// writes none with a line break; this takes out any another node left in.
-string line(string body, list path)
+// A value of a menu reply on one line, or "" for one it lacks, or
+// JSON_INVALID for one longer than max characters, the node's own cap for
+// it, which a node keeping its contract never sends: what this script hands
+// on reaches every script in the prim. The node writes no line break; this
+// takes out any another node left in.
+string line(string body, list path, integer max)
 {
     string v = llJsonGetValue(body, path);
     if (v == JSON_INVALID) return "";
-    return llDumpList2String(llParseStringKeepNulls(v, ["\n"], []), " ");
+    v = llDumpList2String(llParseStringKeepNulls(v, ["\n"], []), " ");
+    if (llStringLength(v) > max) return JSON_INVALID;
+    return v;
 }
 
 // A menu reply, handed to the visitors script in lines: "tags", then each
@@ -763,19 +776,23 @@ menuReply(key who, integer status, list meta, string body)
         if (llJsonValueType(body, ["datasets"]) == JSON_ARRAY)
         {
             out = ["page", (integer)llJsonGetValue(body, ["total"]), (integer)llJsonGetValue(body, ["offset"]),
-                line(body, ["list"]), line(body, ["tag"])];
+                line(body, ["list"], 8), line(body, ["tag"], 40)];
             while (i < 9 && llJsonValueType(body, ["datasets", i]) != JSON_INVALID)
             {
-                out += [line(body, ["datasets", i, "id"]), line(body, ["datasets", i, "title"])];
+                out += [line(body, ["datasets", i, "id"], 26), line(body, ["datasets", i, "title"], 48)];
                 ++i;
             }
+            // A value past its cap: not a page this script hands on.
+            if (llListFindList(out, [JSON_INVALID]) != -1) out = ["fail", 200];
         }
         else if (llJsonValueType(body, ["tags"]) == JSON_ARRAY)
         {
             out = ["tags"];
             while (i < 30 && llJsonValueType(body, ["tags", i]) != JSON_INVALID)
             {
-                out += [line(body, ["tags", i, "tag"]), (integer)llJsonGetValue(body, ["tags", i, "count"])];
+                // A tag past its cap is left out, as the node leaves one out.
+                string t = line(body, ["tags", i, "tag"], 40);
+                if (t != JSON_INVALID) out += [t, (integer)llJsonGetValue(body, ["tags", i, "count"])];
                 ++i;
             }
         }

@@ -2068,49 +2068,65 @@ driven by its owner in chat, with none of the visitor controls.
          datasets nine to a page. On a page the buttons are numbers and
          the menu's text lists the titles: a button holds 24 bytes, 115
          of the 175 titles were longer, and 20 came out the same when
-         cut to fit. A category's button is its name where every name
-         on that page fits a button whole, and numbers otherwise. A
-         choice goes to the globe as `show <id> <title>`, as the
-         notecard menu's does, and the globe checks it with the node.
+         cut to fit. The numbers count from the category's first
+         dataset, 10 to 18 on its second page, so a button pressed on an
+         older page of a visitor's isn't taken for one on the page they
+         have now (found in review). A category's button is its name
+         where every name on that page fits a button whole, and a number
+         counted from the first category otherwise; a categories menu
+         answered after the categories changed is shown again rather
+         than answered. A choice goes to the globe as `show <id>
+         <title>`, as the notecard menu's does, and the globe checks it
+         with the node. The title is the page's, which the node cuts to
+         48 bytes, so the info script names the dataset by the card's
+         title instead wherever the page's is that title cut.
        - **The owner's say:** a `datasets` notecard still replaces the
          live menu with its own list, for an exhibit with a theme, and
          `categories` in `settings` narrows the live menu to those
-         named, in the owner's order and whatever their case. When the
-         node can't give the menu (no node yet, Second Life throttling
-         the object's requests, an error, or a reply that isn't a page,
-         as from a node older than these reads), the visitor gets the
-         built-in five, and the owner is told why once, until the node
-         answers again.
+         named, in the owner's order and whatever their case, "All
+         datasets" among them if named. When the node can't give the
+         menu (no node yet, Second Life throttling the object's
+         requests, an error, or a reply that isn't a menu, as from a
+         node older than these reads), the visitor gets the built-in
+         five, and the owner is told why once, until the node answers
+         again; told of categories it lacks once, not at every refresh.
+         A category emptied since it was listed sends the visitor back
+         to the categories.
        - **The info script reads, the visitors script shows.** The info
          script stays the only script with an `http_response`, since a
          reply reaches every script in the prim with a handler for one.
          The visitors script asks it by link message (`MSG_MENU_ASK`,
-         `tags` or `page <offset> <tag>`, with the visitor's key), it
-         asks the node, at most one request in flight a visitor so a
-         slow reply can't open a menu they have moved on from, and it
-         relays the reply (`MSG_MENU`). A link message reaches every
-         script in the prim too, the globe's included, which has the
-         least room, so the relay is lines rather than the node's JSON:
-         a page comes to at most about 750 characters, and the
-         categories to about 100 on the node in October and 1,450 at
-         their caps. Moving
-         the visitors script to a prim of its own, the other way to keep
-         the relay from the globe script, was left for if this doesn't
-         fit.
-       - **Kept, and for how long:** the categories for ten minutes;
-         the page a visitor has open, its ids and where it starts, while
-         their menu stays answerable (five minutes), for at most three
-         visitors at once, the oldest giving way, since a page's ids and
-         titles take about 1.4 KB at their caps. Outside a talk only the
-         visitor holding the globe and the owner can open Datasets, so
-         three is more than an exhibit needs, and a visitor whose page
-         gave way gets the categories again.
-       - **The page's `list`** (below) says when the catalog changed
-         between two pages of one category. The menu then says a
-         dataset may have moved between pages, and doesn't start over:
-         pages from two isolates can come from lists a minute apart, so
-         a menu that started over at every change might never page
-         forward.
+         `tags`, or `page` with the offset and the tag, in lines, with
+         the visitor's key), it asks the node, at most one request in
+         flight a visitor so a slow reply to a read they have since
+         replaced opens nothing, and it relays the reply (`MSG_MENU`). A
+         link message reaches every script in the prim too, the globe's
+         included, which has the least room, so the relay is lines rather
+         than the node's JSON: a page comes to at most about 750
+         characters, and the categories to about 100 on the node in
+         October and 1,450 at their caps. The info script holds every
+         value to the node's own cap before handing it on (found in
+         review), so a node breaking its caps can't make a relay longer,
+         or a script hold more. Moving the visitors script to a prim of
+         its own, the other way to keep the relay from the globe script,
+         was left for if this doesn't fit.
+       - **Kept, and for how long:** the categories for ten minutes,
+         about 0.2 KB in October and 2.4 KB at their caps; the page a
+         visitor has open, as the info script passed it on, the one copy,
+         while their menu stays answerable (five minutes), for at most
+         two visitors at once, the oldest giving way, since a page is at
+         most about 750 characters, 1.5 KB held. Outside a talk only the
+         visitor holding the globe and the owner can open Datasets, and a
+         visitor whose page gave way gets the categories again. The
+         visitors script's `/9 memory` now says the most it used showing
+         a menu, as the other two say theirs.
+       - **The page's `list`** (below) says two pages of one category
+         came from different lists. While a visitor pages through one,
+         the menu then says a dataset may have moved between pages, and
+         doesn't start over: pages from two isolates can come from lists
+         a minute apart, so a menu that started over at every change
+         might never page forward. A page past the end asks for the last
+         page, once.
     3. Phase 4b's buttons, with the owner's chat commands moved to a
        fourth script to give the globe script room.
   - **The node and the scripts go together.** A TerraViz node without

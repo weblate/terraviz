@@ -105,9 +105,10 @@ float   TICK = 5.0;          // how often presence, holds and talks are checked
 integer PAGE = 9;            // datasets a menu page shows, beside its three moves
 integer TAGS_TTL = 600;      // seconds the node's categories are kept before asking again
 // Pages of the node's datasets kept for visitors with one open, the oldest
-// giving way. A page's ids and titles take about 1.4 KB at their caps, and
-// outside a talk only the holder and the owner can open one.
-integer LIVE_PAGES = 3;
+// giving way. A page as the info script passed it on is at most about 750
+// characters, 1.5 KB held, and outside a talk only the holder and the
+// owner can open one.
+integer LIVE_PAGES = 2;
 integer CTX_TTL = 300;       // seconds a menu stays answerable after it opened
 integer CTX_MAX = 8;         // menus open at once
 float   NUDGE = 10.0;
@@ -151,8 +152,11 @@ integer gLive;               // no "datasets" notecard: the menu is the node's c
 list    gCategories;         // the settings notecard's "categories", or [] for all the node's
 list    gTags;               // the node's categories: tag, count, tag, count...
 integer gTagsAt;             // when the node gave them, 0 for never
-list    gPages;              // pages open: who, tag, offset, total, list, then the page's ids and titles in lines
+integer gKindsAt;            // when the categories offered last changed
+list    gPages;              // pages open: who, tag, list, the page as the info script passed it on
+list    gRefetched;          // who has been sent past an end to the last page, and not yet shown one
 integer gTold;               // the owner has been told the node isn't giving the menu
+integer gPeak;               // the most memory used showing a menu from the node
 integer gTalk;
 integer gTalkSeen;           // when a presenter was last at the globe
 key     gHolder = NULL_KEY;
@@ -273,6 +277,8 @@ integer bytes(string s)
 // A character takes at least a byte, so the first cut is by characters.
 string fit(string s, integer max)
 {
+    // Nothing fits in no room, and below one byte the loop below never ends.
+    if (max < 1) return "";
     if (bytes(s) <= max) return s;
     s = llGetSubString(s, 0, max - 1);
     while (bytes(s) > max) s = llDeleteSubString(s, -1, -1);
@@ -400,9 +406,10 @@ liveAsk(key who, string what)
 }
 
 // The categories the menu offers. With the settings notecard's, those the
-// node has, in the owner's order and whatever their case. Otherwise "" for
-// all the datasets, since some are in none, and then every category, most
-// datasets first, as the node lists them.
+// node has, in the owner's order and whatever their case, "All datasets"
+// among them if named. Otherwise "" for all the datasets, since some are in
+// none, and then every category, most datasets first, as the node lists
+// them.
 list kinds()
 {
     list tags = llList2ListStrided(gTags, 0, -1, 2);
@@ -411,11 +418,15 @@ list kinds()
     integer i;
     integer j;
     for (i = 0; i < llGetListLength(gCategories); ++i)
+    {
+        string c = llToLower(llList2String(gCategories, i));
+        if (c == llToLower(BTN_ALL) && llListFindList(out, [""]) == -1) out += [""];
         for (j = 0; j < llGetListLength(tags); ++j)
         {
             string t = llList2String(tags, j);
-            if (llToLower(t) == llToLower(llList2String(gCategories, i)) && llListFindList(out, [t]) == -1) out += [t];
+            if (llToLower(t) == c && llListFindList(out, [t]) == -1) out += [t];
         }
+    }
     return out;
 }
 
@@ -441,8 +452,13 @@ integer named(list tags)
     return TRUE;
 }
 
+// The categories, nine to a page. Numbered buttons count from the first
+// category, as a page of datasets' do from its first dataset.
 kindsMenu(key who, integer page)
 {
+    // Back at the categories, the next page isn't paging on from the last.
+    integer at = llListFindList(gPages, [who]);
+    if (at != -1 && at % 4 == 0) gPages = llDeleteSubList(gPages, at, at + 3);
     list k = kinds();
     integer count = llGetListLength(k);
     if (count == 0) { liveFailed(who, "it has none of the settings notecard's categories"); return; }
@@ -452,12 +468,15 @@ kindsMenu(key who, integer page)
     if (page < 0) page = pages - 1;
     if (page >= pages) page = 0;
     list tags = llList2List(k, page * PAGE, page * PAGE + PAGE - 1);
+    integer n = llGetListLength(tags);
     integer byName = named(tags);
     string text = "Choose a category of datasets for the globe.";
     if (pages > 1) text += " Page " + (string)(page + 1) + " of " + (string)pages + ".";
+    // The names share the text's room, as a page's titles do.
+    integer room = (500 - bytes(text)) / n - 1;
     list b = [];
     integer i;
-    for (i = 0; i < llGetListLength(tags); ++i)
+    for (i = 0; i < n; ++i)
     {
         string c = llList2String(tags, i);
         string l = kindName(c);
@@ -465,10 +484,11 @@ kindsMenu(key who, integer page)
         if (byName) b += [kindName(c)];
         else
         {
-            l = (string)(i + 1) + ". " + l;
-            b += [(string)(i + 1)];
+            string number = (string)(page * PAGE + i + 1);
+            l = number + ". " + l;
+            b += [number];
         }
-        text += "\n" + l;
+        text += "\n" + fit(l, room);
     }
     if (pages > 1) b += [BTN_PREV, BTN_MENU, BTN_NEXT];
     else b += [BTN_MENU];
@@ -486,8 +506,9 @@ string failure(integer status)
 {
     if (status == -1) return "Second Life is limiting this object's web requests";
     if (status == 0) return "the globe has no node yet";
-    if (status == 200 || status == 415) return "its reply wasn't a menu. A node from before October 2026 has none, "
+    if (status == 415) return "its reply wasn't JSON. A node from before October 2026 has no menu, "
         + "and one whose Functions are down sends its page instead";
+    if (status == 200) return "its reply wasn't a menu this script can read";
     return "it answered HTTP " + (string)status;
 }
 
@@ -501,57 +522,106 @@ liveFailed(key who, string why)
     datasetsMenu(who, 0);
 }
 
-// A page of the node's datasets, as the info script passed it on: "page",
-// its total, offset, list and tag, then each id and title. The buttons are
-// numbers and the titles are in the text: most titles are longer than a
-// button holds, and some cut alike. The titles share the text's room, so a
-// long one is cut.
-livePage(key who, list f)
+// The info script's answer to a menu read, in lines: the categories, a page,
+// or why there is neither.
+liveReply(key who, string str)
 {
+    // A page is parsed once, where it is shown.
+    if (llGetSubString(str, 0, 4) == "page\n") { livePage(who, str); return; }
+    list f = llParseStringKeepNulls(str, ["\n"], []);
+    if (llList2String(f, 0) != "tags") { liveFailed(who, failure(llList2Integer(f, 1))); return; }
+    string before = llDumpList2String(kinds(), "\n");
+    gTags = [];
+    integer i;
+    for (i = 1; i + 1 < llGetListLength(f); i += 2)
+        if (llList2String(f, i) != "") gTags += [llList2String(f, i), llList2Integer(f, i + 1)];
+    gTagsAt = unix();
+    // A categories menu still open answers by what it showed, so it is
+    // shown again rather than answered once they have changed.
+    if (llDumpList2String(kinds(), "\n") != before) gKindsAt = gTagsAt;
+    // Told once of categories the node lacks, not at every refresh.
+    if (kinds() != []) gTold = FALSE;
+    kindsMenu(who, 0);
+}
+
+// A page of the node's datasets, as the info script passed it on, in lines:
+// "page", its total, offset, list and tag, then each id and title. The
+// buttons are numbers, counted from the category's first dataset, and the
+// titles are in the text: most titles are longer than a button holds, and
+// some cut alike. The titles share the text's room, so a long one is cut.
+// The page is kept as it came, the one copy, while the visitor's menu
+// answers.
+livePage(key who, string reply)
+{
+    list f = llParseStringKeepNulls(reply, ["\n"], []);
     integer total = llList2Integer(f, 1);
     integer offset = llList2Integer(f, 2);
-    string from = llList2String(f, 3);
     string tag = llList2String(f, 4);
-    list rows = [];
-    // (Guarded, since a backwards range means everything outside it.)
-    if (llGetListLength(f) > 5) rows = llList2List(f, 5, -1);
-    integer n = llGetListLength(rows) / 2;
+    integer n = (llGetListLength(f) - 5) / 2;
     // Pairs of an id and a title, no more than a page holds, or it isn't a page.
-    integer ok = llGetListLength(rows) % 2 == 0 && n <= PAGE;
+    integer ok = llGetListLength(f) >= 5 && llGetListLength(f) % 2 == 1 && n <= PAGE;
     integer i;
-    for (i = 0; ok && i < n; ++i) ok = isId(llList2String(rows, i * 2));
+    for (i = 0; ok && i < n; ++i) ok = isId(llList2String(f, 5 + i * 2));
     if (!ok) { liveFailed(who, failure(200)); return; }
     if (n == 0)
     {
-        // Past the end, as a page can be once the catalog has shrunk: the first.
-        if (offset > 0 && total > 0) { askPage(who, tag, 0); return; }
+        // Past the end, as a page can be once the catalog has shrunk: its
+        // last page, asked for once, since a node echoing an offset other
+        // than the one asked for would otherwise be asked for ever.
+        integer asked = llListFindList(gRefetched, [who]);
+        if (total > 0 && asked == -1)
+        {
+            gRefetched += [who];
+            if (llGetListLength(gRefetched) > CTX_MAX) gRefetched = llDeleteSubList(gRefetched, 0, 0);
+            askPage(who, tag, (total - 1) / PAGE * PAGE);
+            return;
+        }
+        if (asked != -1) gRefetched = llDeleteSubList(gRefetched, asked, asked);
+        if (total > 0) { liveFailed(who, failure(200)); return; }
+        // A category emptied since it was listed: the categories again,
+        // unless it was the only one, which would open it again.
+        if (tag != "" && llGetListLength(kinds()) > 1)
+        {
+            llRegionSayTo(who, 0, tag + " has no datasets the globe can show just now.");
+            kindsMenu(who, 0);
+            return;
+        }
         liveFailed(who, "it has no datasets the globe can show");
         return;
     }
+    integer sent = llListFindList(gRefetched, [who]);
+    if (sent != -1) gRefetched = llDeleteSubList(gRefetched, sent, sent);
     gTold = FALSE;
     string text = kindName(tag) + ": " + (string)(offset + 1) + " to " + (string)(offset + n) + " of "
         + (string)total + ". Choose one for the globe.";
-    // A page of one category from a list other than this visitor's last
-    // page of it: the node's catalog changed between them.
+    // A page of the category this visitor is paging through, from another
+    // list: a dataset may have moved between the two. A notice, never a
+    // start over, since pages can come from lists a minute apart (the
+    // node's listHash); and none when either page lacks a list.
+    string from = llList2String(f, 3);
     integer at = llListFindList(gPages, [who]);
-    if (at % 6 != 0) at = -1;
-    if (at != -1 && llList2String(gPages, at + 1) == tag && llList2String(gPages, at + 4) != from)
-        text += " The catalog changed since the last page, so a dataset may have moved between pages.";
+    if (at != -1 && at % 4 == 0)
+    {
+        string was = llList2String(gPages, at + 2);
+        if (llList2String(gPages, at + 1) == tag && from != "" && was != "" && was != from)
+            text += " A dataset may have moved between pages since the last one.";
+        gPages = llDeleteSubList(gPages, at, at + 3);
+    }
     integer room = (500 - bytes(text)) / n - 1;
     list b = [];
     for (i = 0; i < n; ++i)
     {
-        text += "\n" + fit((string)(i + 1) + ". " + llList2String(rows, i * 2 + 1), room);
-        b += [(string)(i + 1)];
+        string number = (string)(offset + i + 1);
+        text += "\n" + fit(number + ". " + llList2String(f, 6 + i * 2), room);
+        b += [number];
     }
     // Back to the categories, or to the main menu when there were none to choose.
     string back = BTN_KINDS;
     if (llGetListLength(kinds()) < 2) back = BTN_MENU;
     if (total > PAGE) b += [BTN_PREV, back, BTN_NEXT];
     else b += [back];
-    if (at != -1) gPages = llDeleteSubList(gPages, at, at + 5);
-    gPages += [who, tag, offset, total, from, llDumpList2String(rows, "\n")];
-    while (llGetListLength(gPages) > LIVE_PAGES * 6) gPages = llDeleteSubList(gPages, 0, 5);
+    gPages += [who, tag, from, reply];
+    while (llGetListLength(gPages) > LIVE_PAGES * 4) gPages = llDeleteSubList(gPages, 0, 3);
     remember(who, pageOf(who));
     menu(who, text, b, gDlgLive);
 }
@@ -676,6 +746,10 @@ nextCard()
     gPresenters = gNewPresenters;
     gCategories = gNewCategories;
     gMenu = gNewMenu;
+    // The categories offered may have changed, and the owner hears of the
+    // new settings' trouble with the node.
+    gKindsAt = unix();
+    gTold = FALSE;
     // No datasets from the notecard, or no notecard: the node's catalog,
     // with the built-in datasets behind it.
     gLive = gMenu == [];
@@ -756,8 +830,8 @@ default
         integer i = 0;
         while (i < llGetListLength(gPages))
         {
-            if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 5);
-            else i += 6;
+            if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 3);
+            else i += 4;
         }
     }
 
@@ -805,17 +879,12 @@ default
             // A visitor whose menu timed out meanwhile gets nothing.
             integer at = llListFindList(gCtx, [id]);
             if (at == -1 || at % 3 != 0) return;
-            list f = llParseStringKeepNulls(str, ["\n"], []);
-            string what = llList2String(f, 0);
-            if (what == "page") { livePage(id, f); return; }
-            if (what != "tags") { liveFailed(id, failure(llList2Integer(f, 1))); return; }
-            gTags = [];
-            integer i;
-            for (i = 1; i + 1 < llGetListLength(f); i += 2)
-                if (llList2String(f, i) != "") gTags += [llList2String(f, i), llList2Integer(f, i + 1)];
-            gTagsAt = unix();
-            gTold = FALSE;
-            kindsMenu(id, 0);
+            // Measured, for /9 memory: a page held while the next is shown
+            // is when this script needs the most.
+            llScriptProfiler(PROFILE_SCRIPT_MEMORY);
+            liveReply(id, str);
+            llScriptProfiler(PROFILE_NONE);
+            if (llGetSPMaxMemory() > gPeak) gPeak = llGetSPMaxMemory();
             return;
         }
         if (n != MSG_STATE) return;
@@ -839,7 +908,11 @@ default
             string cmd = llList2String(w, 0);
             if (cmd == "presenters") llOwnerSay("[exhibit] " + summary());
             else if (cmd == "memory")
-                llOwnerSay("[exhibit] Visitors script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64.");
+            {
+                string most = "";
+                if (gPeak) most = ", and at most " + (string)(gPeak / 1024) + " KB while showing a menu from the node";
+                llOwnerSay("[exhibit] Visitors script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64" + most + ".");
+            }
             else if (cmd == "talk")
             {
                 string what = llList2String(w, 1);
@@ -876,17 +949,24 @@ default
         if (ch == gDlgKinds)
         {
             if (msg == BTN_MENU) { mainMenu(who); return; }
+            // Answered after the categories offered changed: what it showed
+            // may have moved, so it is shown again rather than answered.
+            if (gKindsAt > llList2Integer(gCtx, at + 2)) { kindsMenu(who, page); return; }
             if (msg == BTN_PREV) { kindsMenu(who, page - 1); return; }
             if (msg == BTN_NEXT) { kindsMenu(who, page + 1); return; }
-            list tags = llList2List(kinds(), page * PAGE, page * PAGE + PAGE - 1);
+            list k = kinds();
+            list tags = llList2List(k, page * PAGE, page * PAGE + PAGE - 1);
+            // A name on that page, or a number counted from the first category.
             integer i = (integer)msg - 1;
             if (named(tags))
             {
                 i = 0;
                 while (i < llGetListLength(tags) && kindName(llList2String(tags, i)) != msg) ++i;
+                if (i == llGetListLength(tags)) return;
+                i += page * PAGE;
             }
             else if ((string)(i + 1) != msg) return;
-            if (i >= 0 && i < llGetListLength(tags)) askPage(who, llList2String(tags, i), 0);
+            if (i >= 0 && i < llGetListLength(k)) askPage(who, llList2String(k, i), 0);
             return;
         }
         if (ch == gDlgLive)
@@ -895,10 +975,11 @@ default
             if (msg == BTN_KINDS) { kindsMenu(who, page); return; }
             integer p = llListFindList(gPages, [who]);
             // Its page gave way to newer ones: the categories again.
-            if (p == -1 || p % 6 != 0) { datasets(who); return; }
-            string tag = llList2String(gPages, p + 1);
-            integer offset = llList2Integer(gPages, p + 2);
-            integer total = llList2Integer(gPages, p + 3);
+            if (p == -1 || p % 4 != 0) { datasets(who); return; }
+            list f = llParseStringKeepNulls(llList2String(gPages, p + 3), ["\n"], []);
+            string tag = llList2String(f, 4);
+            integer offset = llList2Integer(f, 2);
+            integer total = llList2Integer(f, 1);
             if (msg == BTN_NEXT)
             {
                 offset += PAGE;
@@ -914,10 +995,11 @@ default
                 return;
             }
             if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
-            list rows = llParseStringKeepNulls(llList2String(gPages, p + 5), ["\n"], []);
-            integer i = (integer)msg - 1;
-            if ((string)(i + 1) != msg || i < 0 || i * 2 + 1 >= llGetListLength(rows)) return;
-            ask(who, "show " + llList2String(rows, i * 2) + " " + llList2String(rows, i * 2 + 1));
+            // The number pressed counts from the category's first dataset, so
+            // one from an older page of theirs isn't taken for this one's.
+            integer i = (integer)msg - 1 - offset;
+            if ((string)(i + 1 + offset) != msg || i < 0 || 6 + i * 2 >= llGetListLength(f)) return;
+            ask(who, "show " + llList2String(f, 5 + i * 2) + " " + llList2String(f, 6 + i * 2));
             return;
         }
         if (ch == gDlgTurn)

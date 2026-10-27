@@ -285,7 +285,12 @@ describe('second-life exhibit scripts', () => {
     // a notecard's or a preset's name is the owner's choice and stays.
     expect(body(globe, 'show(key who, string id, string title)')).toContain('if (gTitle == "") gTitle = id;')
     const name = body(info, 'string called()')
-    expect(name).toContain('if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;')
+    expect(name).toMatch(/if \(gFor == gDataset && gCardTitle != ""\)\n\s+\{\n\s+if \(gTitle == "" \|\| gTitle == gDataset\) return gCardTitle;/)
+    // The live menu's title, which the node cut to 48 bytes with "...",
+    // gives way to the card's, which is the same title whole or cut far
+    // later; a name the owner gave doesn't.
+    expect(name).toContain('if (n > 3 && llGetSubString(gTitle, -3, -1) == "..."')
+    expect(name).toContain('&& llSubStringIndex(gCardTitle, llGetSubString(gTitle, 0, n - 4)) == 0) return gCardTitle;')
     expect(body(info, 'hover()')).toContain('string title = called();')
     const about = body(info, 'about(key av)')
     expect(about).toContain('string title = called();')
@@ -578,7 +583,7 @@ describe('second-life exhibit scripts', () => {
       /gDlgSets = gDlg \+ 1;\n\s+gDlgJump = gDlg \+ 2;\n\s+gDlgTurn = gDlg \+ 3;\n\s+gDlgKinds = gDlg \+ 4;\n\s+gDlgLive = gDlg \+ 5;/,
     )
     expect(body(visitors, 'kindsMenu(key who, integer page)')).toContain('menu(who, text, b, gDlgKinds);')
-    expect(body(visitors, 'livePage(key who, list f)')).toContain('menu(who, text, b, gDlgLive);')
+    expect(body(visitors, 'livePage(key who, string reply)')).toContain('menu(who, text, b, gDlgLive);')
     for (const channel of ['gDlgKinds', 'gDlgLive']) {
       expect(visitors).toContain(`llListen(${channel}, "", NULL_KEY, "");`)
       expect(visitors).toContain(`if (ch == ${channel})`)
@@ -621,25 +626,35 @@ describe("the exhibit's dataset menu", () => {
     ['page', p.total, p.offset, p.list, p.tag, ...p.datasets.flatMap((d) => [d.id, d.title])].join('\n')
   const relayTags = (t: ExhibitTags): string => ['tags', ...t.tags.flatMap((x) => [x.tag, x.count])].join('\n')
 
+  const pageAnswer = (): string => visitors.slice(visitors.indexOf('if (ch == gDlgLive)'), visitors.indexOf('if (ch == gDlgTurn)'))
+  const kindsAnswer = (): string => visitors.slice(visitors.indexOf('if (ch == gDlgKinds)'), visitors.indexOf('if (ch == gDlgLive)'))
+
   it("comes from the node without a datasets notecard, and from the built-in five when the node gives none", () => {
     expect(visitors).toContain('gLive = gMenu == [];')
     expect(visitors).toContain('if (gLive) gMenu = DEFAULT_MENU;')
     expect(body(visitors, 'datasets(key who)')).toContain('if (!gLive) { datasetsMenu(who, 0); return; }')
     expect(visitors).toContain('if (msg == BTN_DATASETS) { datasets(who); return; }')
-    // The owner is told why once, until the node gives a menu again.
+    // The owner is told why once, until the node gives a menu again, and
+    // of categories the node lacks once a settings notecard, not at every
+    // refresh of them.
     expect(body(visitors, 'liveFailed(key who, string why)')).toMatch(
       /if \(!gTold\)\n\s+llOwnerSay\([^;]+;\n\s+gTold = TRUE;\n\s+datasetsMenu\(who, 0\);/,
     )
-    expect(body(visitors, 'livePage(key who, list f)')).toContain('gTold = FALSE;')
-    expect(visitors).toMatch(/gTagsAt = unix\(\);\n\s+gTold = FALSE;\n\s+kindsMenu\(id, 0\);/)
+    expect(body(visitors, 'livePage(key who, string reply)')).toContain('gTold = FALSE;')
+    expect(body(visitors, 'liveReply(key who, string str)')).toContain('if (kinds() != []) gTold = FALSE;')
+    expect(visitors).toMatch(/gKindsAt = unix\(\);\n\s+gTold = FALSE;/)
     // Every failure the info script passes on has its reason: no node yet,
-    // a request throttled, and a reply that isn't a menu.
+    // a request throttled, a reply that isn't JSON, and one that isn't a
+    // menu this script can read.
     const failure = body(visitors, 'string failure(integer status)')
     for (const status of ['-1', '0', '200', '415']) expect(failure).toContain(`status == ${status}`)
     expect(body(info, 'menuAsk(key who, string what)')).toContain('"fail\\n0"')
     expect(body(info, 'menuAsk(key who, string what)')).toContain('"fail\\n-1"')
-    // The owner's categories narrow it, by name and in any case.
-    expect(body(visitors, 'list kinds()')).toContain('llToLower(t) == llToLower(llList2String(gCategories, i))')
+    // The owner's categories narrow it, by name and in any case, "All
+    // datasets" among them if named.
+    const kinds = body(visitors, 'list kinds()')
+    expect(kinds).toContain('if (llToLower(t) == c && llListFindList(out, [t]) == -1) out += [t];')
+    expect(kinds).toContain('if (c == llToLower(BTN_ALL) && llListFindList(out, [""]) == -1) out += [""];')
   })
 
   it('is read by the info script alone, at addresses the node takes', () => {
@@ -666,15 +681,15 @@ describe("the exhibit's dataset menu", () => {
     }
     // Asked with a byte past each budget, so a reply of exactly the budget
     // can't read as cut, and as JSON, which Second Life checks.
-    expect(Number(constant(info, 'integer', 'PAGE_MAX'))).toBe(PAGE_BUDGET)
-    expect(Number(constant(info, 'integer', 'TAGS_MAX'))).toBe(TAGS_BUDGET)
+    expect(Number(constant(info, 'integer', 'PAGE_BYTES'))).toBe(PAGE_BUDGET)
+    expect(Number(constant(info, 'integer', 'TAGS_BYTES'))).toBe(TAGS_BUDGET)
     expect(ask).toContain('HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, max + 1]')
     // One read in flight a visitor, and a bounded number in all.
     expect(ask).toMatch(/integer at = llListFindList\(gMenuReqs, \[who\]\);\n\s+if \(at != -1 && at % 2 == 1\) gMenuReqs = llDeleteSubList\(gMenuReqs, at - 1, at\);/)
     expect(ask).toContain('while (llGetListLength(gMenuReqs) > MENU_REQS * 2) gMenuReqs = llDeleteSubList(gMenuReqs, 0, 1);')
   })
 
-  it("reads only what the node's replies carry, and hands it on in the order the visitors script reads it", async () => {
+  it("reads only what the node's replies carry, held to its caps, and hands it on in the order the visitors script reads it", async () => {
     const { page, tags } = await served()
     const reply = body(info, 'menuReply(key who, integer status, list meta, string body)')
     // Every value read is a value in a real reply, an index the script
@@ -689,22 +704,29 @@ describe("the exhibit's dataset menu", () => {
       expect(value, path).toBeDefined()
       expect(typeof value === 'object' && value !== null, `${path} is a value`).toBe(false)
     }
+    // Each value handed on is held to the node's own cap, in characters,
+    // which a value within it in bytes always is: so no node can make a
+    // relay longer than the docs say, or a script hold more.
+    const caps = Object.fromEntries([...reply.matchAll(/line\(body, \[([^\]]*)\], (\d+)\)/g)].map((m) => [m[1].split(',').pop()!.trim().replace(/"/g, ''), Number(m[2])]))
+    expect(caps).toEqual({ list: PAGE_CAPS.list, tag: TAG_CAP, id: PAGE_CAPS.id, title: PAGE_CAPS.title })
+    expect(body(info, 'string line(string body, list path, integer max)')).toContain('if (llStringLength(v) > max) return JSON_INVALID;')
+    expect(reply).toContain('if (llListFindList(out, [JSON_INVALID]) != -1) out = ["fail", 200];')
+    expect(reply).toContain('if (t != JSON_INVALID) out += [t, (integer)llJsonGetValue(body, ["tags", i, "count"])];')
     // A page: its total, offset, list and tag, then each id and title.
-    expect(all(reply.match(/out = \["page", ([\s\S]*?)\];/)?.[1] ?? '', /\["(\w+)"\]\)/g)).toEqual(['total', 'offset', 'list', 'tag'])
-    expect(reply).toContain('out += [line(body, ["datasets", i, "id"]), line(body, ["datasets", i, "title"])];')
-    const live = body(visitors, 'livePage(key who, list f)')
+    expect(all(reply.match(/out = \["page", ([\s\S]*?)\];/)?.[1] ?? '', /\["(\w+)"\]/g)).toEqual(['total', 'offset', 'list', 'tag'])
+    expect(reply).toContain('out += [line(body, ["datasets", i, "id"], 26), line(body, ["datasets", i, "title"], 48)];')
+    const live = body(visitors, 'livePage(key who, string reply)')
     for (const read of ['integer total = llList2Integer(f, 1);', 'integer offset = llList2Integer(f, 2);',
-      'string from = llList2String(f, 3);', 'string tag = llList2String(f, 4);', 'rows = llList2List(f, 5, -1);']) {
+      'string from = llList2String(f, 3);', 'string tag = llList2String(f, 4);', 'llList2String(f, 5 + i * 2)', 'llList2String(f, 6 + i * 2)']) {
       expect(live).toContain(read)
     }
     // The categories: each tag and its count, read in twos from the second line.
-    expect(reply).toContain('out += [line(body, ["tags", i, "tag"]), (integer)llJsonGetValue(body, ["tags", i, "count"])];')
-    expect(visitors).toContain('for (i = 1; i + 1 < llGetListLength(f); i += 2)')
+    expect(body(visitors, 'liveReply(key who, string str)')).toContain('for (i = 1; i + 1 < llGetListLength(f); i += 2)')
     // No more than a reply can hold, which the node never exceeds.
     expect(reply).toContain('while (i < 9 && ')
     expect(reply).toContain(`while (i < ${TAGS_MAX} && `)
     // No value can break a line.
-    expect(body(info, 'string line(string body, list path)')).toContain('llDumpList2String(llParseStringKeepNulls(v, ["\\n"], []), " ")')
+    expect(body(info, 'string line(string body, list path, integer max)')).toContain('llDumpList2String(llParseStringKeepNulls(v, ["\\n"], []), " ")')
     expect(page.datasets.length).toBe(9)
     expect(tags.tags.length).toBeGreaterThan(9)
   })
@@ -714,7 +736,8 @@ describe("the exhibit's dataset menu", () => {
     const { page, pageText, tags, tagsText } = await served()
     expect(relayPage(page).length).toBeLessThan(pageText.length)
     expect(relayTags(tags).length).toBeLessThan(tagsText.length)
-    // At every cap: nine ids and titles at theirs, and thirty tags.
+    // At every cap: nine ids and titles at theirs, and thirty tags, the
+    // most the info script hands on whatever a node sends.
     const n = Number('9'.repeat(PAGE_CAPS.number))
     const worstPage: ExhibitPage = {
       total: n, offset: n, limit: 9, tag: 'x'.repeat(PAGE_CAPS.tag), list: 'x'.repeat(PAGE_CAPS.list),
@@ -723,54 +746,146 @@ describe("the exhibit's dataset menu", () => {
     const worstTags: ExhibitTags = { tags: Array.from({ length: TAGS_MAX }, () => ({ tag: 'x'.repeat(TAG_CAP), count: n })), more: true }
     expect(relayPage(worstPage).length).toBeLessThanOrEqual(760)
     expect(relayTags(worstTags).length).toBeLessThanOrEqual(1450)
+    // A count is (integer)-cast, at most eleven characters whatever a node sends.
+    expect(relayTags({ tags: worstTags.tags.map((t) => ({ ...t, count: -2147483648 })), more: true }).length).toBeLessThanOrEqual(1600)
     expect(readme.replace(/\s+/g, ' ')).toContain('about 750 characters for a page')
     expect(readme.replace(/\s+/g, ' ')).toContain('1,450 at the most')
     expect(plan.replace(/\s+/g, ' ')).toContain('about 750 characters')
     expect(plan.replace(/\s+/g, ' ')).toContain('1,450 at their caps')
   })
 
-  it('keeps a few pages, for menus still open, and shows the dataset pressed on the page shown', () => {
-    expect(Number(constant(visitors, 'integer', 'LIVE_PAGES'))).toBe(3)
-    const live = body(visitors, 'livePage(key who, list f)')
-    expect(live).toContain('gPages += [who, tag, offset, total, from, llDumpList2String(rows, "\\n")];')
-    expect(live).toContain('while (llGetListLength(gPages) > LIVE_PAGES * 6) gPages = llDeleteSubList(gPages, 0, 5);')
+  it('keeps two pages, as they came, for menus still open, and measures what they cost', () => {
+    expect(Number(constant(visitors, 'integer', 'LIVE_PAGES'))).toBe(2)
+    const live = body(visitors, 'livePage(key who, string reply)')
+    expect(live).toContain('gPages += [who, tag, from, reply];')
+    expect(live).toContain('while (llGetListLength(gPages) > LIVE_PAGES * 4) gPages = llDeleteSubList(gPages, 0, 3);')
+    // One copy of the page: its rows are read where they came, not copied.
+    expect(live).not.toContain('llList2List(f')
+    expect(live).not.toContain('llDumpList2String(')
     // Pairs of an id the globe takes and a title, no more than a page, or
     // it isn't a page.
-    expect(live).toContain('integer ok = llGetListLength(rows) % 2 == 0 && n <= PAGE;')
-    expect(live).toContain('for (i = 0; ok && i < n; ++i) ok = isId(llList2String(rows, i * 2));')
+    expect(live).toContain('integer ok = llGetListLength(f) >= 5 && llGetListLength(f) % 2 == 1 && n <= PAGE;')
+    expect(live).toContain('for (i = 0; ok && i < n; ++i) ok = isId(llList2String(f, 5 + i * 2));')
     // A page goes with the menu that showed it, and a reply for a visitor
     // whose menu has closed opens nothing.
-    expect(visitors).toContain('if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 5);')
+    expect(visitors).toContain('if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 3);')
     expect(visitors).toMatch(/if \(n == MSG_MENU\)\n\s+\{\n(?:\s+\/\/.*\n)*\s+integer at = llListFindList\(gCtx, \[id\]\);\n\s+if \(at == -1 \|\| at % 3 != 0\) return;/)
     // A read keeps the visitor's menu answerable until its reply.
     expect(body(visitors, 'liveAsk(key who, string what)')).toContain('remember(who, pageOf(who));')
-    // The number pressed is that page's id and title, and only a visitor
-    // who may act gets it.
-    const answer = visitors.slice(visitors.indexOf('if (ch == gDlgLive)'), visitors.indexOf('if (ch == gDlgTurn)'))
-    expect(answer.indexOf('if (!mayAct(who))')).toBeLessThan(answer.indexOf('ask(who, "show "'))
-    expect(answer).toContain('ask(who, "show " + llList2String(rows, i * 2) + " " + llList2String(rows, i * 2 + 1));')
-    expect(answer).toContain('if ((string)(i + 1) != msg || i < 0 || i * 2 + 1 >= llGetListLength(rows)) return;')
+    // /9 memory says the most it took, as the other two scripts do.
+    expect(visitors).toMatch(/llScriptProfiler\(PROFILE_SCRIPT_MEMORY\);\n\s+liveReply\(id, str\);\n\s+llScriptProfiler\(PROFILE_NONE\);\n\s+if \(llGetSPMaxMemory\(\) > gPeak\) gPeak = llGetSPMaxMemory\(\);/)
+    expect(visitors).toContain('KB while showing a menu from the node')
+    // Text never asks fit for less than nothing, which would never end.
+    expect(body(visitors, 'string fit(string s, integer max)')).toMatch(/\{\n(?:\s+\/\/.*\n)*\s+if \(max < 1\) return "";/)
   })
 
-  it("says when the catalog changed between two pages of a category, and doesn't start over", () => {
-    const live = body(visitors, 'livePage(key who, list f)')
+  it('answers every button with the row or category printed beside it, on every page, paging round at both ends', () => {
+    // The expressions the scripts number, answer and page with, pinned
+    // here and then run: nothing else in this file executes them.
+    const live = body(visitors, 'livePage(key who, string reply)')
+    const kinds = body(visitors, 'kindsMenu(key who, integer page)')
+    const pageAns = pageAnswer()
+    const kindsAns = kindsAnswer()
+    expect(live).toContain('string number = (string)(offset + i + 1);')
+    expect(pageAns).toContain('integer i = (integer)msg - 1 - offset;')
+    expect(pageAns).toContain('if ((string)(i + 1 + offset) != msg || i < 0 || 6 + i * 2 >= llGetListLength(f)) return;')
+    expect(pageAns).toContain('ask(who, "show " + llList2String(f, 5 + i * 2) + " " + llList2String(f, 6 + i * 2));')
+    expect(pageAns).toMatch(/offset \+= PAGE;\n\s+if \(offset >= total\) offset = 0;/)
+    expect(pageAns).toMatch(/offset -= PAGE;\n\s+if \(offset < 0\) offset = \(total - 1\) \/ PAGE \* PAGE;/)
+    expect(kinds).toContain('string number = (string)(page * PAGE + i + 1);')
+    expect(kindsAns).toContain('integer i = (integer)msg - 1;')
+    expect(kindsAns).toContain('i += page * PAGE;')
+    expect(kindsAns).toContain('if (i >= 0 && i < llGetListLength(k)) askPage(who, llList2String(k, i), 0);')
+
+    const PAGE = 9
+    /** The page answer, as the pinned lines run it: the row shown, or null. */
+    const choose = (rows: string[], offset: number, msg: string): string | null => {
+      const i = Math.trunc(Number.parseInt(msg, 10) || 0) - 1 - offset
+      if (String(i + 1 + offset) !== msg || i < 0 || 6 + i * 2 >= 5 + rows.length * 2) return null
+      return rows[i]
+    }
+    const lslDiv = (a: number, b: number) => Math.trunc(a / b)
+    for (const total of [1, 8, 9, 10, 17, 18, 19, 27, 175]) {
+      const all = Array.from({ length: total }, (_, k) => `row ${k}`)
+      const seen: string[] = []
+      let offset = 0
+      for (let step = 0; step < Math.ceil(total / PAGE); step++) {
+        const rows = all.slice(offset, offset + PAGE)
+        for (let i = 0; i < rows.length; i++) {
+          const number = String(offset + i + 1)
+          // Printed beside the button, and what the button answers.
+          expect(choose(rows, offset, number), `${total}: ${number}`).toBe(rows[i])
+          seen.push(rows[i])
+        }
+        // A number from another page of the same category answers nothing.
+        expect(choose(rows, offset, String(offset + rows.length + 1))).toBeNull()
+        if (offset > 0) expect(choose(rows, offset, String(offset))).toBeNull()
+        expect(choose(rows, offset, '01')).toBeNull()
+        offset += PAGE
+        if (offset >= total) offset = 0
+      }
+      // Next visits every row once and comes back to the first page.
+      expect(seen).toEqual(all)
+      expect(offset).toBe(0)
+      // Previous from the first page goes to the last, whose first number is the one after the page before it.
+      let back = 0 - PAGE
+      if (back < 0) back = lslDiv(total - 1, PAGE) * PAGE
+      expect(all.slice(back)).toHaveLength(total - back)
+      expect(total - back).toBeGreaterThan(0)
+      expect(total - back).toBeLessThanOrEqual(PAGE)
+    }
+    // Categories: a number counts from the first category on every page.
+    const k = Array.from({ length: 23 }, (_, n) => `cat ${n}`)
+    for (let page = 0; page * PAGE < k.length; page++) {
+      for (let i = 0; i < PAGE && page * PAGE + i < k.length; i++) {
+        const number = String(page * PAGE + i + 1)
+        const answer = Number.parseInt(number, 10) - 1
+        expect(k[answer]).toBe(k[page * PAGE + i])
+      }
+    }
+  })
+
+  it('shows categories again, rather than answering, once they have changed since they were shown', () => {
+    const ans = kindsAnswer()
+    expect(ans).toContain('if (gKindsAt > llList2Integer(gCtx, at + 2)) { kindsMenu(who, page); return; }')
+    expect(ans.indexOf('gKindsAt >')).toBeLessThan(ans.indexOf('askPage('))
+    // They change when the node's or the owner's do, and only then.
+    expect(body(visitors, 'liveReply(key who, string str)')).toContain('if (llDumpList2String(kinds(), "\\n") != before) gKindsAt = gTagsAt;')
+    expect(visitors).toMatch(/gMenu = gNewMenu;\n(?:\s+\/\/.*\n)*\s+gKindsAt = unix\(\);/)
+  })
+
+  it("says when the list changed between two pages of a category, and doesn't start over", () => {
+    const live = body(visitors, 'livePage(key who, string reply)')
     expect(live).toMatch(
-      /if \(at != -1 && llList2String\(gPages, at \+ 1\) == tag && llList2String\(gPages, at \+ 4\) != from\)\n\s+text \+= " The catalog changed since the last page, so a dataset may have moved between pages.";/,
+      /if \(llList2String\(gPages, at \+ 1\) == tag && from != "" && was != "" && was != from\)\n\s+text \+= " A dataset may have moved between pages since the last one.";/,
     )
+    // Only while paging: the categories forget the page a visitor had.
+    expect(body(visitors, 'kindsMenu(key who, integer page)')).toContain('if (at != -1 && at % 4 == 0) gPages = llDeleteSubList(gPages, at, at + 3);')
     // Two isolates can hold lists a minute apart: a menu that started over
     // at every change might never page forward. Only a page past the end,
-    // as one can be once the catalog has shrunk, asks for the first.
-    expect(all(live, /askPage\(who, ([^)]*)\)/g)).toEqual(['tag, 0'])
+    // as one can be once the catalog has shrunk, asks for another: the
+    // last, once, so a node echoing other offsets isn't asked for ever.
+    expect(all(live, /askPage\(who, (.*)\);/g)).toEqual(['tag, (total - 1) / PAGE * PAGE'])
+    expect(live).toMatch(/if \(total > 0 && asked == -1\)\n\s+\{\n\s+gRefetched \+= \[who\];/)
+    // Each visitor's own, so two visitors can't clear each other's.
+    expect(live).toContain('integer asked = llListFindList(gRefetched, [who]);')
+    // A page is parsed once, where it is shown.
+    expect(body(visitors, 'liveReply(key who, string str)')).toContain('if (llGetSubString(str, 0, 4) == "page\\n") { livePage(who, str); return; }')
+    // A category emptied since it was listed goes back to the categories,
+    // unless it was the only one, which would open it again.
+    expect(live).toContain('if (tag != "" && llGetListLength(kinds()) > 1)')
   })
 
   it('names a category button only when every name on its page fits one whole and none repeats', () => {
     const named = body(visitors, 'integer named(list tags)')
     expect(named).toContain('list seen = [BTN_PREV, BTN_NEXT, BTN_MENU];')
     expect(named).toContain('if (label(l) != l || llListFindList(seen, [l]) != -1) return FALSE;')
-    // The menu and its answer decide it the same way.
+    // The menu and its answer decide it from the same page of the same list.
+    expect(body(visitors, 'kindsMenu(key who, integer page)')).toContain('list tags = llList2List(k, page * PAGE, page * PAGE + PAGE - 1);')
     expect(body(visitors, 'kindsMenu(key who, integer page)')).toContain('integer byName = named(tags);')
-    const answer = visitors.slice(visitors.indexOf('if (ch == gDlgKinds)'), visitors.indexOf('if (ch == gDlgLive)'))
-    expect(answer).toContain('if (named(tags))')
+    const ans = kindsAnswer()
+    expect(ans).toContain('list tags = llList2List(k, page * PAGE, page * PAGE + PAGE - 1);')
+    expect(ans).toContain('if (named(tags))')
     // "All datasets" is the empty tag, so a category of that name is
     // another button, and one alone opens at once.
     expect(body(visitors, 'list kinds()')).toContain('if (gCategories == []) return [""] + tags;')
