@@ -571,7 +571,8 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
 
   it('fills the budget exactly, and counts truncated as the longer of its two values', async () => {
     // Within its 500 characters the abstract fills the room only in text
-    // of three bytes a character, beside other fields at their caps. The
+    // of more than a byte a character, beside other fields near their
+    // caps (three bytes a character here; two would do at every cap). The
     // room is measured with `false`: an abstract that fits exactly gives
     // 2,048 bytes and isn't truncated, one byte more is cut.
     const full = { title: 'T'.repeat(200), attribution_text: 'C'.repeat(200), license_statement: 'L'.repeat(400) }

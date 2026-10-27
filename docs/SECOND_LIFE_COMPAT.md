@@ -2138,9 +2138,10 @@ driven by its owner in chat, with none of the visitor controls.
          stopping with the menu out of its prim, though. Most likely the
          cause was an older copy of it still in the globe, from the
          first menu build, about 90 lines longer: it rested at 56 KB,
-         and replaced, at 49, while the current copy climbs about 12 KB
-         above its rest reading a full card and answering About, so 56
-         would have reached 68; it hasn't stopped since. So the move is
+         and replaced, at 49, and it hasn't stopped since. Likely, not
+         proven: the current copy climbed 12 KB above its rest on a 2 KB
+         card that afternoon, which from 56 reaches 68, but 4 KB on a
+         1.9 KB card that morning, which reaches 60. So the move is
          not shown to have been needed. It stays, because the info
          script had no room for anyone else's replies while cards were
          2 KB: with the menu in its own prim, `/9 memory` read the globe
@@ -2165,16 +2166,19 @@ driven by its owner in chat, with none of the visitor controls.
          later hands back a choice, which the visitors script holds to
          the hold and any talk as it does the notecard menu's, or the
          main menu, or the built-in datasets. When no `open` comes
-         within three seconds (seen at the visitors script's next
-         five-second check), the menu script missing or stopped, the
-         visitor gets the built-in datasets and the owner is told once.
-         The open carries when it was asked, and the menu script leaves
-         one two seconds old unanswered, so an answer can't follow the
-         built-in datasets as a second menu; both scripts read the
-         region's clock. A copy of the menu script left in the globe's
-         prim answers nothing, so an owner upgrading from the in-prim
-         build is told to move it rather than meeting the info script's
-         collision again. The two messages have numbers of their own
+         within six seconds (seen at the visitors script's next
+         five-second check), the menu script missing, stopped or held
+         up by a busy region, the visitor gets the built-in datasets and
+         the owner is told once. The open carries when it was asked,
+         and the menu script leaves one three whole seconds old
+         unanswered, so it answers for two to three seconds and an
+         answer has over three seconds to arrive before the built-in
+         datasets; both scripts read the region's clock, and only a
+         region slower than that shows both. An open with no time, from
+         a visitors script of the in-prim build, is answered. A copy of
+         the menu script left in the globe's prim answers nothing, so
+         an owner upgrading from the in-prim build is told to move it,
+         and its replies stay out of the info script's little room. The two messages have numbers of their own
          (271008, 271009), not the in-prim build's, so a globe still
          holding that build's copy can't take one message for the
          other. The menu script gives its prim the globe's name, which

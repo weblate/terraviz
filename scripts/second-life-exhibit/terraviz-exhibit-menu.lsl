@@ -70,11 +70,14 @@ integer TAGS_TTL = 600;      // seconds the node's categories are kept before as
 integer LIVE_PAGES = 4;      // pages kept for visitors with one open, each at most 1 KB as the node sent it
 integer CTX_TTL = 300;       // seconds a menu stays answerable after it opened
 integer CTX_MAX = 8;         // menus open at once
-// An open this many seconds old by the region's clock goes unanswered: the
-// visitors script gives the built-in datasets at its MENU_WAIT (3), and an
-// answer this late could reach it after them, a second menu on the first.
-// exhibit.test.ts holds it below MENU_WAIT.
-integer OPEN_LATE = 2;
+// An open this many whole seconds old by the region's clock goes
+// unanswered: the visitors script gives the built-in datasets at its
+// MENU_WAIT (6), and an answer that late could reach it after them, a
+// second menu on the first. So this script answers for two to three
+// seconds, and an answer has over three seconds to cross the object before
+// the built-in datasets go; exhibit.test.ts holds the margin. A region
+// slower than that can still show both.
+integer OPEN_LATE = 3;
 
 // The ids the globe script takes. exhibit.test.ts holds them to its.
 string  ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
@@ -494,8 +497,11 @@ default
         // there, which has little room to spare.
         if (n != MSG_MENU_OPEN || sender == llGetLinkNumber()) return;
         list w = llParseStringKeepNulls(str, ["\n"], []);
-        // Asked too long ago: the visitors script gives its own datasets.
-        if (unix() - (integer)llList2String(w, 2) >= OPEN_LATE) return;
+        // Asked too long ago: the visitors script gives its own datasets. An
+        // open with no time, from a visitors script before 28 October 2026,
+        // is answered, as it was then.
+        if (llGetListLength(w) > 2)
+            if (unix() - (integer)llList2String(w, 2) >= OPEN_LATE) return;
         // Said at once, so the visitors script knows this script is running
         // and doesn't give the visitor its built-in datasets.
         done(id, "open");
@@ -512,6 +518,7 @@ default
             gTags = [];
             gPages = [];
             gReqs = [];
+            gRefetched = [];
             gTold = FALSE;
         }
         gNode = node;

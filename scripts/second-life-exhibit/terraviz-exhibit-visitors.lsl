@@ -105,7 +105,7 @@ float   TICK = 5.0;          // how often presence, holds and talks are checked
 integer PAGE = 9;            // datasets a menu page shows, beside its three moves
 integer CTX_TTL = 300;       // seconds a menu stays answerable after it opened
 integer CTX_MAX = 8;         // menus open at once
-integer MENU_WAIT = 3;       // seconds the menu script has to say it opened the node's menu
+integer MENU_WAIT = 6;       // seconds the menu script has to say it opened the node's menu, checked every TICK
 float   NUDGE = 10.0;
 integer TURN = 30;           // degrees a turn button turns the globe
 
@@ -437,15 +437,15 @@ check()
         llMessageLinked(LINK_THIS, MSG_CONTROL, "rest", NULL_KEY);
     }
     // The menu script didn't say it opened the node's menu: it isn't in
-    // the object, is in the globe's prim, or has stopped. The visitor gets
-    // the built-in datasets.
+    // the object, is in the globe's prim, has stopped, or the region is too
+    // busy for it to answer in time. The visitor gets the built-in datasets.
     while (gOpening != [] && t - llList2Integer(gOpening, 1) >= MENU_WAIT)
     {
         key v = llList2Key(gOpening, 0);
         gOpening = llDeleteSubList(gOpening, 0, 1);
         if (!gNoMenu)
-            llOwnerSay("[exhibit] The menu script didn't answer, so visitors get the built-in datasets. It goes in a "
-                + "small prim linked to the globe, and must be running: see the README.");
+            llOwnerSay("[exhibit] The menu script didn't answer in time, so visitors get the built-in datasets. It goes in a "
+                + "small prim linked to the globe, and must be running: see the README. A very busy region can also delay it.");
         gNoMenu = TRUE;
         datasetsMenu(v, 0);
     }
@@ -712,7 +712,7 @@ default
         {
             // Without a datasets notecard, the menu script's: the node's catalog.
             if (!gLive) { datasetsMenu(who, 0); return; }
-            // When it was asked, so it never answers after the built-in datasets.
+            // When it was asked, so it doesn't answer once the built-in datasets are near.
             llMessageLinked(LINK_SET, MSG_MENU_OPEN, gNode + "\n" + gCategories + "\n" + (string)unix(), who);
             integer o = llListFindList(gOpening, [who]);
             if (o != -1) gOpening = llDeleteSubList(gOpening, o, o + 1);

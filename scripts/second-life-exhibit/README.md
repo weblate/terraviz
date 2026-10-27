@@ -486,7 +486,7 @@ stand at the globe.
 
 10. **Without the menu script.** Open the cube's menu script and untick
     Running. A visitor's Datasets should give the five built-in
-    datasets within about eight seconds, and you should be told once
+    datasets within about eleven seconds, and you should be told once
     that the menu script didn't answer. Tick Running again, and
     Datasets should open the node's categories, with no second menu.
 
@@ -504,13 +504,14 @@ each avatar used, and what steps 2 and 9 showed.
   each open the other's menu.
 - **Keep the menu script out of the sphere.** In the sphere with the
   other three, its pages of the node's catalog would reach the info
-  script too, which stopped with a Stack-Heap Collision the next time
-  it read a dataset's card. So a copy there answers nothing, as one left
-  from the build that had it there would be: Datasets gives the five
-  built-in datasets after a few seconds' wait, and you are told once
-  that the menu script didn't answer. Delete it from the sphere and put
-  it in the cube. The same happens while the cube's copy is missing or
-  stopped.
+  script too, which has little room to spare while it reads a card. So
+  a copy there answers nothing, as one left from the build that had it
+  there would be: Datasets gives the five built-in datasets after a few
+  seconds' wait, and you are told once that the menu script didn't
+  answer. Two "Menu script" lines from `/9 memory` mean a copy is still
+  in the sphere: delete it there and keep the cube's. The same happens
+  while the cube's copy is missing or stopped, and the menu script and
+  the visitors script are best updated together.
 
 - **A script stops for good at 64 KB.** It reports a Stack-Heap
   Collision and does nothing more until it is reset, and a script with
@@ -541,9 +542,12 @@ each avatar used, and what steps 2 and 9 showed.
   three times reading the card of a dataset chosen from the menu. Most
   likely the cause was an older copy of it still in the globe, from the
   first menu build, about 90 lines longer: it rested at 56 KB, and
-  replaced, at 49, and the current copy climbs about 12 KB above its
-  rest reading a full card and answering About, so 56 would have
-  reached 68. It hasn't stopped since it was replaced. That day
+  replaced, at 49, and it hasn't stopped since. Likely rather than
+  proven: that afternoon the current copy climbed about 12 KB above its
+  rest on a 2 KB card, which from 56 would have reached 68, but that
+  morning it climbed 4 KB on Hurricane Maria's 1.9 KB card, which would
+  have reached only 60, a difference the cards' sizes don't explain
+  (garbage Second Life hasn't yet collected counts in a peak). That day
   `/9 memory` read, with the menu in its own prim: the globe script 57
   KB, and at most 60 while showing a dataset; the info script 51, and
   **at most 63** while reading the card of Clouds (colorized) -
@@ -559,8 +563,8 @@ each avatar used, and what steps 2 and 9 showed.
   info script 51, and **at most 57** while reading a card or answering
   About, 7 KB to spare where it had 1; the visitors script 52; the menu
   script 44, and at most 51 while reading the node for a menu. The
-  globe script, with 4 KB to spare at its busiest, is again the one with
-  the least room. So a script copied from an older build is the
+  globe script, with 4 KB to spare at its busiest, has the least room of
+  those that report a peak; the visitors script reports none. So a script copied from an older build is the
   first thing to rule out after a collision: open it and check the
   first lines say what this README's file does.
 - **The info script checks a choice after it is shown.** For a second or

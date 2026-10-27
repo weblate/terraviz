@@ -668,7 +668,7 @@ describe("the exhibit's dataset menu", () => {
     // It says at once that it is there, before anything it can fail at,
     // unless it is in the visitors script's own prim, where its replies
     // would reach the info script, or asked too long ago.
-    expect(opened()).toMatch(/if \(n != MSG_MENU_OPEN \|\| sender == llGetLinkNumber\(\)\) return;\n\s+list w = llParseStringKeepNulls\(str, \["\\n"\], \[\]\);\n(?:\s+\/\/.*\n)*\s+if \(unix\(\) - \(integer\)llList2String\(w, 2\) >= OPEN_LATE\) return;\n(?:\s+\/\/.*\n)*\s+done\(id, "open"\);/)
+    expect(opened()).toMatch(/if \(n != MSG_MENU_OPEN \|\| sender == llGetLinkNumber\(\)\) return;\n\s+list w = llParseStringKeepNulls\(str, \["\\n"\], \[\]\);\n(?:\s+\/\/.*\n)*\s+if \(llGetListLength\(w\) > 2\)\n\s+if \(unix\(\) - \(integer\)llList2String\(w, 2\) >= OPEN_LATE\) return;\n(?:\s+\/\/.*\n)*\s+done\(id, "open"\);/)
     expect(opened()).toMatch(/open\(id\);\n\s+\}\s*$/)
     // What comes back: the main menu, the built-in datasets, or a choice,
     // which the visitors script holds to the hold and any talk, and which
@@ -691,25 +691,26 @@ describe("the exhibit's dataset menu", () => {
     // One wait a visitor, and a bounded number in all.
     const open = visitors.slice(visitors.indexOf('if (msg == BTN_DATASETS)'), visitors.indexOf('if (msg == BTN_PAUSE)'))
     expect(open).toMatch(/if \(o != -1\) gOpening = llDeleteSubList\(gOpening, o, o \+ 1\);\n\s+gOpening \+= \[who, unix\(\)\];\n\s+if \(llGetListLength\(gOpening\) > CTX_MAX \* 2\) gOpening = llDeleteSubList\(gOpening, 0, 1\);/)
-    // Long enough for a link message to cross the object. It is checked
-    // every TICK, so a visitor waits at most MENU_WAIT + TICK seconds.
+    // It is checked every TICK, so a visitor whose menu script is missing
+    // waits at most MENU_WAIT + TICK seconds.
     const wait = Number(constant(visitors, 'integer', 'MENU_WAIT'))
-    expect(wait).toBeGreaterThanOrEqual(2)
-    expect(wait + Number(constant(visitors, 'float', 'TICK'))).toBeLessThanOrEqual(8)
-    // Never both menus: the menu script answers only while the request is
-    // under OPEN_LATE whole seconds old, so before OPEN_LATE seconds have
-    // passed, and the visitors script gives its own at MENU_WAIT whole
-    // seconds, after more than MENU_WAIT - 1 have. Both read the region's
-    // clock, so an answer has over a second to arrive first.
+    expect(wait + Number(constant(visitors, 'float', 'TICK'))).toBeLessThanOrEqual(11)
+    // Both menus only in a region slower than the margin: the menu script
+    // answers only while the request is under OPEN_LATE whole seconds old,
+    // so before OPEN_LATE seconds have passed (and for at least OPEN_LATE
+    // - 1, room for a busy region), and the visitors script gives its own
+    // at MENU_WAIT whole seconds, at or after floor(asked) + MENU_WAIT.
+    // Both read the region's clock, so an answer has over MENU_WAIT -
+    // OPEN_LATE seconds to arrive first.
     const late = Number(constant(menu, 'integer', 'OPEN_LATE'))
-    expect(late).toBeGreaterThanOrEqual(1)
-    expect(wait - late).toBeGreaterThanOrEqual(1)
+    expect(late).toBeGreaterThanOrEqual(3)
+    expect(wait - late).toBeGreaterThanOrEqual(3)
     for (let asked = 0; asked < 1; asked += 0.05) {
       for (let answered = asked; answered < asked + 4; answered += 0.05) {
         if (Math.floor(answered) - Math.floor(asked) >= late) continue // not answered
         for (let check = asked; check < asked + 6; check += 0.05) {
           if (Math.floor(check) - Math.floor(asked) >= wait) {
-            expect(check - answered, `${asked} ${answered} ${check}`).toBeGreaterThan(1 - 1e-9)
+            expect(check - answered, `${asked} ${answered} ${check}`).toBeGreaterThan(wait - late - 1e-9)
             break
           }
         }
@@ -962,7 +963,7 @@ describe("the exhibit's dataset menu", () => {
     expect(state).toContain('string node = llList2String(w, 0);')
     expect(state).toContain('string cats = llList2String(w, 1);')
     // The node's categories, pages and reads are of the node they came from.
-    expect(state).toMatch(/if \(node != gNode\)\n\s+\{\n\s+gTagsAt = 0;\n\s+gTags = \[\];\n\s+gPages = \[\];\n\s+gReqs = \[\];/)
+    expect(state).toMatch(/if \(node != gNode\)\n\s+\{\n\s+gTagsAt = 0;\n\s+gTags = \[\];\n\s+gPages = \[\];\n\s+gReqs = \[\];\n\s+gRefetched = \[\];/)
     // A state without a node hands over none, which the menu reports.
     expect(visitors).toMatch(/gNode = llJsonGetValue\(str, \["node"\]\);\n\s+if \(gNode == JSON_INVALID\) gNode = "";/)
     // Names between commas, trimmed, none empty.

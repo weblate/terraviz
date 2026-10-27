@@ -93,12 +93,14 @@ export const CARD_CAPS = {
 /**
  * The most of an abstract a card sends, in characters: the 500 the info
  * script keeps (its `ABSTRACT_MAX`, which every copy that reads a card has
- * had), so About shows what it showed, at most a word less where the
- * node's `...` falls inside them. Counted in UTF-16 units, which is what a
- * script holds, two bytes each, and never fewer than it counts. A reply is
- * held whole while it is read: in-world on 27 October 2026 the info script
- * reached 63 KB of its 64 reading a card whose abstract filled it to 2,048
- * bytes, 1,496 characters of which the script threw away, and answering
+ * had), so the script never cuts it again and About shows nearly what it
+ * showed: the node's `...` falls inside the 500, so a short word or two
+ * can go, and in a long run with no space the node cuts within it where
+ * the script cut at a space before it. Counted in UTF-16 units, which is
+ * what a script holds, two bytes each, and never fewer than it counts. A
+ * reply is held whole while it is read: in-world on 27 October 2026 the
+ * info script reached 63 KB of its 64 reading a card filled to 2,048 bytes
+ * by an abstract of 1,496 characters, of which it kept 500, or answering
  * About.
  */
 export const CARD_ABSTRACT_CHARS = 500
