@@ -24,6 +24,9 @@ globe that stays up all the time:
 - **It says what it shows.** The floating text gives the title, the date
   in the animation, and a short credit. "About" in the menu gives the
   abstract, the full credit and the licence.
+- **It plays a dataset's sound.** The movies have sound tracks, which
+  each visitor hears at their own viewer's media volume, fainter with
+  distance from the globe. The owner can turn it off.
 
 Why it works this way, and what was decided when, is in
 [`docs/SECOND_LIFE_COMPAT.md`](../../docs/SECOND_LIFE_COMPAT.md), §7
@@ -390,6 +393,7 @@ those:
 | `/9 turn <degrees>` | Turns the globe that far east, the way the Earth turns, or west for a negative number, as the menu's turn buttons do. Unlike `/9 rotation`, it doesn't move where the globe goes back to. |
 | `/9 tilt south`, `/9 tilt north` | Tips that pole 30° toward you, as the menu's pole buttons do for a visitor. |
 | `/9 level` | Stands a tipped globe back up, as it was at rest. |
+| `/9 sound on\|off` | Whether a dataset's sound track plays, for every visitor, without reloading anyone's page while changes go after the # (the default; under `/9 steer query` it reloads them as every change does). On when the globe starts, unless `SOUND`, at the top of the globe script, is `FALSE`, which makes a silent exhibit last through resets. Each visitor hears their own copy, at their viewer's media volume, so it is as in step as the pictures are: a seek to catch up is a skip in the sound, catching up without one plays it up to a quarter faster or slower for a while, and a short loop repeats its sound every pass. A browser that won't play aloud without a click plays the picture muted; Second Life's viewers don't ask (Firestorm 7.2.4 played a movie aloud with nothing clicked, 27 October). |
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters, where the menu comes from, and the settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
@@ -489,9 +493,17 @@ stand at the globe.
     datasets within about eleven seconds, and you should be told once
     that the menu script didn't answer. Tick Running again, and
     Datasets should open the node's categories, with no second menu.
+11. **Sound.** Show a movie, `/9 show 01KQG621GKSF0R9Q74AAE5QFV0`
+    (HOLOSCENES / Little Boxes). Both avatars should hear it with
+    nothing clicked, louder near the globe and quieter walking away, and
+    the second avatar's own media volume should change only what they
+    hear. Then `/9 sound off`: it should go quiet with the picture
+    playing on, and `/9 sound on` bring it back. Say which viewer, if
+    one plays it silent. Then `/9 memory`: the globe script's most while
+    showing a dataset is the number to report, since sound added to it.
 
 When you report results, say which viewer and version (Help → About)
-each avatar used, and what steps 2 and 9 showed.
+each avatar used, and what steps 2, 9 and 11 showed.
 
 ## Things that will trip you up
 
@@ -562,9 +574,13 @@ each avatar used, and what steps 2 and 9 showed.
   the globe script 57 KB, and at most 60 while showing a dataset; the
   info script 51, and **at most 57** while reading a card or answering
   About, 7 KB to spare where it had 1; the visitors script 52; the menu
-  script 44, and at most 51 while reading the node for a menu. The
-  globe script, with 4 KB to spare at its busiest, has the least room of
-  those that report a peak; the visitors script reports none. So a script copied from an older build is the
+  script 44, and at most 51 while reading the node for a menu. With
+  sound added, in Firestorm, it read: the globe script 57 KB, and at
+  most 60 while showing a movie, unchanged; the info script 51, and at
+  most 59; the menu script 44, and at most 53; the visitors script 52.
+  The globe script, with 4 KB to spare at its busiest, has the least
+  room of those that report a peak, the info script next with 5; the
+  visitors script reports none. So a script copied from an older build is the
   first thing to rule out after a collision: open it and check the
   first lines say what this README's file does.
 - **The info script checks a choice after it is shown.** For a second or

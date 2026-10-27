@@ -1729,10 +1729,47 @@ driven by its owner in chat, with none of the visitor controls.
   when its holder leaves the globe. Presenters also get "Start talk"
   and "End talk", and "Jump to", which takes a time. A presenter can
   start a talk whoever holds the globe. A visitor
-  doesn't change the rate, the width or the telemetry, which stay the
-  owner's, in chat. Nor does a turn change the owner's rotation: that
-  is where the globe goes back to, upright and with the live Earth,
-  once the last visitor has gone.
+  doesn't change the rate, the width, the sound or the telemetry, which
+  stay the owner's, in chat. Nor does a turn change the owner's
+  rotation: that is where the globe goes back to, upright and with the
+  live Earth, once the last visitor has gone.
+- **Sound (added 27 October).** The movies in the catalog have sound
+  tracks (24 datasets titled "(movie)" in October), and the page had
+  always played muted.
+  - **The page.** The page gained `sound=1`, off when absent and for
+    anything but `1` or `true`, as `telemetry` is, so every address and
+    globe without it stays silent and `sound=off` never plays aloud
+    (`docs/EMBED_URL_GRAMMAR.md`).
+  - **The exhibit globe.** It writes `sound=1` after the `#` (before it
+    under `/9 steer query`, where every change reloads) unless the owner
+    says `/9 sound off`, or sets `SOUND` to `FALSE` for a globe
+    that starts silent. The maintainer chose on 27 October to have it
+    on by default for the exhibit, and owner-only rather than a
+    visitor's button, since everyone at the globe hears it.
+  - **Why it plays with nobody clicking.** Second Life's viewer starts
+    its embedded browser with unmuted autoplay allowed:
+    `settings.autoplay_without_gesture = true` in
+    `indra/media_plugins/cef/media_plugin_cef.cpp`, which Dullahan turns
+    into Chromium's `--autoplay-policy=no-user-gesture-required`.
+    In-world, the full app's panel played a movie's sound once
+    unmuted, and on 27 October the exhibit globe, in Firestorm 7.2.4
+    (built from Linden's code), played HOLOSCENES / Little Boxes aloud
+    with nothing clicked; `/9 sound off` silenced it with the picture
+    playing on, and `/9 sound on` brought it back. Linden's own viewer
+    is confirmed by its source alone. With sound added, `/9 memory` read
+    the globe script 57 KB, at most 60 showing the movie, as before; the
+    info script 51, at most 59; the menu script 44, at most 53; the
+    visitors script 52.
+  - **When a browser refuses.** A browser that wants a click first
+    pauses an element unmuted while it plays, saying nothing, and
+    refuses the next `play()`; the page then plays muted for the rest of
+    its life rather than holding a still frame.
+  - **What visitors hear.** Each visitor hears their own copy, at their
+    viewer's media volume and fainter with distance, as close to the
+    others as the pictures are. A seek to catch up is a skip in the
+    sound, catching up without one plays it up to a quarter faster or
+    slower for a while (the control law's rate trim), and a short loop
+    repeats its sound every pass.
 - **Notecards in the globe, all optional, re-read when they change:**
   - `presenters`: one username a line. A legacy name such as "Eric
     Hackathorn" is read as its username. A display name never is.
