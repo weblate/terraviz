@@ -1736,8 +1736,9 @@ driven by its owner in chat, with none of the visitor controls.
 - **Sound (added 27 October).** The movies in the catalog have sound
   tracks (24 datasets titled "(movie)" in October), and the page had
   always played muted.
-  - **The page.** The page gained `sound`, off when absent, so every
-    address and globe written before it stays silent
+  - **The page.** The page gained `sound=1`, off when absent and for
+    anything but `1` or `true`, as `telemetry` is, so every address and
+    globe without it stays silent and `sound=off` never plays aloud
     (`docs/EMBED_URL_GRAMMAR.md`).
   - **The exhibit globe.** It writes `sound` after the `#` unless the
     owner says `/9 sound off`, or sets `SOUND` to `FALSE` for a globe

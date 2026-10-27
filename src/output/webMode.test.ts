@@ -87,13 +87,15 @@ describe('readWebSettings', () => {
     expect(readWebSettings('?debug=%200', '').debug).toBe(true)
   })
 
-  it('reads sound as off unless the address turns it on, the usual way', () => {
-    // Off by default, so every address written before it stays silent.
+  it('reads sound as muted unless the address turns it on, strictly', () => {
+    // Off by default, so every address without it stays silent.
     expect(readWebSettings('', '').sound).toBe(false)
-    for (const on of ['?sound', '?sound=1', '?sound=true', '?sound=TRUE']) {
+    for (const on of ['?sound=1', '?sound=true', '?sound=TRUE']) {
       expect(readWebSettings(on, '').sound, on).toBe(true)
     }
-    for (const off of ['?sound=0', '?sound=false', '?sound=FALSE']) {
+    // Like telemetry, and unlike debug or paused: read the usual way,
+    // `sound=off` would play aloud for everyone within earshot.
+    for (const off of ['?sound', '?sound=0', '?sound=false', '?sound=off', '?sound=no', '?sound=', '?sound=%201']) {
       expect(readWebSettings(off, '').sound, off).toBe(false)
     }
     // Followed after the #, like any setting a session changes.
