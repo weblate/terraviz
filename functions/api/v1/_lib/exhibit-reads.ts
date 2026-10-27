@@ -71,15 +71,8 @@ export const PAGE_MAX_LIMIT = 9
 export const PAGE_MAX_OFFSET = 100_000
 export const TAGS_MAX = 30
 
-/**
- * A card's caps, in bytes as sent. The abstract's is the 500 characters
- * the info script keeps (its `ABSTRACT_MAX`, which every copy that reads a
- * card has had), counted in bytes so it is never more characters. A reply
- * is held whole in the script's 64 KB while it reads it: in-world on 27
- * October 2026 a card filled to 2,048 bytes took the info script to 63 KB
- * reading it and answering About, and the bytes past 500 of an abstract
- * were thrown away on arrival.
- */
+/** A card's caps, in bytes as sent. The abstract takes what's left, within
+ *  `CARD_ABSTRACT_CHARS`. */
 export const CARD_CAPS = {
   id: 64,
   page: 9 + 64, // "/dataset/" and a slug or an id
@@ -94,9 +87,21 @@ export const CARD_CAPS = {
   credit: 200,
   license: 64,
   licenseText: 400,
-  abstract: 500,
   truncated: 5,
 } as const
+
+/**
+ * The most of an abstract a card sends, in characters: the 500 the info
+ * script keeps (its `ABSTRACT_MAX`, which every copy that reads a card has
+ * had), so About shows what it showed, at most a word less where the
+ * node's `...` falls inside them. Counted in UTF-16 units, which is what a
+ * script holds, two bytes each, and never fewer than it counts. A reply is
+ * held whole while it is read: in-world on 27 October 2026 the info script
+ * reached 63 KB of its 64 reading a card whose abstract filled it to 2,048
+ * bytes, 1,496 characters of which the script threw away, and answering
+ * About.
+ */
+export const CARD_ABSTRACT_CHARS = 500
 
 /** A tag longer than this is left out of `tags` rather than cut, and a
  *  page asked for one is a 400. At 40, thirty tags fit `TAGS_BUDGET` by
@@ -353,8 +358,8 @@ export function pagePath(row: Pick<DatasetRow, 'id' | 'slug'>): string {
 export function buildCard(entry: ListEntry, length: HlsDurationReading): ExhibitCard {
   const { row } = entry
   let truncated = false
-  const fit = (prose: { text: string; cut: boolean }, cap: number): string => {
-    const cut = cutProse(prose.text, cap)
+  const fit = (prose: { text: string; cut: boolean }, cap: number, chars?: number): string => {
+    const cut = cutProse(prose.text, cap, chars)
     if (cut.cut || prose.cut) truncated = true
     return cut.text
   }
@@ -395,11 +400,11 @@ export function buildCard(entry: ListEntry, length: HlsDurationReading): Exhibit
     abstract: '',
     truncated: false,
   }
-  // The abstract within its cap, and never more than the rest leaves,
-  // counted with `false`, the longer of the two values `truncated` can end
-  // as: the caps' sum keeps that room above the cap, which a test holds.
+  // The abstract takes whatever the rest leaves, counted with `false`,
+  // the longer of the two values `truncated` can end as, and no more than
+  // the characters the info script keeps.
   const room = CARD_BUDGET - byteLength({ ...card, truncated: false })
-  card.abstract = fit(exhibitProse(row.abstract, { markdown: true }), Math.min(CARD_CAPS.abstract, room))
+  card.abstract = fit(exhibitProse(row.abstract, { markdown: true }), room, CARD_ABSTRACT_CHARS)
   card.truncated = truncated
   return card
 }

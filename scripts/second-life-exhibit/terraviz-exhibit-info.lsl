@@ -32,9 +32,10 @@
 // - "About", from the touch menu. If the globe holds a notecard named by
 //   the dataset's id, the visitor is given it. Otherwise they get the
 //   abstract, the full credit, the licence and a link to the dataset's
-//   page, in their own chat, in pieces of about 1 KB. Only the first 500
-//   characters of the abstract are given, which cuts most of them, and
-//   the link has the rest.
+//   page, in their own chat, in pieces of about 1 KB. At most the first
+//   500 characters of the abstract are given, which cuts most of them,
+//   and the link has the rest. A node from 27 October 2026 on sends no
+//   more than those.
 //
 // A DATE is the dataset's start time plus the share of its span that the
 // clip has played, the arithmetic of the app's videoTimeToDate. How it is
@@ -61,8 +62,8 @@
 //
 // terraviz-exhibit-menu.lsl reads the dataset menu from the node too, from a
 // prim of its own: a web reply reaches every script in the prim it arrives
-// in, and in this one its pages took this script past its 64 KB while it
-// read a card (in-world, 27 October 2026).
+// in, and this script has little room to spare while it reads a card (63
+// KB of 64 in-world on 27 October 2026, with a card filled to 2 KB).
 //
 // The owner can ask "/9 memory": each of the four scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while

@@ -17,6 +17,7 @@ import { asD1, makeCtx } from '../../v1/_lib/test-helpers'
 import { freshMigratedDb } from '../../../../scripts/lib/catalog-migrations'
 import {
   byteLength,
+  CARD_ABSTRACT_CHARS,
   CARD_BUDGET,
   CARD_CAPS,
   CARD_SKELETON,
@@ -218,7 +219,7 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
       'credit', 'license', 'licenseText', 'abstract', 'truncated',
     ])
     expect(Object.keys(JSON.parse(CARD_SKELETON))).toEqual(Object.keys(body))
-    expect(Object.keys(CARD_CAPS)).toEqual(Object.keys(body))
+    expect(Object.keys(CARD_CAPS)).toEqual(Object.keys(body).filter(k => k !== 'abstract'))
     const types = Object.fromEntries(Object.entries(body).map(([k, v]) => [k, typeof v]))
     expect(types).toEqual({
       id: 'string', page: 'string', kind: 'string', showable: 'boolean', title: 'string',
@@ -537,31 +538,54 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect((await card(sqlite, ULID(2))).body).toMatchObject({ abstract: 'Storm...', truncated: true })
   })
 
-  it('sends no more of an abstract than the info script keeps, in bytes', async () => {
-    // Its 500 characters: an abstract of exactly 500 bytes is whole, one
-    // byte more is cut, and one in characters of three bytes is cut by its
-    // bytes, so it is never more characters than the script keeps.
+  it('sends no more of an abstract than the info script keeps, in characters', async () => {
+    // Its 500: an abstract of exactly 500 is whole, one more is cut, and
+    // one in characters of three bytes that fits is whole too, as every
+    // rezzed copy showed it.
     const sqlite = setup([
       { id: ULID(1), abstract: 'x'.repeat(500) },
       { id: ULID(2), abstract: 'x'.repeat(501) },
       { id: ULID(3), abstract: '海'.repeat(400) },
-      { id: ULID(4), abstract: 'Clouds over the sea. '.repeat(100) },
+      { id: ULID(4), abstract: '海'.repeat(600) },
+      { id: ULID(5), abstract: 'Clouds over the sea. '.repeat(100) },
     ])
-    const exact = await card(sqlite, ULID(1))
-    expect(exact.body).toMatchObject({ abstract: 'x'.repeat(500), truncated: false })
-    for (const id of [ULID(2), ULID(3), ULID(4)]) {
+    expect((await card(sqlite, ULID(1))).body).toMatchObject({ abstract: 'x'.repeat(500), truncated: false })
+    expect((await card(sqlite, ULID(3))).body).toMatchObject({ abstract: '海'.repeat(400), truncated: false })
+    for (const id of [ULID(2), ULID(4), ULID(5)]) {
       const { body } = await card(sqlite, id)
       expect(body.truncated, id).toBe(true)
-      expect(jsonBytes(body.abstract), id).toBeLessThanOrEqual(CARD_CAPS.abstract)
-      expect(body.abstract.length, id).toBeLessThanOrEqual(500)
+      expect(body.abstract.length, id).toBeLessThanOrEqual(CARD_ABSTRACT_CHARS)
       expect(body.abstract.endsWith('...'), id).toBe(true)
     }
+    // Within a word of what the script kept: its cut ended at a space at
+    // or before character 500, this one's "..." falls inside the 500.
+    expect((await card(sqlite, ULID(4))).body.abstract.length).toBeGreaterThan(490)
     // Cut at a word, as before.
     const source = 'Clouds over the sea. '.repeat(100)
-    const kept = (await card(sqlite, ULID(4))).body.abstract.slice(0, -3)
+    const kept = (await card(sqlite, ULID(5))).body.abstract.slice(0, -3)
     expect(source.startsWith(kept)).toBe(true)
     expect(source[kept.length]).toBe(' ')
-    expect(CARD_CAPS.abstract).toBe(500)
+    expect(kept.length).toBeGreaterThan(480)
+    expect(CARD_ABSTRACT_CHARS).toBe(500)
+  })
+
+  it('fills the budget exactly, and counts truncated as the longer of its two values', async () => {
+    // Within its 500 characters the abstract fills the room only in text
+    // of three bytes a character, beside other fields at their caps. The
+    // room is measured with `false`: an abstract that fits exactly gives
+    // 2,048 bytes and isn't truncated, one byte more is cut.
+    const full = { title: 'T'.repeat(200), attribution_text: 'C'.repeat(200), license_statement: 'L'.repeat(400) }
+    const probe = setup([{ id: ULID(1), abstract: 'x', ...full }])
+    const room = 2048 - (bytesOf((await card(probe, ULID(1))).text) - 1)
+    const fill = (bytes: number) => '海'.repeat(Math.floor(bytes / 3)) + 'x'.repeat(bytes % 3)
+    expect(fill(room + 1).length).toBeLessThanOrEqual(CARD_ABSTRACT_CHARS)
+    const sqlite = setup([{ id: ULID(1), abstract: fill(room), ...full }, { id: ULID(2), abstract: fill(room + 1), ...full }])
+    const exact = await card(sqlite, ULID(1))
+    expect(bytesOf(exact.text)).toBe(2048)
+    expect(exact.body.truncated).toBe(false)
+    const over = await card(sqlite, ULID(2))
+    expect(bytesOf(over.text)).toBeLessThanOrEqual(2048)
+    expect(over.body.truncated).toBe(true)
   })
 
   it('keeps its budget with the worst data the node accepts', async () => {
@@ -575,9 +599,8 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     const { text, body } = await card(sqlite, ULID(1))
     const size = bytesOf(text)
     expect(size).toBeLessThanOrEqual(2048)
-    // And comes near it: a budget a card never approaches would prove
-    // nothing. The machine values don't fill their caps, the prose does.
-    expect(size).toBeGreaterThan(1700)
+    // And uses it: a budget a card never comes near would prove nothing.
+    expect(size).toBeGreaterThan(2000)
     expect(body.truncated).toBe(true)
     // The licence's address is kept whole.
     expect(body.licenseText.endsWith('a'.repeat(370))).toBe(true)
@@ -587,7 +610,8 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
       const sent = typeof value === 'string' ? jsonBytes(value) : bytesOf(JSON.stringify(value))
       expect(sent, name).toBeLessThanOrEqual(cap)
     }
-    expect(jsonBytes(body.abstract)).toBeGreaterThan(480)
+    expect(jsonBytes(body.abstract)).toBeGreaterThanOrEqual(500)
+    expect(body.abstract.length).toBeLessThanOrEqual(CARD_ABSTRACT_CHARS)
   })
 
   it('states its budgets as the contract does, and fixes them', () => {
@@ -597,11 +621,11 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     })
   })
 
-  it('keeps its budget by the sum of its caps, the abstract\'s included', () => {
+  it('leaves the abstract room by the sum of the other caps', () => {
     const fixed = byteLength(JSON.parse(CARD_SKELETON))
     const caps = Object.values(CARD_CAPS).reduce((a, b) => a + b, 0)
-    // So the room left for the abstract is never below its cap.
-    expect(fixed + caps).toBeLessThanOrEqual(CARD_BUDGET)
+    // At least 500 bytes of abstract on any card: 724 in fact.
+    expect(CARD_BUDGET - fixed - caps).toBeGreaterThanOrEqual(500)
   })
 
   it('is a 404 in the node\'s envelope for a dataset that is not public', async () => {

@@ -1951,14 +1951,19 @@ driven by its owner in chat, with none of the visitor controls.
       titles, a 40-byte tag, six-digit numbers, an eight-digit `list`
       and the envelope come to 982 bytes, which leaves 42 for any
       later field.
-    - The card's fixed fields take about 200 bytes, and the abstract at
-      most 500, the 500 characters the info script keeps (counted in
-      bytes, so never more characters). Until 27 October the abstract
-      took what was left, up to 2,048 bytes in all, and the bytes past
-      500 were thrown away on arrival: in-world, reading such a card and
-      answering About took the info script to 63 KB of its 64, since a
-      reply is held whole while it is read. The caps now sum within the
-      budget, the abstract's included, as the page's and the tags' do.
+    - The card's fixed fields take about 200 bytes, and its other fields'
+      caps come to 1,324 bytes with them, so the abstract always has at
+      least 724, and takes what is left, within the 500 characters the
+      info script keeps (since 27 October; counted in UTF-16 units, what a
+      script holds and never fewer than it counts). Before that it took
+      everything left, up to 2,048 bytes in all, of which the script
+      threw away all but 500 characters, while holding the whole reply:
+      in-world, the info script reached 63 KB of its 64 reading a card
+      whose abstract was 1,496 characters, or answering About. An English
+      card is now about 1 KB; one in a script of three bytes a character
+      can still fill the budget, since 500 such characters are 1,500
+      bytes, and a field added later should be weighed against the 63 KB
+      as well as the budget.
     - Tests sum the caps, and hold each reply with worst-case data:
       CJK, quotes, control characters, padded titles. The first menu
       read's review found two ways past its budget, a title padded
@@ -2129,20 +2134,24 @@ driven by its owner in chat, with none of the visitor controls.
          to the globe, where only its own replies reach it, and this
          step's first rule, that in the globe prim only the info script
          has an `http_response`, stands. The info script went on
-         stopping with the menu out of its prim, though, and the cause
-         was an older copy of it still in the globe, most likely the
-         first build's, about 90 lines longer: it rested at 56 KB, and
-         replaced, at 49. So the move is not shown to have been needed. It stays,
-         because the info script turned out to have no room for anyone
-         else's replies: with the menu in its own prim, `/9 memory` read
-         the globe script 57 KB, at most 60 showing a dataset; the info
-         script 51, **at most 63** reading a card filled to 2 KB (Clouds
-         (colorized) - Real-time) and answering About; the visitors
-         script 49; the menu script 44, at most 48 reading the node. A
-         card is held whole while it is read, and the info script keeps
-         500 characters of an abstract that filled the card's rest, so
-         the card now sends no more than those 500 ("Budgets", above),
-         about 1 KB in all. The visitors script opens it
+         stopping with the menu out of its prim, though. Most likely the
+         cause was an older copy of it still in the globe, from the
+         first menu build, about 90 lines longer: it rested at 56 KB,
+         and replaced, at 49, while the current copy climbs about 12 KB
+         above its rest reading a full card and answering About, so 56
+         would have reached 68; it hasn't stopped since. So the move is
+         not shown to have been needed. It stays, because the info
+         script had no room for anyone else's replies while cards were
+         2 KB: with the menu in its own prim, `/9 memory` read the globe
+         script 57 KB, at most 60 showing a dataset; the info script 51,
+         **at most 63** reading a card filled to 2 KB (Clouds
+         (colorized) - Real-time) or answering About, one peak covering
+         both; the visitors script 49; the menu script 44, at most 48
+         reading the node. A card is held whole while it is read, and
+         the info script keeps 500 characters of an abstract that filled
+         the card's rest, so the card now sends no more than those 500
+         ("Budgets", above), about 1 KB for that card. What that does to
+         the peak is still to measure. The visitors script opens it
          (`MSG_MENU_OPEN`, to the whole object since the scripts are in
          different prims) for a visitor who may act, handing it the
          node, which it reads from the globe script's state, and the

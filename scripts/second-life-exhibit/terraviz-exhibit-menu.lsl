@@ -13,11 +13,11 @@
 // It is one of the exhibit's four scripts: the dataset menu read from the
 // node's catalog, which terraviz-exhibit-visitors.lsl opens for whoever
 // chooses Datasets when the globe has no "datasets" notecard. It is a
-// script of its own because the visitors script had no room left for it,
-// and in a prim of its own, linked to the globe, because a web reply
-// reaches every script in the prim it arrives in: in the globe's prim its
-// pages landed in the info script too, which then ran out of memory
-// reading a card (both Stack-Heap Collisions in-world, 27 October 2026).
+// script of its own because the visitors script had no room left for it
+// (a Stack-Heap Collision in-world, 27 October 2026), and in a prim of its
+// own, linked to the globe, because a web reply reaches every script in
+// the prim it arrives in, and the info script there has little room to
+// spare while it reads a card.
 // - The menu opens on the node's categories, with how many datasets each
 //   has, and "All datasets", since some are in none. A category opens its
 //   datasets nine to a page, in the order the app's browse lists them.
@@ -491,7 +491,7 @@ default
     {
         // Only from another prim: a copy of this script in the globe's
         // prim stays silent, since its replies would reach the info script
-        // there and take it past 64 KB.
+        // there, which has little room to spare.
         if (n != MSG_MENU_OPEN || sender == llGetLinkNumber()) return;
         list w = llParseStringKeepNulls(str, ["\n"], []);
         // Asked too long ago: the visitors script gives its own datasets.
