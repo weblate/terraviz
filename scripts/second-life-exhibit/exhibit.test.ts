@@ -779,8 +779,13 @@ describe("the exhibit's dataset menu", () => {
     for (const query of ['limit=9&offset=0&tag=', 'limit=9&offset=27&tag=Snow%20and%20Ice', `limit=9&offset=9&tag=${encodeURIComponent('海'.repeat(13))}`]) {
       expect('message' in parsePageQuery(new URLSearchParams(query)), query).toBe(false)
     }
-    // One read in flight a visitor, and a bounded number in all.
-    expect(read).toMatch(/integer at = llListFindList\(gReqs, \[who\]\);\n\s+if \(at != -1 && at % 2 == 1\) gReqs = llDeleteSubList\(gReqs, at - 1, at\);/)
+    // One read in flight a visitor, and a bounded number in all. A menu
+    // shown without a read forgets the one in flight too, or its reply
+    // would land over the menu the visitor has by then.
+    expect(body(menu, 'drop(key who)')).toMatch(/integer at = llListFindList\(gReqs, \[who\]\);\n\s+if \(at != -1 && at % 2 == 1\) gReqs = llDeleteSubList\(gReqs, at - 1, at\);/)
+    expect(read).toMatch(/remember\(who, pageOf\(who\)\);\n\s+drop\(who\);/)
+    expect(body(menu, 'kindsMenu(key who, integer page)')).toMatch(/\{\n(?:\s+\/\/.*\n)*\s+drop\(who\);/)
+    expect(listen()).toContain('if (msg == BTN_MENU) { drop(who); done(who, "main"); return; }')
     expect(read).toContain('while (llGetListLength(gReqs) > CTX_MAX * 2) gReqs = llDeleteSubList(gReqs, 0, 1);')
     // A reply this script didn't ask for is set aside at once; so is one
     // for a menu that has closed.

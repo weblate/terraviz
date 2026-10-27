@@ -195,14 +195,21 @@ string value(string body, list path)
     return v;
 }
 
+// Forgets this visitor's read in flight, so its reply, when it comes,
+// opens nothing over the menu they have by then.
+drop(key who)
+{
+    integer at = llListFindList(gReqs, [who]);
+    if (at != -1 && at % 2 == 1) gReqs = llDeleteSubList(gReqs, at - 1, at);
+}
+
 // Asks the node for this visitor: one read in flight each, so a slow reply
 // to a read they have since replaced opens nothing. Their menu stays
 // answerable from now, since the reply opens the next one.
 read(key who, string path, integer budget)
 {
     remember(who, pageOf(who));
-    integer at = llListFindList(gReqs, [who]);
-    if (at != -1 && at % 2 == 1) gReqs = llDeleteSubList(gReqs, at - 1, at);
+    drop(who);
     if (gNode == "") { liveFailed(who, failure(0)); return; }
     key req = llHTTPRequest(gNode + path, [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json",
         HTTP_BODY_MAXLENGTH, budget + 1], "");
@@ -276,6 +283,9 @@ integer named(list tags)
 // category, as a page of datasets' do from its first dataset.
 kindsMenu(key who, integer page)
 {
+    // Shown without asking the node, so a page still on its way for this
+    // visitor would land over it: forgotten (found in review).
+    drop(who);
     // Back at the categories, the next page isn't paging on from the last.
     integer at = llListFindList(gPages, [who]);
     if (at != -1 && at % 4 == 0) gPages = llDeleteSubList(gPages, at, at + 3);
@@ -579,7 +589,7 @@ default
         // menu answers (the timer that forgets it runs once a minute).
         if (at == -1 || at % 3 != 0 || unix() - llList2Integer(gCtx, at + 2) > CTX_TTL) return;
         integer page = llList2Integer(gCtx, at + 1);
-        if (msg == BTN_MENU) { done(who, "main"); return; }
+        if (msg == BTN_MENU) { drop(who); done(who, "main"); return; }
 
         if (ch == gDlgKinds)
         {
