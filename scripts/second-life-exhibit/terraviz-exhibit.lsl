@@ -655,7 +655,8 @@ act(key who, integer owner, string msg)
     }
     // The clip's length in microseconds and the dataset it is for, from the
     // info script, which reads it from the node's card, so that the clock
-    // can be kept round the loop (position()). Only the scripts send it.
+    // can be kept round the loop (position()). Only the scripts send it,
+    // and 0, for none, each time the info script starts on a dataset.
     if (cmd == "length" && who == NULL_KEY)
     {
         gLen = (integer)arg;

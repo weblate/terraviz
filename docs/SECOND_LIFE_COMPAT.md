@@ -1674,7 +1674,10 @@ driven by its owner in chat, with none of the visitor controls.
     TerraViz's bundles and Vimeo's streams do; one written finer could
     differ by half a microsecond a loop. A clip of 2147 s or more is
     too long to count in microseconds and shows its range, its clock
-    kept in the float as before (the node's longest was 717 s). The
+    kept in the float as before (the node's longest was 717 s). Each
+    time the info script starts on a dataset it tells the globe there
+    is no length until the card says, so a dataset shown again never
+    runs on a length its card has stopped giving (found in review). The
     arithmetic is tested by translating the scripts' own function into
     JavaScript, with every integer held to 32 bits.
   - **visitors** owns people. It turns touches into menus, keeps the

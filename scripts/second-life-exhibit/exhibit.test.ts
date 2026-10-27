@@ -763,6 +763,43 @@ describe("the exhibit's clip clock", () => {
     expect(body(info, 'string date()')).toContain('float f = (float)loopUs(now(), gLen) / (float)gLen;')
   })
 
+  it('tells the globe there is no length each time it starts on a dataset, so one shown again never keeps an old one', () => {
+    // Found in review (#504): A's card gives a length, the globe shows
+    // Earth, then A again, and A's card now gives none, its media
+    // replaced by a single file, or the read failing. The globe keeps a
+    // length by the dataset it names, so unless told otherwise it would
+    // wrap A's moves on the old one while the page loops on another.
+    const none = 'llMessageLinked(LINK_THIS, MSG_CONTROL, "length 0 " + gDataset, NULL_KEY);'
+    const forget = body(info, 'forget()')
+    const tellsNone = forget.includes(none)
+    expect(tellsNone).toBe(true)
+    // forget() runs whenever the dataset isn't the one last read (pinned
+    // above), which Earth between two showings of A makes true twice.
+
+    // The exchange as the scripts make it: forget() and card() send what
+    // is pinned here and above, and the globe keeps it as its handler does.
+    const state = { dataset: '', len: 0, lenFor: '' }
+    const take = (msg: string) => {
+      const w = msg.split(' ').filter(p => p !== '')
+      state.len = Number.parseInt(w[1] ?? '', 10) || 0
+      state.lenFor = w[2] ?? ''
+    }
+    const show = (id: string, cardLen: number) => {
+      state.dataset = id
+      if (tellsNone) take(`length 0 ${id}`)
+      if (cardLen > 0) take(`length ${cardLen} ${id}`)
+    }
+    const exact = () => state.len > 0 && state.lenFor === state.dataset
+    show('A', 12_100_000)
+    expect(exact()).toBe(true)
+    show('', 0)
+    expect(exact()).toBe(false)
+    show('A', 0)
+    expect(exact()).toBe(false)
+    show('A', 143_766_672)
+    expect(state).toEqual({ dataset: 'A', len: 143_766_672, lenFor: 'A' })
+  })
+
   it('moves the anchor without losing the time it takes to', () => {
     // One reading of the clock, so the clip doesn't skip the moment
     // between reading where it is and moving the anchor there.

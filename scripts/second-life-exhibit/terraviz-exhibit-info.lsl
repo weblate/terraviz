@@ -715,6 +715,11 @@ forget()
     gVideo = FALSE;
     gDated = FALSE;
     gLen = 0;
+    // The globe keeps a length by the dataset it names, so a dataset shown
+    // again after another would run on its old length, which its card
+    // may no longer give (its media replaced, or the read failing). It is
+    // told none until the card says.
+    llMessageLinked(LINK_THIS, MSG_CONTROL, "length 0 " + gDataset, NULL_KEY);
     gFrames = FALSE;
     gPage = "/dataset/" + gDataset;
     gCardTitle = "";
