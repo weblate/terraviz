@@ -1626,7 +1626,12 @@ info script copies as little as it can while it reads. The maintainer
 then used the exhibit for a while with no further stop, and `/9 memory`
 read the globe script at 54 KB (57 at most, showing a dataset), the info
 script at 55 (58 at most, reading a record or answering About) and the
-visitors script at 49: about 6 KB of room at each script's busiest. The
+visitors script at 49: about 6 KB of room at each script's busiest.
+With the card (#502) and the clip clock (#504) it read, on 27 October,
+the globe script at 57 KB (59 at most, showing a dataset), the info
+script at 48 (52 at most, reading a card or answering About) and the
+visitors script at 49: the card saved the info script more than the
+clock cost it, and the globe script, at 5 KB of room, has the least. The
 checklist has not been run in full. Beyond that run, what has been checked is the
 scripts' syntax (lslint), their date arithmetic against the calendar for
 every day from year 1 to 2100, and, by tests, that the scripts agree with

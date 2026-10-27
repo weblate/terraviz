@@ -422,11 +422,14 @@ each avatar used, and what steps 2 and 9 showed.
   plain, rather than the dataset's record. Before the card, `/9 memory`
   read in-world: the globe script 54 KB, and at most 57 while showing a
   dataset; the info script 55, and at most 58 while reading the first
-  3 KB of a record or answering About; the visitors script 49. The
-  info script reading the card hasn't been measured in-world yet, which
-  step 9 of the smoke test does, and nor has the clip clock the globe and
-  info scripts gained on 27 October. About 6 KB at each script's busiest
-  was all there was, so code added to any of them needs measuring again.
+  3 KB of a record or answering About; the visitors script 49. With the
+  card and the clip clock both scripts gained on 27 October, it read
+  that day: the globe script 57 KB, and at most 59 while showing a
+  dataset; the info script 48, and at most 52 while reading a card or
+  answering About; the visitors script 49. The globe script, with 5 KB
+  left at its busiest, has the least room, so code that could go in
+  another script should, and code added to any of them needs measuring
+  again (step 9 of the smoke test).
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With
