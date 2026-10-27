@@ -183,7 +183,10 @@ the node reads from the stream's own playlists, its own HLS bundle's or
 a Vimeo stream's, such as Sea temperature's: Vimeo's API gives whole
 seconds, which isn't quite the stream's, and a date worked out from it
 would drift from the picture with every loop. Every visitor's copy of
-the page loops on that same length, read from the stream it plays. A
+the page loops on that same length, read from the stream it plays. The
+info script tells the globe script the length too, and both count the
+clip in whole microseconds round the loop, so the date keeps to the
+picture however long the globe is left playing. A
 video with no playlist to read, a single file, shows its range. When
 the node couldn't read
 the length in time, the card says when to ask again, and the info
@@ -416,8 +419,9 @@ each avatar used, and what steps 2 and 9 showed.
   dataset; the info script 55, and at most 58 while reading the first
   3 KB of a record or answering About; the visitors script 49. The
   info script reading the card hasn't been measured in-world yet, which
-  step 9 of the smoke test does. About 6 KB at each script's busiest is
-  all there was, so code added to any of them needs measuring again.
+  step 9 of the smoke test does, and nor has the clip clock the globe and
+  info scripts gained on 27 October. About 6 KB at each script's busiest
+  was all there was, so code added to any of them needs measuring again.
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With
@@ -431,10 +435,13 @@ each avatar used, and what steps 2 and 9 showed.
 - **A long dataset name in `datasets` is cut** to a button's 24 bytes.
   Two names that cut alike answer as the first.
 - **The date is UTC**, and follows the clip as the region's clock says:
-  a second or so from the picture while playing, exact when paused. On
-  a clip left looping for hours it can drift further, since the script
-  wraps on the length the node reports and each viewer's page on the
-  video's own, which can differ slightly (`SECOND_LIFE_COMPAT.md` §7).
+  a second or so from the picture while playing, exact when paused. It
+  doesn't drift further on a clip left looping, since the scripts and
+  every viewer's page loop on the one length the node reads, and the
+  scripts count it in whole numbers. A video with no length to read
+  shows its range, and its clock, kept in a float, is about 10 ms out
+  after a day of play and a third of a second after a month, which only
+  a pause shows.
 - **Long text is cut.** The node cuts what doesn't fit a card at a
   word, ending `...`: a credit past 200 bytes, a licence statement past
   400 with its address, and the abstract to what the rest of the card

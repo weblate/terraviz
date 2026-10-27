@@ -1652,7 +1652,16 @@ driven by its owner in chat, with none of the visitor controls.
     page can't show. After every change it tells the other two what
     the globe now shows. It asks the node nothing: a web reply goes to
     every script in the prim with a handler for one, and this one has
-    the least room.
+    the least room. Since 27 October it keeps the clip's position in
+    whole microseconds round the loop, once the info script has passed
+    on the card's `exactDuration`, and the info script works out the
+    date the same way. Both had added the time since the anchor in an
+    LSL float, which lost about 10 ms a day of play at the clip's speed
+    and a third of a second a month, a second a month at 4×. So the
+    floating text's date drifted from the picture on a globe left
+    playing, and a pause landed off the frame every copy showed. The
+    arithmetic is tested by translating the scripts' own function into
+    JavaScript, with every integer held to 32 bits.
   - **visitors** owns people. It turns touches into menus, keeps the
     presenter list, runs talks and the short hold, watches who is at
     the globe, and asks the globe to go back to the live Earth once
