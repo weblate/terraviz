@@ -2040,8 +2040,9 @@ driven by its owner in chat, with none of the visitor controls.
        held where the record took 6, and no JSON or HTML code of its
        own. Done 26 October, 185 lines shorter; `/9 memory` in-world is
        still to measure.
-    2. The menu (designed 27 October, on the design of 25 October; not
-       yet built). The maintainer chose on 25 October a menu read live
+    2. The menu (built 27 October, on the design of 25 October;
+       `/9 memory` in-world still to measure). The maintainer chose on
+       25 October a menu read live
        from the node over two cheaper alternatives: a page on the node
        that writes the `datasets` notecard, which the owner would redo
        for every catalog change, and notecard lines taking the app's
@@ -2076,17 +2077,20 @@ driven by its owner in chat, with none of the visitor controls.
          relays the reply (`MSG_MENU`). A link message reaches every
          script in the prim too, the globe's included, which has the
          least room, so the relay is lines rather than the node's JSON:
-         a page comes to about 700 characters, and the categories to
-         about 100 on the node in October and 1,450 at their caps. Moving
+         a page comes to at most about 750 characters, and the
+         categories to about 100 on the node in October and 1,450 at
+         their caps. Moving
          the visitors script to a prim of its own, the other way to keep
          the relay from the globe script, was left for if this doesn't
          fit.
        - **Kept, and for how long:** the categories for ten minutes;
          the page a visitor has open, its ids and where it starts, while
-         their menu stays answerable (five minutes), for at most four
-         visitors at once, the oldest giving way. Outside a talk only
-         the visitor holding the globe and the owner can open Datasets,
-         so four is more than an exhibit needs.
+         their menu stays answerable (five minutes), for at most three
+         visitors at once, the oldest giving way, since a page's ids and
+         titles take about 1.4 KB at their caps. Outside a talk only the
+         visitor holding the globe and the owner can open Datasets, so
+         three is more than an exhibit needs, and a visitor whose page
+         gave way gets the categories again.
        - **The page's `list`** (below) says when the catalog changed
          between two pages of one category. The menu then says a
          dataset may have moved between pages, and doesn't start over:

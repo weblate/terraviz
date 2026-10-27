@@ -59,9 +59,17 @@
 // hover text then shows the title alone, "About" gives the dataset's
 // page, and the owner is told once.
 //
+// THE DATASET MENU is the visitors script's, but this script reads it from
+// the node for it (/api/exhibit/v1/tags and /api/exhibit/v1/datasets), so
+// this stays the only script with an http_response: a web reply reaches
+// every script in the prim with one. It asks only for a category and where
+// a page starts, nothing about who asked, and hands the reply on in lines
+// (menuReply).
+//
 // The owner can ask "/9 memory": each of the three scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
-// reading a card or answering "About", which are when it needs the most.
+// reading a card or a menu, or answering "About", which are when it needs
+// the most.
 
 integer CHAN = 9;
 
@@ -70,6 +78,8 @@ integer MSG_CONTROL = 271002;  // visitors or info to globe: a control, for the 
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
 integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
+integer MSG_MENU_ASK = 271006; // visitors to info: a menu read from the node, for the key who asked
+integer MSG_MENU     = 271007; // info to visitors: what the node gave, in lines (menuReply)
 
 // A card's budget, in bytes. The node keeps every card within it, so a
 // card arrives whole, and a reply cut short isn't one. A request reads one
@@ -77,7 +87,12 @@ integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the 
 // way Second Life counts the limit. Held at two bytes a character, a card
 // is the largest thing this script holds.
 integer CARD_MAX = 2048;
-integer TRIES = 4;             // asks for one dataset's card, a failed one or one the node said to repeat
+// A menu page's budget and the categories', read with a byte to spare as
+// a card is.
+integer PAGE_MAX = 1024;
+integer TAGS_MAX = 2048;
+integer MENU_REQS = 8;         // menu reads in flight at once, one a visitor
+integer TRIES = 4;            // asks for one dataset's card, a failed one or one the node said to repeat
 integer ABSTRACT_MAX = 500;    // characters of an abstract kept for "About"; the link has the rest
 integer PIECE = 1000;          // bytes of a chat piece; a chat line holds 1024
 float   TICK = 2.0;            // how often a playing clip's date is worked out again
@@ -132,6 +147,7 @@ integer gCut;          // the node cut a value short, or this script cut the abs
 key     gReq;
 integer gTries;
 integer gRetryAt;
+list    gMenuReqs;     // menu reads in flight: request, who asked
 
 string  gShown;        // the hover text as last set
 integer gPeak;         // the most memory used reading a card or answering About
@@ -699,9 +715,77 @@ about(key av)
     say(av, llDumpList2String(lines, "\n"));
 }
 
+// A menu read for the visitors script: "tags", or "page", the offset and
+// the tag, in lines. One in flight a visitor, so a slow reply can't open a
+// menu they have moved on from.
+menuAsk(key who, string what)
+{
+    integer at = llListFindList(gMenuReqs, [who]);
+    if (at != -1 && at % 2 == 1) gMenuReqs = llDeleteSubList(gMenuReqs, at - 1, at);
+    if (gNode == "") { llMessageLinked(LINK_THIS, MSG_MENU, "fail\n0", who); return; }
+    list w = llParseStringKeepNulls(what, ["\n"], []);
+    string url = gNode + "/api/exhibit/v1/tags";
+    integer max = TAGS_MAX;
+    if (llList2String(w, 0) == "page")
+    {
+        url = gNode + "/api/exhibit/v1/datasets?limit=9&offset=" + (string)llList2Integer(w, 1)
+            + "&tag=" + llEscapeURL(llList2String(w, 2));
+        max = PAGE_MAX;
+    }
+    key req = llHTTPRequest(url, [HTTP_METHOD, "GET", HTTP_ACCEPT, "application/json", HTTP_BODY_MAXLENGTH, max + 1], "");
+    // Throttled: no key, and never an answer.
+    if (req == NULL_KEY) { llMessageLinked(LINK_THIS, MSG_MENU, "fail\n-1", who); return; }
+    gMenuReqs += [req, who];
+    while (llGetListLength(gMenuReqs) > MENU_REQS * 2) gMenuReqs = llDeleteSubList(gMenuReqs, 0, 1);
+}
+
+// A value of a menu reply on one line, or "" for one it lacks. The node
+// writes none with a line break; this takes out any another node left in.
+string line(string body, list path)
+{
+    string v = llJsonGetValue(body, path);
+    if (v == JSON_INVALID) return "";
+    return llDumpList2String(llParseStringKeepNulls(v, ["\n"], []), " ");
+}
+
+// A menu reply, handed to the visitors script in lines: "tags", then each
+// tag and its count; "page", then its total, offset, list and tag, then
+// each id and title; or "fail" and the status, 0 with no node yet and -1
+// for a request Second Life throttled. Lines, not the node's JSON, which is
+// about a third longer, since a link message reaches every script in the
+// prim, the globe's included, and that one has the least room.
+menuReply(key who, integer status, list meta, string body)
+{
+    list out = ["fail", status];
+    if (status == 200 && llListFindList(meta, [HTTP_BODY_TRUNCATED]) == -1)
+    {
+        integer i;
+        if (llJsonValueType(body, ["datasets"]) == JSON_ARRAY)
+        {
+            out = ["page", (integer)llJsonGetValue(body, ["total"]), (integer)llJsonGetValue(body, ["offset"]),
+                line(body, ["list"]), line(body, ["tag"])];
+            while (i < 9 && llJsonValueType(body, ["datasets", i]) != JSON_INVALID)
+            {
+                out += [line(body, ["datasets", i, "id"]), line(body, ["datasets", i, "title"])];
+                ++i;
+            }
+        }
+        else if (llJsonValueType(body, ["tags"]) == JSON_ARRAY)
+        {
+            out = ["tags"];
+            while (i < 30 && llJsonValueType(body, ["tags", i]) != JSON_INVALID)
+            {
+                out += [line(body, ["tags", i, "tag"]), (integer)llJsonGetValue(body, ["tags", i, "count"])];
+                ++i;
+            }
+        }
+    }
+    llMessageLinked(LINK_THIS, MSG_MENU, llDumpList2String(out, "\n"), who);
+}
+
 // The most memory used since the profiler was started, kept for "/9
-// memory": reading a card and answering "About" are when this script
-// needs the most.
+// memory": reading a card or a menu, and answering "About", are when this
+// script needs the most.
 peak()
 {
     llScriptProfiler(PROFILE_NONE);
@@ -751,6 +835,9 @@ default
         if (c & CHANGED_REGION_START)
         {
             if (gReq) { gReq = NULL_KEY; later(10); }
+            // A menu read it dropped isn't asked again: the visitor touches
+            // the globe again.
+            gMenuReqs = [];
             pace();
         }
     }
@@ -758,6 +845,7 @@ default
     link_message(integer sender, integer n, string str, key id)
     {
         if (n == MSG_TALK) { gTalk = str == "1"; hover(); return; }
+        if (n == MSG_MENU_ASK) { menuAsk(id, str); return; }
         if (n == MSG_ABOUT)
         {
             llScriptProfiler(PROFILE_SCRIPT_MEMORY);
@@ -797,6 +885,16 @@ default
 
     http_response(key req, integer status, list meta, string body)
     {
+        integer at = llListFindList(gMenuReqs, [req]);
+        if (at != -1 && at % 2 == 0)
+        {
+            key who = llList2Key(gMenuReqs, at + 1);
+            gMenuReqs = llDeleteSubList(gMenuReqs, at, at + 1);
+            llScriptProfiler(PROFILE_SCRIPT_MEMORY);
+            menuReply(who, status, meta, body);
+            peak();
+            return;
+        }
         if (req != gReq) return;
         gReq = NULL_KEY;
         // Only the node's own 404, which says so in its JSON, means there is
@@ -847,7 +945,7 @@ default
     {
         if (llToLower(llStringTrim(msg, STRING_TRIM)) != "memory") return;
         string most = "";
-        if (gPeak) most = ", and at most " + (string)(gPeak / 1024) + " KB while reading a card or answering About";
+        if (gPeak) most = ", and at most " + (string)(gPeak / 1024) + " KB while reading a card or a menu, or answering About";
         llOwnerSay("[exhibit] Info script: " + (string)(llGetUsedMemory() / 1024) + " KB used of 64" + most + ".");
     }
 }

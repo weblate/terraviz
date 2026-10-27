@@ -43,13 +43,21 @@
 //   presenters  one username a line, such as eric.hackathorn. A legacy
 //               name such as "Eric Hackathorn" works too. A display name
 //               never does: anyone can take one.
-//   datasets    the menu, one "Name = dataset id" a line, in the order it
-//               shows them. Without it the menu offers five built in.
+//   datasets    a menu of its own, one "Name = dataset id" a line, in the
+//               order it shows them. Without it the menu is the node's
+//               catalog, by category, nine to a page, which keeps up with
+//               the node by itself; five built in stand in when the node
+//               can't give it.
 //   settings    "name = value" lines, any of:
 //                 radius = 15         metres from the globe's surface that count as at it
 //                 idle minutes = 5    before the live Earth comes back
 //                 hold seconds = 60   one visitor's hold after acting
 //                 talk minutes = 2    no presenter nearby ends a talk
+//                 categories = Water, Air   only those of the node's categories, in that order
+//
+// The info script reads the catalog's menu from the node for this one
+// (MSG_MENU_ASK), asking only for a category and where a page starts,
+// nothing about who asked.
 //
 // Nothing about a visitor leaves the object. Who is at the globe is read
 // from the region every few seconds and kept only as a count and a time.
@@ -69,6 +77,8 @@ integer MSG_CONTROL = 271002;  // visitors or info to globe: a control, for the 
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
 integer MSG_TALK    = 271004;  // visitors to info: "1" during a talk, "0" otherwise
 integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the globe shows
+integer MSG_MENU_ASK = 271006; // visitors to info: a menu read from the node, for the key who asked
+integer MSG_MENU     = 271007; // info to visitors: what the node gave, in lines
 
 // The settings, and what the "settings" notecard may set them to.
 float   gRadius = 15.0;
@@ -81,7 +91,8 @@ integer gTalkS = 120;
 string  ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 integer ID_MAX = 128;
 
-// The menu without a "datasets" notecard: the globe script's presets.
+// The menu when there is no "datasets" notecard and the node can't give
+// one: the globe script's presets.
 list    DEFAULT_MENU = [
     "Hurricanes 2024",      "01KQG611HF8YXJNRBEHT0757KT",
     "Sea temperature",      "01KQG65ZW1JC7M27EQ1CYD8YZ7",
@@ -92,6 +103,11 @@ list    DEFAULT_MENU = [
 
 float   TICK = 5.0;          // how often presence, holds and talks are checked
 integer PAGE = 9;            // datasets a menu page shows, beside its three moves
+integer TAGS_TTL = 600;      // seconds the node's categories are kept before asking again
+// Pages of the node's datasets kept for visitors with one open, the oldest
+// giving way. A page's ids and titles take about 1.4 KB at their caps, and
+// outside a talk only the holder and the owner can open one.
+integer LIVE_PAGES = 3;
 integer CTX_TTL = 300;       // seconds a menu stays answerable after it opened
 integer CTX_MAX = 8;         // menus open at once
 float   NUDGE = 10.0;
@@ -118,6 +134,8 @@ string  BTN_CLOSE = "Close";
 string  BTN_PREV = "< Previous";
 string  BTN_NEXT = "Next >";
 string  BTN_MENU = "Main menu";
+string  BTN_ALL = "All datasets";
+string  BTN_KINDS = "Categories";
 
 // What the globe shows, from the globe script.
 string  gDataset;
@@ -127,6 +145,14 @@ integer gTurned;             // a visitor turned or tilted the globe from the ow
 
 list    gPresenters;         // usernames, lowercase
 list    gMenu;               // name, id, name, id...
+integer gLive;               // no "datasets" notecard: the menu is the node's catalog
+
+// The menu from the node's catalog (docs/SECOND_LIFE_COMPAT.md §9 Phase 2).
+list    gCategories;         // the settings notecard's "categories", or [] for all the node's
+list    gTags;               // the node's categories: tag, count, tag, count...
+integer gTagsAt;             // when the node gave them, 0 for never
+list    gPages;              // pages open: who, tag, offset, total, list, then the page's ids and titles in lines
+integer gTold;               // the owner has been told the node isn't giving the menu
 integer gTalk;
 integer gTalkSeen;           // when a presenter was last at the globe
 key     gHolder = NULL_KEY;
@@ -142,7 +168,9 @@ integer gDlg;                // the main menu's channel
 integer gDlgSets;            // the datasets menu's
 integer gDlgJump;            // the jump text box's
 integer gDlgTurn;            // the turn menu's
-list    gCtx;                // who, their datasets page, when: one entry per visitor with a menu open
+integer gDlgKinds;           // the node's categories
+integer gDlgLive;            // a page of the node's datasets
+list    gCtx;               // who, their datasets page, when: one entry per visitor with a menu open
 
 list    gCards = ["settings", "presenters", "datasets"];
 integer gCard;               // the notecard being read, as an index into gCards
@@ -150,7 +178,8 @@ integer gLine;
 key     gCardReq;
 list    gNewPresenters;
 list    gNewMenu;
-float   gNewRadius;          // the settings being read, applied once all are in
+list    gNewCategories;
+float   gNewRadius;         // the settings being read, applied once all are in
 integer gNewIdleS;
 integer gNewHoldS;
 integer gNewTalkS;
@@ -280,6 +309,14 @@ remember(key who, integer page)
     while (llGetListLength(gCtx) > CTX_MAX * 3) gCtx = llDeleteSubList(gCtx, 0, 2);
 }
 
+// The page this visitor's open menu is on, or 0 with none open.
+integer pageOf(key who)
+{
+    integer at = llListFindList(gCtx, [who]);
+    if (at == -1) return 0;
+    return llList2Integer(gCtx, at + 1);
+}
+
 string showing()
 {
     if (gDataset == "") return "The globe shows the live Earth: today's clouds and the real day and night.";
@@ -312,10 +349,7 @@ mainMenu(key who)
     else if (gTalk) text += "\nA talk is in progress.";
     else if (who != llGetOwner()) text += "\nEveryone at the globe sees what you choose. It's yours for "
         + (string)gHoldS + " s after each choice.";
-    integer at = llListFindList(gCtx, [who]);
-    integer page = 0;
-    if (at != -1) page = llList2Integer(gCtx, at + 1);
-    remember(who, page);
+    remember(who, pageOf(who));
     menu(who, text, b, gDlg);
 }
 
@@ -323,10 +357,7 @@ mainMenu(key who)
 // each press, since a pole takes three to reach the equator.
 turnMenu(key who)
 {
-    integer at = llListFindList(gCtx, [who]);
-    integer page = 0;
-    if (at != -1) page = llList2Integer(gCtx, at + 1);
-    remember(who, page);
+    remember(who, pageOf(who));
     menu(who, "Turn the globe, for everyone at it. A pole button tips that pole toward you, 30 degrees a press, "
         + "until it faces you. East turns it the way the Earth turns.",
         [BTN_NORTH, BTN_SOUTH, BTN_LEVEL, BTN_WEST, BTN_EAST, BTN_MENU], gDlgTurn);
@@ -348,6 +379,181 @@ datasetsMenu(key who, integer page)
     if (pages > 1) text += " Page " + (string)(page + 1) + " of " + (string)pages + ".";
     remember(who, page);
     menu(who, text, b, gDlgSets);
+}
+
+// Datasets, from the main menu: the "datasets" notecard's own list, or
+// without one the node's catalog by category (docs/SECOND_LIFE_COMPAT.md
+// §9 Phase 2, "The menu"), its categories kept TAGS_TTL.
+datasets(key who)
+{
+    if (!gLive) { datasetsMenu(who, 0); return; }
+    if (gTagsAt == 0 || unix() - gTagsAt > TAGS_TTL) liveAsk(who, "tags");
+    else kindsMenu(who, 0);
+}
+
+// A read the info script makes of the node for this visitor. Their menu
+// stays answerable from now, since the reply opens the next one.
+liveAsk(key who, string what)
+{
+    remember(who, pageOf(who));
+    llMessageLinked(LINK_THIS, MSG_MENU_ASK, what, who);
+}
+
+// The categories the menu offers. With the settings notecard's, those the
+// node has, in the owner's order and whatever their case. Otherwise "" for
+// all the datasets, since some are in none, and then every category, most
+// datasets first, as the node lists them.
+list kinds()
+{
+    list tags = llList2ListStrided(gTags, 0, -1, 2);
+    if (gCategories == []) return [""] + tags;
+    list out = [];
+    integer i;
+    integer j;
+    for (i = 0; i < llGetListLength(gCategories); ++i)
+        for (j = 0; j < llGetListLength(tags); ++j)
+        {
+            string t = llList2String(tags, j);
+            if (llToLower(t) == llToLower(llList2String(gCategories, i)) && llListFindList(out, [t]) == -1) out += [t];
+        }
+    return out;
+}
+
+string kindName(string tag)
+{
+    if (tag == "") return BTN_ALL;
+    return tag;
+}
+
+// Whether a page of categories can name its buttons: each name fits a
+// button whole, and none is another's or a move's. Otherwise its buttons
+// are numbers, as a page of datasets' are.
+integer named(list tags)
+{
+    list seen = [BTN_PREV, BTN_NEXT, BTN_MENU];
+    integer i;
+    for (i = 0; i < llGetListLength(tags); ++i)
+    {
+        string l = kindName(llList2String(tags, i));
+        if (label(l) != l || llListFindList(seen, [l]) != -1) return FALSE;
+        seen += [l];
+    }
+    return TRUE;
+}
+
+kindsMenu(key who, integer page)
+{
+    list k = kinds();
+    integer count = llGetListLength(k);
+    if (count == 0) { liveFailed(who, "it has none of the settings notecard's categories"); return; }
+    // One to choose from: its datasets at once.
+    if (count == 1) { askPage(who, llList2String(k, 0), 0); return; }
+    integer pages = (count + PAGE - 1) / PAGE;
+    if (page < 0) page = pages - 1;
+    if (page >= pages) page = 0;
+    list tags = llList2List(k, page * PAGE, page * PAGE + PAGE - 1);
+    integer byName = named(tags);
+    string text = "Choose a category of datasets for the globe.";
+    if (pages > 1) text += " Page " + (string)(page + 1) + " of " + (string)pages + ".";
+    list b = [];
+    integer i;
+    for (i = 0; i < llGetListLength(tags); ++i)
+    {
+        string c = llList2String(tags, i);
+        string l = kindName(c);
+        if (c != "") l += " (" + (string)llList2Integer(gTags, llListFindList(gTags, [c]) + 1) + ")";
+        if (byName) b += [kindName(c)];
+        else
+        {
+            l = (string)(i + 1) + ". " + l;
+            b += [(string)(i + 1)];
+        }
+        text += "\n" + l;
+    }
+    if (pages > 1) b += [BTN_PREV, BTN_MENU, BTN_NEXT];
+    else b += [BTN_MENU];
+    remember(who, page);
+    menu(who, text, b, gDlgKinds);
+}
+
+askPage(key who, string tag, integer offset)
+{
+    liveAsk(who, "page\n" + (string)offset + "\n" + tag);
+}
+
+// Why the node gave no menu, from the status the info script passed on.
+string failure(integer status)
+{
+    if (status == -1) return "Second Life is limiting this object's web requests";
+    if (status == 0) return "the globe has no node yet";
+    if (status == 200 || status == 415) return "its reply wasn't a menu. A node from before October 2026 has none, "
+        + "and one whose Functions are down sends its page instead";
+    return "it answered HTTP " + (string)status;
+}
+
+// The node gave no menu: this visitor gets the built-in datasets, and the
+// owner hears why, once until the node gives one again.
+liveFailed(key who, string why)
+{
+    if (!gTold)
+        llOwnerSay("[exhibit] The node didn't give the dataset menu: " + why + ". Visitors get the built-in datasets until it does.");
+    gTold = TRUE;
+    datasetsMenu(who, 0);
+}
+
+// A page of the node's datasets, as the info script passed it on: "page",
+// its total, offset, list and tag, then each id and title. The buttons are
+// numbers and the titles are in the text: most titles are longer than a
+// button holds, and some cut alike. The titles share the text's room, so a
+// long one is cut.
+livePage(key who, list f)
+{
+    integer total = llList2Integer(f, 1);
+    integer offset = llList2Integer(f, 2);
+    string from = llList2String(f, 3);
+    string tag = llList2String(f, 4);
+    list rows = [];
+    // (Guarded, since a backwards range means everything outside it.)
+    if (llGetListLength(f) > 5) rows = llList2List(f, 5, -1);
+    integer n = llGetListLength(rows) / 2;
+    // Pairs of an id and a title, no more than a page holds, or it isn't a page.
+    integer ok = llGetListLength(rows) % 2 == 0 && n <= PAGE;
+    integer i;
+    for (i = 0; ok && i < n; ++i) ok = isId(llList2String(rows, i * 2));
+    if (!ok) { liveFailed(who, failure(200)); return; }
+    if (n == 0)
+    {
+        // Past the end, as a page can be once the catalog has shrunk: the first.
+        if (offset > 0 && total > 0) { askPage(who, tag, 0); return; }
+        liveFailed(who, "it has no datasets the globe can show");
+        return;
+    }
+    gTold = FALSE;
+    string text = kindName(tag) + ": " + (string)(offset + 1) + " to " + (string)(offset + n) + " of "
+        + (string)total + ". Choose one for the globe.";
+    // A page of one category from a list other than this visitor's last
+    // page of it: the node's catalog changed between them.
+    integer at = llListFindList(gPages, [who]);
+    if (at % 6 != 0) at = -1;
+    if (at != -1 && llList2String(gPages, at + 1) == tag && llList2String(gPages, at + 4) != from)
+        text += " The catalog changed since the last page, so a dataset may have moved between pages.";
+    integer room = (500 - bytes(text)) / n - 1;
+    list b = [];
+    for (i = 0; i < n; ++i)
+    {
+        text += "\n" + fit((string)(i + 1) + ". " + llList2String(rows, i * 2 + 1), room);
+        b += [(string)(i + 1)];
+    }
+    // Back to the categories, or to the main menu when there were none to choose.
+    string back = BTN_KINDS;
+    if (llGetListLength(kinds()) < 2) back = BTN_MENU;
+    if (total > PAGE) b += [BTN_PREV, back, BTN_NEXT];
+    else b += [back];
+    if (at != -1) gPages = llDeleteSubList(gPages, at, at + 5);
+    gPages += [who, tag, offset, total, from, llDumpList2String(rows, "\n")];
+    while (llGetListLength(gPages) > LIVE_PAGES * 6) gPages = llDeleteSubList(gPages, 0, 5);
+    remember(who, pageOf(who));
+    menu(who, text, b, gDlgLive);
 }
 
 // The presenter who started it goes with the message.
@@ -426,8 +632,23 @@ setting(string line)
     integer eq = llSubStringIndex(line, "=");
     if (eq < 1) return;
     string name = llToLower(llStringTrim(llGetSubString(line, 0, eq - 1), STRING_TRIM));
-    float v = (float)llStringTrim(llGetSubString(line, eq + 1, -1), STRING_TRIM);
-    if (name == "radius" && v >= 2.0 && v <= 96.0) gNewRadius = v;
+    // (Guarded, since a backwards range means everything outside it.)
+    string value = "";
+    if (eq < llStringLength(line) - 1) value = llStringTrim(llGetSubString(line, eq + 1, -1), STRING_TRIM);
+    float v = (float)value;
+    if (name == "categories")
+    {
+        // Names, not ids, between commas, in the order the menu shows them.
+        gNewCategories = [];
+        list parts = llParseString2List(value, [","], []);
+        integer i;
+        for (i = 0; i < llGetListLength(parts); ++i)
+        {
+            string c = llStringTrim(llList2String(parts, i), STRING_TRIM);
+            if (c != "") gNewCategories += [c];
+        }
+    }
+    else if (name == "radius" && v >= 2.0 && v <= 96.0) gNewRadius = v;
     else if (name == "idle minutes" && v >= 1.0 && v <= 1440.0) gNewIdleS = (integer)(v * 60.0);
     else if (name == "hold seconds" && v >= 10.0 && v <= 3600.0) gNewHoldS = (integer)v;
     else if (name == "talk minutes" && v >= 1.0 && v <= 120.0) gNewTalkS = (integer)(v * 60.0);
@@ -453,8 +674,12 @@ nextCard()
     // All at once, so nothing runs on half-read settings.
     gRadius = gNewRadius; gIdleS = gNewIdleS; gHoldS = gNewHoldS; gTalkS = gNewTalkS;
     gPresenters = gNewPresenters;
+    gCategories = gNewCategories;
     gMenu = gNewMenu;
-    if (gMenu == []) gMenu = DEFAULT_MENU;
+    // No datasets from the notecard, or no notecard: the node's catalog,
+    // with the built-in datasets behind it.
+    gLive = gMenu == [];
+    if (gLive) gMenu = DEFAULT_MENU;
     llOwnerSay("[exhibit] " + summary());
 }
 
@@ -463,14 +688,20 @@ readCards()
     gCard = 0;
     gNewPresenters = [];
     gNewMenu = [];
+    gNewCategories = [];
     gNewRadius = 15.0; gNewIdleS = 300; gNewHoldS = 60; gNewTalkS = 120;
     nextCard();
 }
 
 string summary()
 {
-    string menu = (string)(llGetListLength(gMenu) / 2) + " datasets in the menu";
-    if (llGetInventoryType("datasets") != INVENTORY_NOTECARD) menu += " (the built-in five: no \"datasets\" notecard)";
+    string menu = (string)(llGetListLength(gMenu) / 2) + " datasets in the menu, from the \"datasets\" notecard";
+    if (gLive)
+    {
+        menu = "the dataset menu from the node's catalog";
+        if (gCategories != []) menu += ", in the categories " + llDumpList2String(gCategories, ", ");
+        menu += " (the built-in five when the node can't give it)";
+    }
     return (string)llGetListLength(gPresenters) + " presenters, " + menu + ". At the globe means within "
         + (string)((integer)gRadius) + " m of its surface. The live Earth returns " + (string)(gIdleS / 60) + " min after the last "
         + "visitor leaves. A hold lasts " + (string)gHoldS + " s, and a talk ends after " + (string)(gTalkS / 60)
@@ -485,10 +716,14 @@ default
         gDlgSets = gDlg + 1;
         gDlgJump = gDlg + 2;
         gDlgTurn = gDlg + 3;
+        gDlgKinds = gDlg + 4;
+        gDlgLive = gDlg + 5;
         llListen(gDlg, "", NULL_KEY, "");
         llListen(gDlgSets, "", NULL_KEY, "");
         llListen(gDlgJump, "", NULL_KEY, "");
         llListen(gDlgTurn, "", NULL_KEY, "");
+        llListen(gDlgKinds, "", NULL_KEY, "");
+        llListen(gDlgLive, "", NULL_KEY, "");
         llListen(CHAN, "", llGetOwner(), "");
         gLastSeen = unix();
         gMenu = DEFAULT_MENU;   // until the notecards have been read
@@ -515,9 +750,15 @@ default
     timer()
     {
         check();
-        // Menus nobody answered.
+        // Menus nobody answered, and the pages that went with them.
         integer t = unix();
         while (gCtx != [] && t - llList2Integer(gCtx, 2) > CTX_TTL) gCtx = llDeleteSubList(gCtx, 0, 2);
+        integer i = 0;
+        while (i < llGetListLength(gPages))
+        {
+            if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 5);
+            else i += 6;
+        }
     }
 
     dataserver(key q, string data)
@@ -557,6 +798,24 @@ default
         {
             // A script reset: the info script needs to know about a talk.
             llMessageLinked(LINK_THIS, MSG_TALK, llList2String(["0", "1"], gTalk), NULL_KEY);
+            return;
+        }
+        if (n == MSG_MENU)
+        {
+            // A visitor whose menu timed out meanwhile gets nothing.
+            integer at = llListFindList(gCtx, [id]);
+            if (at == -1 || at % 3 != 0) return;
+            list f = llParseStringKeepNulls(str, ["\n"], []);
+            string what = llList2String(f, 0);
+            if (what == "page") { livePage(id, f); return; }
+            if (what != "tags") { liveFailed(id, failure(llList2Integer(f, 1))); return; }
+            gTags = [];
+            integer i;
+            for (i = 1; i + 1 < llGetListLength(f); i += 2)
+                if (llList2String(f, i) != "") gTags += [llList2String(f, i), llList2Integer(f, i + 1)];
+            gTagsAt = unix();
+            gTold = FALSE;
+            kindsMenu(id, 0);
             return;
         }
         if (n != MSG_STATE) return;
@@ -614,6 +873,53 @@ default
             }
             return;
         }
+        if (ch == gDlgKinds)
+        {
+            if (msg == BTN_MENU) { mainMenu(who); return; }
+            if (msg == BTN_PREV) { kindsMenu(who, page - 1); return; }
+            if (msg == BTN_NEXT) { kindsMenu(who, page + 1); return; }
+            list tags = llList2List(kinds(), page * PAGE, page * PAGE + PAGE - 1);
+            integer i = (integer)msg - 1;
+            if (named(tags))
+            {
+                i = 0;
+                while (i < llGetListLength(tags) && kindName(llList2String(tags, i)) != msg) ++i;
+            }
+            else if ((string)(i + 1) != msg) return;
+            if (i >= 0 && i < llGetListLength(tags)) askPage(who, llList2String(tags, i), 0);
+            return;
+        }
+        if (ch == gDlgLive)
+        {
+            if (msg == BTN_MENU) { mainMenu(who); return; }
+            if (msg == BTN_KINDS) { kindsMenu(who, page); return; }
+            integer p = llListFindList(gPages, [who]);
+            // Its page gave way to newer ones: the categories again.
+            if (p == -1 || p % 6 != 0) { datasets(who); return; }
+            string tag = llList2String(gPages, p + 1);
+            integer offset = llList2Integer(gPages, p + 2);
+            integer total = llList2Integer(gPages, p + 3);
+            if (msg == BTN_NEXT)
+            {
+                offset += PAGE;
+                if (offset >= total) offset = 0;
+                askPage(who, tag, offset);
+                return;
+            }
+            if (msg == BTN_PREV)
+            {
+                offset -= PAGE;
+                if (offset < 0) offset = (total - 1) / PAGE * PAGE;
+                askPage(who, tag, offset);
+                return;
+            }
+            if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
+            list rows = llParseStringKeepNulls(llList2String(gPages, p + 5), ["\n"], []);
+            integer i = (integer)msg - 1;
+            if ((string)(i + 1) != msg || i < 0 || i * 2 + 1 >= llGetListLength(rows)) return;
+            ask(who, "show " + llList2String(rows, i * 2) + " " + llList2String(rows, i * 2 + 1));
+            return;
+        }
         if (ch == gDlgTurn)
         {
             if (msg == BTN_MENU) { mainMenu(who); return; }
@@ -644,7 +950,7 @@ default
         // checked again: a hold or a talk may have started since it opened.
         if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }
 
-        if (msg == BTN_DATASETS) { datasetsMenu(who, 0); return; }
+        if (msg == BTN_DATASETS) { datasets(who); return; }
         if (msg == BTN_PAUSE) { ask(who, "pause"); return; }
         if (msg == BTN_PLAY) { ask(who, "play"); return; }
         if (msg == BTN_BACK) { ask(who, "nudge -" + (string)((integer)NUDGE)); return; }
