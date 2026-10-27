@@ -144,6 +144,7 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 | `rate` | 0.0834 to 12.8 | Playback speed; `1` is the clip's own. The player's own limits are 0.0625 to 16, and a copy needs room above and below the rate to catch up or fall back, so values outside this narrower range read as `1`. | `1` |
 | `paused` | present | Hold `t` exactly. Every copy shows the same frame. | playing |
 | `telemetry` | `1` or `true` (case-insensitive, untrimmed) to turn it on | Whether the page reports its own anonymous Essential telemetry: which dataset it showed and anything that would not play (below). Followed live, like every other setting. | off |
+| `sound` | present | Play a video's sound track, in each viewer's own copy of the page. Followed live, so a `#` change turns it on or off without a reload. | muted |
 
 - **`dataset` is narrower than the main app's.** The app also resolves
   legacy catalog ids (`INTERNAL_SOS_123`) and slugs; this page asks the
@@ -168,8 +169,17 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
 - **Numbers are plain decimals**: digits, an optional point, and an
   optional leading minus. `0x1000`, `4e3` and padded values are not
   numbers here.
-- **`debug` and `paused`** follow the
+- **`debug`, `paused` and `sound`** follow the
   [truthy convention](#stability-guarantees) exactly as `embed` does.
+- **Sound is the browser's to allow.** Every video starts muted, which
+  any browser lets play by itself, and `sound` unmutes it. A browser
+  whose autoplay policy wants a click before playing aloud refuses, and
+  that copy then plays muted until the page reloads, rather than holding
+  a still frame; Second Life's own viewer lets a page on a prim play
+  aloud by itself. Each copy plays its own sound track, as close to the
+  others as the pictures are: a seek to catch up is a skip in the
+  sound, each pass round a loop repeats it, and `rate` changes its speed
+  along with the picture's.
 - **Paused is exact; playing is close.** Paused copies seek to `t`
   itself. Playing copies steer their video toward the target with the
   desktop outputs' control law, the short way round the loop. They stay
@@ -324,6 +334,7 @@ https://terraviz.zyra-project.org/?dataset=INTERNAL_SOS_123&embed=1&layout=4
 | v1 | 2026-10-24 | Additive. The output page (`/output/output`) gains its parameters: `dataset`, `fit`, `width`, `rotation` (the longitude at the picture's centre), `debug`, and the clock `t` / `at` / `rate` / `paused`, each with its own default, read from the query and the fragment alike. No main-app parameter changes. A bare output-page address draws the live Earth it always did, now sized to the page as displayed and with clouds that refresh. Later the same day, also additive: `telemetry=1`, which turns on the page's own Essential telemetry, off by default. It fails toward off rather than following the truthy convention. |
 | v1 | 2026-10-25 | Additive, with one behavior change. The output page gains `lat`, the latitude at the picture's centre, and `zoom`, which magnifies it, through the desktop output's follow turn; a zoom past what the picture can magnify (about 5.67) reads as that most. `rotation` keeps its meaning and draws the same picture at rest as before; at a pole it names the meridian the centre sits on. The behavior change: the three keys name the view the picture comes to rest on, and a change to any of them after the `#` now sets the picture moving, coasting to a stop on the new view like a spun globe on its bearing, instead of jumping there. The first reading of an address, and every view for a viewer whose browser reports reduced motion, still jump. Kept in v1 by the maintainer's decision of 25 October 2026, recorded in #501: the section was a day old, and every known composer writes at most once a second, the Second Life limit. **Migration:** a composer that animated `rotation` by writing it faster than once a second now sees the picture trail by about 0.8 s, and its swings shrink to about 40% at 0.5 Hz; write the view the picture should come to rest on, at most once a second. No main-app parameter changes. |
 | v1 | 2026-10-26 | One behavior change. The output page's clock (`t`, `at`, `rate`, `paused`) wraps on the clip's playlist total, the `#EXTINF`s summed from the first rendition a copy loads, rather than on the video element's `duration`. That `duration` was the same number until a stream had buffered to its end and then the latest end of every track: measured in Chromium, 21 to 40 ms longer on the node's bundles with a sound track. So a copy changed its period partway through, copies on different engines looped on different periods, and the gap grew with every loop since `at`. A copy with no playlist to read a length from (a single file, or a browser playing HLS itself) still wraps on the video's own length. No key, type or range changes. Kept in v1 by the maintainer's decision of 26 October 2026, recorded in #502: the section was two days old, and the old period was never stable even on one copy. **Migration:** nothing for a composer, which writes the same keys. A copy opened before the change keeps the old period until it reloads, so on a bundle with a sound track it can show a different point of the loop from a new copy; any change before the `#` reloads every copy. No main-app parameter changes. The same day, "Paused is exact; playing is close" was reworded to state its limit, which was already so: each pass round the clip restarts the video, so how close playing copies stay depends on the clip's length and the rate, and on a short clip at a high rate they don't settle. No behavior changes with that. |
+| v1 | 2026-10-27 | Additive. The output page gains `sound`, which plays a video's sound track, muted by default, so every address written before it stays silent; a browser that refuses to play aloud without a click leaves that copy muted. No main-app parameter changes. |
 
 ---
 

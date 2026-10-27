@@ -70,6 +70,7 @@
 //                          west. Visitors' Turn east and Turn west buttons do this.
 //   /9 spin <degrees/s>    turn the whole sphere; /9 spin off stops it
 //   /9 debug on|off        TerraViz's diagnostic readout, drawn on the globe
+//   /9 sound on|off        a dataset's sound track; on at the start unless SOUND below says not
 //   /9 width 1024|2048     the picture's resolution
 //   /9 telemetry on|off    anonymous counts (reloads every visitor's page)
 //   /9 steer hash|query    where changes go in the address (see above)
@@ -92,6 +93,14 @@
 // is on. The floating text and the object's description say the globe is
 // measured, as the policy also asks.
 //
+// SOUND
+// A dataset with a sound track plays it in each visitor's own viewer, at
+// their media volume and fainter with distance from the globe, so each
+// hears their own copy, as in step as the pictures are. A seek to catch
+// up is a skip in the sound, and a short loop repeats its sound every
+// pass. "/9 sound off" silences the globe until a reset; SOUND below sets
+// how it starts.
+//
 // Channel 9 rather than the smoke-test globe's 8 or the probe's 7, so one
 // command never reaches two kinds of object at once.
 
@@ -101,6 +110,7 @@ string  NODE = "https://terraviz.zyra-project.org";
 integer CHAN = 9;
 integer FACE = 0;              // a sphere has only face 0
 integer UPRIGHT_ON_START = TRUE; // FALSE for a mesh globe with its own mapping
+integer SOUND = TRUE;          // FALSE for a globe that starts silent
 
 // The link messages the three scripts in the sphere share. The numbers are
 // arbitrary; all three must agree, and exhibit.test.ts holds them to it.
@@ -158,6 +168,7 @@ float   gOwnerSpin;     // the owner's /9 spin, which the idle return brings bac
 string  HOME_KEY = "terraviz:home";   // where the rest is kept, in the object, across resets
 integer gDebug;
 integer gTelemetry;
+integer gSound;
 integer gWidth = 2048;
 integer gHash = TRUE;   // changes go after the #
 
@@ -169,7 +180,7 @@ help()
 {
     llOwnerSay("[exhibit] Commands on /" + (string)CHAN + ": show <name or id>, list, earth, pause, play, "
         + "jump <s or m:ss>, rate <speed>, rotation <degrees>, turn <degrees east>, tilt south|north, level, home, spin <degrees/s or off>, debug on|off, "
-        + "width 1024|2048, telemetry on|off, steer hash|query, status, upright, memory, talk, presenters");
+        + "width 1024|2048, sound on|off, telemetry on|off, steer hash|query, status, upright, memory, talk, presenters");
 }
 
 // Tells whoever asked. The owner hears it privately wherever they are; a
@@ -382,6 +393,7 @@ string address()
     }
     live += ["width=" + (string)gWidth, "rotation=" + num(gRotation)];
     if (gDebug) live += ["debug=1"];
+    if (gSound) live += ["sound=1"];
     string sep = "#";
     if (!gHash) sep = "&";
     return NODE + "/output/output?" + setup + sep + llDumpList2String(live, "&");
@@ -389,7 +401,7 @@ string address()
 
 list snapshot()
 {
-    return [gDataset, gTitle, gPos, gAtS, gAtMs, gRate, gPaused, gRotation, gDebug, gTelemetry, gWidth, gHash];
+    return [gDataset, gTitle, gPos, gAtS, gAtMs, gRate, gPaused, gRotation, gDebug, gTelemetry, gWidth, gHash, gSound];
 }
 
 restore(list s)
@@ -406,6 +418,7 @@ restore(list s)
     gTelemetry = llList2Integer(s, 9);
     gWidth = llList2Integer(s, 10);
     gHash = llList2Integer(s, 11);
+    gSound = llList2Integer(s, 12);
 }
 
 // Tells the other two scripts what the globe shows. The info script times
@@ -861,6 +874,13 @@ act(key who, integer owner, string msg)
         if (commit(saved)) tell(who, "Debug readout " + larg + ".");
         return;
     }
+    if (cmd == "sound")
+    {
+        if (larg != "on" && larg != "off") { tell(who, "sound on, or sound off."); return; }
+        gSound = (larg == "on");
+        if (commit(saved)) tell(who, "Sound " + larg + ". A dataset with sound plays it for each visitor, at their own media volume.");
+        return;
+    }
     if (cmd == "width")
     {
         if (arg != "1024" && arg != "2048") { tell(who, "width 1024, or width 2048."); return; }
@@ -956,6 +976,7 @@ default
     state_entry()
     {
         llListen(CHAN, "", llGetOwner(), "");
+        gSound = SOUND;
         while (llGetSubString(NODE, -1, -1) == "/") NODE = llDeleteSubString(NODE, -1, -1);
         if (llGetObjectName() == "Object") llSetObjectName("TerraViz globe");
         if (UPRIGHT_ON_START) { upright(); home(); }

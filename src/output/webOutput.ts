@@ -42,6 +42,14 @@
  * keeps its last frame and reports nothing; noticing that and rebuilding
  * the stream is the multi-monitor plan's rung 13, for desktop and web
  * alike. A short loop is safe once it is fully buffered.
+ *
+ * **Sound is the address's, unless the browser refuses it.** Every
+ * element is loaded muted, which any browser lets play by itself, and
+ * `steer` unmutes it while the address says `sound`. A browser whose
+ * autoplay policy wants a click first refuses the unmuted `play()`; the
+ * page then plays muted for the rest of its life, since that browser
+ * would refuse again, rather than holding a still frame. Second Life's
+ * own viewer lets a page on a prim play aloud by itself.
  */
 
 import type { DatasetMirror } from './datasetMirror'
@@ -186,7 +194,17 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
   const reducedMotion =
     deps.reducedMotion ??
     (() => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches)
-  const clockSteer = createWebClockSteer()
+  /** Whether this page's browser refused to play aloud. */
+  let soundRefused = false
+  const clockSteer = createWebClockSteer({
+    onPlayRefused: err => {
+      // Only a refusal to play aloud: a play() a pause or a new source
+      // interrupts is rejected too, as an AbortError.
+      if ((err as { name?: unknown } | null)?.name !== 'NotAllowedError') return
+      const media = mirror.current()
+      if (media?.kind === 'video' && !(media.element as HTMLVideoElement).muted) soundRefused = true
+    },
+  })
   const camera = createViewGlide()
 
   let current: WebOutputSettings | null = null
@@ -339,6 +357,14 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       if (!video || !current) {
         wasSeeking = false
         return NOT_READY
+      }
+      // Each frame, so a new element (loaded muted) and a `#sound` change
+      // both take it up at once, and a refusal mutes the element before
+      // the clock asks it to play again.
+      if (media?.kind === 'video') {
+        const element = media.element as HTMLVideoElement
+        const muted = !current.sound || soundRefused
+        if (element.muted !== muted) element.muted = muted
       }
       const before = video.currentTime
       // The stream's own period, where it states one: copies agree on it

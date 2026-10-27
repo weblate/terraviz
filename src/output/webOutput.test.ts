@@ -717,3 +717,95 @@ describe('steering', () => {
     expect(h.markDirty).toHaveBeenCalled()
   })
 })
+
+describe('sound', () => {
+  const notAllowed = () => Object.assign(new Error('no sound without a click'), { name: 'NotAllowedError' })
+
+  /** One video already on screen, as the mirror would hold it after a
+   *  load: an element loaded muted, and its steerable half, whose play()
+   *  the browser refuses while unmuted when `refuse` says so. */
+  function soundHarness(refuse: (element: { muted: boolean }) => Error | null) {
+    const element = { muted: true }
+    let paused = true
+    const video: SyncTarget = {
+      readyState: 4,
+      duration: 1000,
+      seeking: false,
+      currentTime: 0,
+      playbackRate: 1,
+      get paused() {
+        return paused
+      },
+      play: vi.fn(() => {
+        const err = refuse(element)
+        if (err) return Promise.reject(err)
+        paused = false
+        return Promise.resolve()
+      }),
+      pause: vi.fn(() => {
+        paused = true
+      }),
+    }
+    const media: MediaSource = { kind: 'video', element: element as never, video, dispose: () => {} }
+    const out = createWebOutput({
+      mirror: { apply: async () => {}, current: () => media, currentDataset: () => dataset('X') },
+      scene: { size: { width: 2048, height: 1024 }, setLayers: vi.fn(), setFramebufferWidth: vi.fn(), setParams: vi.fn() },
+      setDebug: vi.fn(),
+      setFill: vi.fn(),
+      displaySizePx: () => ({ width: 2048, height: 1024 }),
+      markDirty: vi.fn(),
+      nowMs: () => T0,
+      monotonicMs: () => 0,
+      reducedMotion: () => false,
+    })
+    return { out, element, video, show: (hash: string) => out.apply(readWebSettings('', hash)) }
+  }
+
+  it('plays muted unless the address asks for sound, and follows a # change', () => {
+    const h = soundHarness(() => null)
+    h.show('#t=0')
+    h.out.steer()
+    expect(h.element.muted).toBe(true)
+    h.show('#t=0&sound=1')
+    h.out.steer()
+    expect(h.element.muted).toBe(false)
+    h.show('#t=0&sound=0')
+    h.out.steer()
+    expect(h.element.muted).toBe(true)
+  })
+
+  it('plays muted for the rest of the page once the browser refuses to play aloud', async () => {
+    const h = soundHarness(element => (element.muted ? null : notAllowed()))
+    h.show('#t=0&sound=1')
+    h.out.steer()
+    expect(h.element.muted).toBe(false)
+    expect(h.video.play).toHaveBeenCalledTimes(1)
+    // Refused: the next frames mute it and play it, rather than holding a
+    // still frame.
+    await until(() => {
+      h.out.steer()
+      return !h.video.paused
+    }, 'the video playing again, muted')
+    expect(h.element.muted).toBe(true)
+    // And it stays muted, whatever the address says next: the same
+    // browser would refuse again.
+    h.show('#t=0&sound=1&rate=2')
+    h.out.steer()
+    expect(h.element.muted).toBe(true)
+  })
+
+  it('takes a play() something interrupted for nothing more than that', async () => {
+    let first = true
+    const h = soundHarness(() => {
+      if (!first) return null
+      first = false
+      return Object.assign(new Error('interrupted by a pause'), { name: 'AbortError' })
+    })
+    h.show('#t=0&sound=1')
+    await until(() => {
+      h.out.steer()
+      return !h.video.paused
+    }, 'the video playing after the interruption')
+    expect(h.element.muted).toBe(false)
+  })
+})

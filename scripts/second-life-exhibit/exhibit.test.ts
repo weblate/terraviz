@@ -600,6 +600,28 @@ describe('second-life exhibit scripts', () => {
     expect(body(menu, 'integer isId(string s)')).toBe(body(globe, 'integer isId(string s)'))
   })
 
+  it('start with sound as SOUND says, and let the owner turn it on and off without a reload', () => {
+    // On by default for the exhibit (the maintainer's call, 27 October
+    // 2026); the page stays silent unless its address asks.
+    expect(constant(globe, 'integer', 'SOUND')).toBe('TRUE')
+    expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(
+      /if \(cmd == "sound"\)\n\s+\{\n\s+if \(larg != "on" && larg != "off"\)[^\n]+\n\s+gSound = \(larg == "on"\);\n\s+if \(commit\(saved\)\)/,
+    )
+    expect(globe).toMatch(/llListen\(CHAN, "", llGetOwner\(\), ""\);\n\s+gSound = SOUND;/)
+    // After the #, so it reloads nobody's page.
+    expect(body(globe, 'string address()')).toContain('if (gSound) live += ["sound=1"];')
+    // A face that refuses the new address puts the old sound back with
+    // everything else: the snapshot and its restore agree, field by field.
+    const fields = (globe.match(/return \[(gDataset[^\]]*)\];/)?.[1] ?? '').split(',').map((f) => f.trim())
+    expect(fields).toContain('gSound')
+    const restore = body(globe, 'restore(list s)')
+    fields.forEach((field, i) => expect(restore, field).toMatch(new RegExp(`${field} = llList2\\w+\\(s, ${i}\\);`)))
+    // And the docs name the command.
+    expect(globe).toMatch(/sound on\|off, telemetry on\|off/)
+    // In a table, where the README escapes the bar.
+    expect(readme).toMatch(/\/9 sound on\\?\|off/)
+  })
+
   it('answer each kind of menu on its own channel', () => {
     // So an answer from an older menu means what that menu meant.
     expect(body(visitors, 'mainMenu(key who)')).toContain('menu(who, text, b, gDlg);')

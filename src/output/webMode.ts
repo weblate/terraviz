@@ -81,6 +81,11 @@ export interface WebOutputSettings {
   /** Report the page's own telemetry (`webTelemetry.ts`). Off unless
    *  the address turns it on, and followed live like everything else. */
   telemetry: boolean
+  /** Play a video's sound track. Off unless the address turns it on, so
+   *  every address written before it stays silent; read the grammar's
+   *  usual way, and followed live. A browser that refuses to play aloud
+   *  without a click leaves the page muted (`webOutput`). */
+  sound: boolean
   /** Always a clock: a bare address plays from the start at the clip's
    *  own speed, from when this copy read it. */
   clock: WebClock
@@ -226,6 +231,7 @@ export function readWebSettings(search: string, hash: string): WebOutputSettings
     view: readView(params),
     debug: truthy(params, 'debug'),
     telemetry: telemetryOn(params),
+    sound: truthy(params, 'sound'),
     clock: readClock(params),
   }
 }

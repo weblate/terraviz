@@ -24,6 +24,9 @@ globe that stays up all the time:
 - **It says what it shows.** The floating text gives the title, the date
   in the animation, and a short credit. "About" in the menu gives the
   abstract, the full credit and the licence.
+- **It plays a dataset's sound.** The movies have sound tracks, which
+  each visitor hears at their own viewer's media volume, fainter with
+  distance from the globe. The owner can turn it off.
 
 Why it works this way, and what was decided when, is in
 [`docs/SECOND_LIFE_COMPAT.md`](../../docs/SECOND_LIFE_COMPAT.md), §7
@@ -390,6 +393,7 @@ those:
 | `/9 turn <degrees>` | Turns the globe that far east, the way the Earth turns, or west for a negative number, as the menu's turn buttons do. Unlike `/9 rotation`, it doesn't move where the globe goes back to. |
 | `/9 tilt south`, `/9 tilt north` | Tips that pole 30° toward you, as the menu's pole buttons do for a visitor. |
 | `/9 level` | Stands a tipped globe back up, as it was at rest. |
+| `/9 sound on\|off` | Whether a dataset's sound track plays, for every visitor, without reloading anyone's page. On when the globe starts, unless `SOUND`, at the top of the globe script, is `FALSE`, which makes a silent exhibit last through resets. Each visitor hears their own copy, at their viewer's media volume, so it is as in step as the pictures are: a seek to catch up is a skip in the sound, and a short loop repeats its sound every pass. A browser that won't play aloud without a click plays the picture muted; Second Life's own viewer doesn't ask. |
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters, where the menu comes from, and the settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
@@ -489,9 +493,16 @@ stand at the globe.
     datasets within about eleven seconds, and you should be told once
     that the menu script didn't answer. Tick Running again, and
     Datasets should open the node's categories, with no second menu.
+11. **Sound.** Show a movie, `/9 show 01KQG621GKSF0R9Q74AAE5QFV0`
+    (HOLOSCENES / Little Boxes). Both avatars should hear it with
+    nothing clicked, louder near the globe and quieter walking away, and
+    the second avatar's own media volume should change only what they
+    hear. Then `/9 sound off`: it should go quiet with the picture
+    playing on, and `/9 sound on` bring it back. Say which viewer, if
+    one plays it silent.
 
 When you report results, say which viewer and version (Help → About)
-each avatar used, and what steps 2 and 9 showed.
+each avatar used, and what steps 2, 9 and 11 showed.
 
 ## Things that will trip you up
 
