@@ -31,7 +31,11 @@
 // This script is the only one that sets that address. The visitors script
 // asks it for changes, as the info script does to put back a dataset the
 // page can't show, and it tells the other two what the globe shows after
-// each one.
+// each one. The info script also tells it how long the clip is, so that a
+// pause, a nudge or a change of rate lands on the frame the copies show
+// however long the globe has played (position()): every copy that loops
+// on the stream's playlist total, and one looping on a length of its own
+// is brought back into step.
 //
 // Changes go after the address's #, which a web browser applies without
 // reloading the page. Firestorm 7.2.4 was seen to do the same in-world.
@@ -139,6 +143,8 @@ integer gAtS;           // the anchor, when gPos was current: Unix seconds
 integer gAtMs;          // and milliseconds
 float   gRate = 1.0;
 integer gPaused;
+integer gLen;           // the clip's length in microseconds, from the info script, 0 while unknown
+string  gLenFor;        // the dataset gLen is for
 float   gRotation;      // degrees east at the picture's centre, [0, 360)
 float   gHome;          // the owner's rotation, which a visitor's turn doesn't outlast
 rotation gHomeRot;      // the sphere's own rotation at rest, upright, in its build
@@ -222,17 +228,60 @@ anchor()
 reanchor()
 {
     list t = now();
-    if (!gPaused) gPos += since(t) * gRate;
+    gPos = position(t);
     gAtS = llList2Integer(t, 0);
     gAtMs = llList2Integer(t, 1);
 }
 
-// Where the clip is now, unwrapped: the page wraps it round the clip,
-// whose length only the page and the manifest know.
-float position()
+// Where the clip is at `t`, a now() reading. Round the loop once the info
+// script has said how long the clip is, in whole microseconds (loopUs).
+// Until then, and for a clip it can't say, unwrapped, as the page wraps it
+// round the clip itself, and in a float, which holds a day's play to about
+// 10 ms and a month's only to a third of a second.
+float position(list t)
 {
+    if (gLen > 0 && gLenFor == gDataset) return (float)loopUs(t, gLen) / 1000000.0;
     if (gPaused) return gPos;
-    return gPos + since(now()) * gRate;
+    return gPos + since(t) * gRate;
+}
+
+// Where the clip is at `t`, a now() reading, in microseconds round a loop
+// of `d`: the anchor's position plus the time since it at the rate, in
+// whole numbers. Worked in floats the sum lost about 10 ms a day of play,
+// a third of a second a month and more at a higher rate, so the date in
+// the floating text drifted from the picture on a globe left playing, and
+// a pause landed off the frame every copy was showing. The rate has the
+// address's three places, so a millisecond of it is a whole number of
+// microseconds of clip. The info script keeps the same copy, which
+// exhibit.test.ts holds the two to, and runs.
+integer loopUs(list t, integer d)
+{
+    integer s = llList2Integer(t, 0) - gAtS;
+    integer ms = llList2Integer(t, 1) - gAtMs;
+    if (ms < 0) { s -= 1; ms += 1000; }
+    if (gPaused) { s = 0; ms = 0; }
+    integer r = llRound(gRate * 1000.0);
+    // The anchor's position, wrapped first in a float for one set past the
+    // loop, by a jump (up to 100000 s) or before the length was known:
+    // within a few milliseconds there, and tens of microseconds otherwise.
+    float f = (float)d / 1000000.0;
+    integer p = llRound((gPos - f * llFloor(gPos / f)) * 1000000.0) % d;
+    if (p < 0) p += d;
+    integer a = s % d;
+    if (a < 0) a += d;
+    integer b = (1000 * r) % d;
+    // p plus a times b, round d, a bit of b at a time, so that nothing
+    // leaves an integer's range.
+    while (b)
+    {
+        if (b & 1) { p += a - d; if (p < 0) p += d; }
+        a += a - d;
+        if (a < 0) a += d;
+        b = b >> 1;
+    }
+    p += (ms * r) % d - d;
+    if (p < 0) p += d;
+    return p;
 }
 
 // An angle in [0, 360), at the three places the address carries.
@@ -245,8 +294,9 @@ float degrees(float r)
 
 // A plain decimal with at most three places, as the page reads numbers:
 // no exponent, no padding. LSL's own (string) gives six places. A
-// float's fraction coarsens as it grows, to about 8 ms once a clip has
-// played for a day at full speed, which the page does not notice.
+// float's fraction coarsens as it grows: the position, kept round the loop
+// once the clip's length is known, holds to tens of microseconds, and
+// unwrapped, without one, to about 8 ms after a day's play at full speed.
 string num(float f)
 {
     string sign = "";
@@ -603,6 +653,16 @@ act(key who, integer owner, string msg)
         show(who, dataset, described);
         return;
     }
+    // The clip's length in microseconds and the dataset it is for, from the
+    // info script, which reads it from the node's card, so that the clock
+    // can be kept round the loop (position()). Only the scripts send it,
+    // and 0, for none, each time the info script starts on a dataset.
+    if (cmd == "length" && who == NULL_KEY)
+    {
+        gLen = (integer)arg;
+        gLenFor = llList2String(w, 2);
+        return;
+    }
     // "rest" is the visitors script's own return, once nobody has been at
     // the globe for a while: the live Earth, turned back to the owner's
     // rotation. Only the scripts send it, with no key. The info script's
@@ -657,6 +717,9 @@ act(key who, integer owner, string msg)
     }
     if (cmd == "jump" || cmd == "restart" || cmd == "nudge")
     {
+        // One reading of the clock for where the clip is and the new anchor,
+        // as in reanchor(), so the clip skips nothing between them.
+        list t = now();
         float to = 0.0;
         if (cmd == "jump")
         {
@@ -670,13 +733,19 @@ act(key who, integer owner, string msg)
         else if (cmd == "nudge")
         {
             if (!isNumber(arg) || llFabs((float)arg) > NUDGE_MAX) { tell(who, "Nudge by how many seconds?"); return; }
-            // From where the clip is now, never before its start. Past its
-            // end the page wraps round it.
-            to = position() + (float)arg;
-            if (to < 0.0) to = 0.0;
+            to = position(t) + (float)arg;
         }
+        // Round the loop once its length is known, as the page plays it,
+        // so a copy on a period of its own lands in step with the rest too:
+        // back past the start goes round to the loop's end. A float holds a
+        // jump to 100000 s wrapped to a few milliseconds. Before the length
+        // is known, never before the start, and past the end the page wraps.
+        float len = (float)gLen / 1000000.0;
+        if (gLen > 0 && gLenFor == gDataset) to -= len * (float)llFloor(to / len);
+        else if (to < 0.0) to = 0.0;
         gPos = to;
-        anchor();
+        gAtS = llList2Integer(t, 0);
+        gAtMs = llList2Integer(t, 1);
         gBy = who;
         commit(saved);
         return;
@@ -839,8 +908,14 @@ act(key who, integer owner, string msg)
     {
         string what = "the live Earth";
         if (gDataset != "")
-            what = gTitle + " at " + num(position()) + " s, " + llList2String(["playing", "paused"], gPaused)
+        {
+            // The clip's length, once the info script has said it, which is
+            // also how the owner tells the clock is kept round the loop.
+            string of = "";
+            if (gLen > 0 && gLenFor == gDataset) of = " of " + num((float)gLen / 1000000.0);
+            what = gTitle + " at " + num(position(now())) + of + " s, " + llList2String(["playing", "paused"], gPaused)
                 + ", rate " + num(gRate);
+        }
         tell(who, "Showing " + what + ". Spin " + num(gSpin) + " degrees a second. Address: " + address());
         return;
     }

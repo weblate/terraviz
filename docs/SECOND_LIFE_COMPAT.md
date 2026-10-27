@@ -1626,7 +1626,12 @@ info script copies as little as it can while it reads. The maintainer
 then used the exhibit for a while with no further stop, and `/9 memory`
 read the globe script at 54 KB (57 at most, showing a dataset), the info
 script at 55 (58 at most, reading a record or answering About) and the
-visitors script at 49: about 6 KB of room at each script's busiest. The
+visitors script at 49: about 6 KB of room at each script's busiest.
+With the card (#502) and the clip clock (#504) it read, on 27 October,
+the globe script at 57 KB (59 at most, showing a dataset), the info
+script at 48 (52 at most, reading a card or answering About) and the
+visitors script at 49: the card saved the info script more than the
+clock cost it, and the globe script, at 5 KB of room, has the least. The
 checklist has not been run in full. Beyond that run, what has been checked is the
 scripts' syntax (lslint), their date arithmetic against the calendar for
 every day from year 1 to 2100, and, by tests, that the scripts agree with
@@ -1645,14 +1650,36 @@ driven by its owner in chat, with none of the visitor controls.
   would hold a record while it also holds menus, notecards and visitor
   lists, so the work is split three ways:
   - **globe** owns the address, the clock and the media. It is the
-    smoke-test script's core, unchanged in what it writes, and it is
+    smoke-test script's core and writes the same keys, though since 27
+    October not always the same `t` (below), and it is
     the only script that changes what visitors see. It takes the
     owner's chat commands, as before, and control requests from the
     visitors script, and from the info script to put back a dataset the
     page can't show. After every change it tells the other two what
     the globe now shows. It asks the node nothing: a web reply goes to
     every script in the prim with a handler for one, and this one has
-    the least room.
+    the least room. Since 27 October it keeps the clip's position in
+    whole microseconds round the loop, once the info script has passed
+    on the card's `exactDuration`, and the info script works out the
+    date the same way. Both had added the time since the anchor in an
+    LSL float, which lost about 10 ms a day of play at the clip's speed
+    and a third of a second a month, a second a month at 4×. So the
+    floating text's date drifted from the picture on a globe left
+    playing, and a pause landed off the frame every copy showed. The
+    `t` it writes on a pause, a move or a change of rate is now within
+    the loop, and a copy looping on a length of its own (one playing
+    the stream itself) is brought back into step by each. The exactness
+    rests on the card's length being the page's to the microsecond,
+    which holds for playlists that write lengths to six places, as
+    TerraViz's bundles and Vimeo's streams do; one written finer could
+    differ by half a microsecond a loop. A clip of 2147 s or more is
+    too long to count in microseconds and shows its range, its clock
+    kept in the float as before (the node's longest was 717 s). Each
+    time the info script starts on a dataset it tells the globe there
+    is no length until the card says, so a dataset shown again never
+    runs on a length its card has stopped giving (found in review). The
+    arithmetic is tested by translating the scripts' own function into
+    JavaScript, with every integer held to 32 bits.
   - **visitors** owns people. It turns touches into menus, keeps the
     presenter list, runs talks and the short hold, watches who is at
     the globe, and asks the globe to go back to the live Earth once
@@ -1779,7 +1806,11 @@ driven by its owner in chat, with none of the visitor controls.
       is kept to the millisecond), or `""`. `period` is an ISO 8601
       duration the node could parse, or `""`.
     - `exactDuration` is the clip's exact length in seconds, the one
-      the page loops on, or 0 when the node has none. **0 means only
+      the page loops on, or 0 when the node has none. It is written as
+      a plain decimal of at most six places, never with an exponent,
+      since the info script reads its digits into whole microseconds
+      (since 27 October), and a test on the node holds it to that form.
+      **0 means only
       that**: which rows have a length is the node's to widen, and
       neither value says where a video is hosted. Today the length is
       read from the stream's own playlists, for an HLS bundle the node

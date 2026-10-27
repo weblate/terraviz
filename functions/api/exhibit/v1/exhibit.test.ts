@@ -27,6 +27,7 @@ import {
   PAGE_CAPS,
   PAGE_MAX_OFFSET,
   PAGE_RESERVED,
+  buildCard,
   buildTags,
   resetExhibitListForTests,
   TAG_CAP,
@@ -185,7 +186,9 @@ afterEach(() => {
 /** The video proxy and Vimeo for one video, as a fetch, the way Vimeo
  *  serves it: the player's address answers 302 with the CDN's, whose
  *  master names video-only variants (`hls-duration.test.ts` has the
- *  fuller playlists and the refusals). */
+ *  fuller playlists and the refusals). Called as another object's
+ *  method it throws, as Workers' fetch does and Node's doesn't: every
+ *  card's Vimeo read failed on Cloudflare that way while these passed. */
 function vimeoFetch(proxy = 'https://video-proxy.zyra-project.org/video') {
   const at = 'https://skyfire.vimeocdn.com/a/b/c/playlist.m3u8'
   const routes: Record<string, () => Response | Promise<Response>> = {
@@ -195,7 +198,10 @@ function vimeoFetch(proxy = 'https://video-proxy.zyra-project.org/video') {
     'https://skyfire.vimeocdn.com/x/media.m3u8?sig=1': () =>
       new Response('#EXTM3U\n#EXTINF:6.000000,\na.mp4\n#EXTINF:6.100000,\nb.mp4\n#EXT-X-ENDLIST\n'),
   }
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async function (this: unknown, input: RequestInfo | URL) {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation: function called with incorrect `this` reference.')
+    }
     const route = routes[String(input)]
     if (!route) throw new Error(`unexpected fetch: ${String(input)}`)
     return route()
@@ -391,6 +397,24 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect(body.exactDuration).toBeCloseTo(6.2, 6)
     expect(body.retry).toBe(0)
     expect(waitUntil).toHaveBeenCalledTimes(1)
+  })
+
+  it('writes the length as a plain decimal of at most six places, which a script reads digit by digit', async () => {
+    // The info script reads exactDuration's whole and fractional digits
+    // into microseconds (scripts/second-life-exhibit), so an exponent or a
+    // seventh place would be misread, by copies that can't be updated.
+    const sqlite = setup([{ id: ULID(1), data_ref: 'r2:videos/DS/U/master.m3u8' }])
+    const [entry] = await exhibitList(asD1(sqlite))
+    const lengths = [1e-6, 0.0000014, 0.1, 1.7, 4.333333333, 12.1, 143.7666721, 717.0333333, 2146.9999994,
+      123456.789012345, 999_999_999.9999994]
+    for (let i = 0; i < 200; i++) lengths.push(10 ** (Math.random() * 15 - 6))
+    for (const seconds of lengths) {
+      const text = JSON.stringify(buildCard(entry, { seconds, settled: true }))
+      const written = text.match(/"exactDuration":([^,}]+)/)?.[1]
+      expect(written, String(seconds)).toMatch(/^(0|[1-9]\d*)(\.\d{1,6})?$/)
+      // Rounded to the microsecond: half of one off, and a double's own error.
+      expect(Math.abs(Number(written) - (seconds < 1e9 ? seconds : 0))).toBeLessThanOrEqual(5e-7 + seconds * 1e-15)
+    }
   })
 
   it('reads no length for a row the page can\'t show', async () => {

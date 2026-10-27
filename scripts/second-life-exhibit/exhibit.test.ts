@@ -335,7 +335,7 @@ describe('second-life exhibit scripts', () => {
     // since (integer) of a JSON true reads 0.
     expect(typeof shape.exactDuration).toBe('number')
     expect(typeof shape.retry).toBe('number')
-    expect(card).toContain('gDuration = (float)value(b, "exactDuration");')
+    expect(card).toContain('list x = llParseString2List(value(b, "exactDuration"), ["."], []);')
     expect(card).toContain('integer retry = (integer)value(b, "retry");')
     expect(typeof shape.truncated).toBe('boolean')
     expect(card).toContain('gCut = llJsonGetValue(b, ["truncated"]) == JSON_TRUE;')
@@ -343,7 +343,7 @@ describe('second-life exhibit scripts', () => {
     // The card's page is a path on the node, as its dataset link.
     expect(card).toContain('if (llGetSubString(gPage, 0, 0) != "/") gPage = "/dataset/" + gDataset;')
     // A length the node didn't settle is asked for again when it says.
-    expect(card).toContain('if (gVideo && gDuration == 0.0 && retry > 0) later(retry);')
+    expect(card).toContain('if (gVideo && gLen == 0 && retry > 0) later(retry);')
     expect(info).toContain('gNode + "/api/exhibit/v1/datasets/" + llEscapeURL(gDataset)')
   })
 
@@ -372,7 +372,7 @@ describe('second-life exhibit scripts', () => {
     // The date at the position broadcast, not a second later: the globe
     // takes it before setting the media, which takes a second.
     expect(moved).toMatch(
-      /integer paused = gPaused;\n\s+gPaused = TRUE;\n\s+if \(gFor == gDataset && gDuration > 0\.0\) d = date\(\);\n\s+gPaused = paused;/,
+      /integer paused = gPaused;\n\s+gPaused = TRUE;\n\s+if \(gFor == gDataset && gLen > 0\) d = date\(\);\n\s+gPaused = paused;/,
     )
     expect(moved).toContain('if (d != "") s = "Paused at " + d + ".";')
     expect(moved).toContain('if (d != "") s = "Playing from " + d + ".";')
@@ -559,6 +559,268 @@ describe('second-life exhibit scripts', () => {
     expect(visitors).toMatch(/gDlgSets = gDlg \+ 1;\n\s+gDlgJump = gDlg \+ 2;\n\s+gDlgTurn = gDlg \+ 3;/)
     // Every channel the menus use stays negative, where no avatar can chat.
     expect(visitors).toMatch(/gDlg = -4 - /)
+  })
+})
+
+/** An LSL integer: 32 bits, signed. */
+function int32(value: number): number {
+  if (!Number.isInteger(value) || value < -(2 ** 31) || value > 2 ** 31 - 1) {
+    throw new RangeError(`${value} is not an LSL integer`)
+  }
+  return value
+}
+
+/**
+ * What the translated statements call: LSL's, with every integer checked.
+ * llRound and llFloor take a float, so their argument is rounded to 32
+ * bits as LSL rounds it.
+ */
+const LSL = {
+  int32,
+  // A product of two integers, which LSL would wrap past 32 bits.
+  mul: (a: number, b: number): number => int32(a * b),
+  round: (x: number): number => int32(Math.round(Math.fround(x))),
+  floor: (x: number): number => int32(Math.floor(Math.fround(x))),
+}
+
+/** The left and right of the products allowed to stay unchecked: floats'. */
+const FLOAT_TIMES_LEFT = /(?:\bgRate|\bf|\)) $/
+const FLOAT_TIMES_RIGHT = /^ (?:1000\.0|1000000\.0|lsl\.floor\()/
+
+/**
+ * Translates the statements of a whole-number LSL function into JS. Every
+ * value given to an integer, and every product of two integers, is
+ * checked against 32 bits rather than wrapped. Floats are rounded to 32
+ * bits where LSL's types force it (declarations, casts, and llRound's and
+ * llFloor's arguments); a step in between runs wider, as Mono may run it.
+ * It knows only what the scripts' clock arithmetic uses, and fails closed:
+ * a product it can't tell is a float's throws rather than going unchecked.
+ */
+function translate(statements: string): string {
+  const js = statements
+    .replace(/\/\/.*$/gm, '')
+    .replace(/\b(?:(integer|float) )?([A-Za-z_]\w*) (\+=|-=|=) ([^;]+);/g, (_m, type: string | undefined, name: string, op: string, value: string) => {
+      if (type === 'integer') return `let ${name} = lsl.int32(${value});`
+      if (type === 'float') return `let ${name} = Math.fround(${value});`
+      if (op === '=') return `${name} = lsl.int32(${value});`
+      return `${name} = lsl.int32(${name} ${op[0]} (${value}));`
+    })
+    // Integer times integer: names and whole literals, not a float's
+    // literal (1000.0) nor a call's name.
+    .replace(/\b([a-z]\w*|\d+) \* ([a-z]\w*|\d+)\b(?![.(])/g, 'lsl.mul($1, $2)')
+    .replace(/llList2Integer\(t, (\d)\)/g, 't[$1]')
+    .replace(/\(float\)(\w+)/g, 'Math.fround($1)')
+    .replace(/\bllRound\(/g, 'lsl.round(')
+    .replace(/\bllFloor\(/g, 'lsl.floor(')
+  for (let i = js.indexOf('*'); i !== -1; i = js.indexOf('*', i + 1)) {
+    if (!FLOAT_TIMES_LEFT.test(js.slice(0, i)) || !FLOAT_TIMES_RIGHT.test(js.slice(i + 1))) {
+      throw new Error(`a product the translation can't check: ${js.slice(Math.max(0, i - 20), i + 20)}`)
+    }
+  }
+  return js
+}
+
+type LoopUs = (now: [number, number], d: number, clock: {
+  gPos: number, gAtS: number, gAtMs: number, gRate: number, gPaused: number
+}) => number
+
+/** One script's loopUs, runnable. */
+function loopUsOf(script: string): LoopUs {
+  const source = body(script, 'integer loopUs(list t, integer d)')
+  const run = new Function('t', 'd', 'gPos', 'gAtS', 'gAtMs', 'gRate', 'gPaused', 'lsl',
+    translate(source.slice(source.indexOf('{') + 1)))
+  return (now, d, c) => run(now, d, Math.fround(c.gPos), c.gAtS, c.gAtMs, Math.fround(c.gRate), c.gPaused, LSL)
+}
+
+/** Where the clip is, in microseconds round the loop, worked exactly. */
+function exactUs(now: [number, number], d: number, c: Parameters<LoopUs>[2]): number {
+  const D = BigInt(d)
+  let us = BigInt(Math.round(c.gPos * 1e6))
+  if (!c.gPaused) {
+    const ms = BigInt(now[0] - c.gAtS) * 1000n + BigInt(now[1] - c.gAtMs)
+    us += ms * BigInt(Math.round(c.gRate * 1000))
+  }
+  return Number(((us % D) + D) % D)
+}
+
+describe("the exhibit's clip clock", () => {
+  const SIGNATURE = 'integer loopUs(list t, integer d)'
+  const loopUs = loopUsOf(globe)
+  // An anchor in October 2026, and the node's clips: 1.7 s (Drought), 4.3 s
+  // (Ocean Circulation), a Vimeo stream's 12.1 and 143.766672, the node's
+  // longest at 717, and the longest the info script keeps.
+  const AT: [number, number] = [1_792_500_000, 640]
+  const LENGTHS = [1_700_000, 4_333_333, 12_100_000, 143_766_672, 717_033_333, 2_146_999_999]
+  const RATES = [0.084, 0.25, 1, 2.5, 4, 12.8]
+  const DAY = 86_400
+
+  it('is one copy in the globe and info scripts', () => {
+    expect(body(info, SIGNATURE)).toBe(body(globe, SIGNATURE))
+  })
+
+  it('is exact to the microsecond however long the globe has played, at any rate, in 32-bit integers', () => {
+    // A float lost about 10 ms a day of play at 1x, a third of a second a
+    // month, and seconds at a higher rate. Ten years keeps short of 2038,
+    // when Unix seconds outgrow an LSL integer.
+    for (const d of LENGTHS) {
+      for (const gRate of RATES) {
+        // Some land on a millisecond below the anchor's, which borrows a second.
+        for (const [s, ms] of [[0, 0], [0, 1], [1, 360], [DAY, 359], [30 * DAY, 0], [365 * DAY + 7, 999], [3653 * DAY, 123]]) {
+          const now: [number, number] = [AT[0] + s + Math.floor((AT[1] + ms) / 1000), (AT[1] + ms) % 1000]
+          const clock = { gPos: 0, gAtS: AT[0], gAtMs: AT[1], gRate, gPaused: 0 }
+          expect(loopUs(now, d, clock), `${d} us at ${gRate}x after ${s} s ${ms} ms`).toBe(exactUs(now, d, clock))
+        }
+      }
+    }
+  })
+
+  it("adds the time since the anchor to the anchor's own position", () => {
+    // Positions a float holds exactly, so the reference is exact too.
+    for (const gPos of [0.5, 3.25, 11.875]) {
+      const clock = { gPos, gAtS: AT[0], gAtMs: AT[1], gRate: 2.5, gPaused: 0 }
+      const now: [number, number] = [AT[0] + 9 * DAY, 17]
+      expect(loopUs(now, 12_100_000, clock)).toBe(exactUs(now, 12_100_000, clock))
+    }
+  })
+
+  it('wraps an anchor set past the loop before it counts in microseconds', () => {
+    // As by a jump before the clip's length was known: 99999.5 s is past
+    // what an integer holds in microseconds, and about as far as the globe
+    // jumps. Wrapped in a float, it lands within the float's error in the
+    // clip's length times the loops. Under 5 ms with the products as wide
+    // as this translation runs them, under 8 ms with each rounded to 32
+    // bits (reckoned in review across the node's lengths): Mono doesn't
+    // say which, and either is under a frame.
+    expect(body(globe, 'act(key who, integer owner, string msg)')).toContain('if (to < 0.0 || to > 100000.0)')
+    for (const d of [1_700_000, 12_100_000, 717_033_333]) {
+      const clock = { gPos: 99_999.5, gAtS: AT[0], gAtMs: AT[1], gRate: 1, gPaused: 0 }
+      const now: [number, number] = [AT[0] + 3, AT[1]]
+      const got = loopUs(now, d, clock)
+      expect(got).toBeGreaterThanOrEqual(0)
+      expect(got).toBeLessThan(d)
+      const off = Math.abs(got - exactUs(now, d, clock))
+      expect(Math.min(off, d - off)).toBeLessThan(8_000)
+    }
+  })
+
+  it('takes nothing the translation can\'t check', () => {
+    // A product that leaves 32 bits in LSL but not in a JS double would
+    // otherwise pass: these each throw at translation.
+    for (const product of ['p = (p + (a * (1000 * r)) % d) % d;', 'p = (p + (a*1000*r) % d) % d;', 'p = (p + a * K * r) % d;']) {
+      expect(() => translate(product), product).toThrow(/can't check/)
+    }
+  })
+
+  it('counts a region clock behind the anchor backwards, round the loop', () => {
+    const clock = { gPos: 2, gAtS: AT[0], gAtMs: AT[1], gRate: 1, gPaused: 0 }
+    const now: [number, number] = [AT[0] - 5, 100]
+    expect(loopUs(now, 4_333_333, clock)).toBe(exactUs(now, 4_333_333, clock))
+  })
+
+  it('holds a paused clip where it was paused, however long ago', () => {
+    const clock = { gPos: 3.25, gAtS: AT[0], gAtMs: AT[1], gRate: 4, gPaused: 1 }
+    expect(loopUs([AT[0] + 400 * DAY, 5], 12_100_000, clock)).toBe(3_250_000)
+  })
+
+  it('reads the length from the card in microseconds, and tells the globe, which keeps it for that dataset alone', () => {
+    const card = body(info, 'card(string b, integer cut)')
+    const list = 'list x = llParseString2List(value(b, "exactDuration"), ["."], []);'
+    const from = card.indexOf(list) + list.length
+    const parse = card.slice(from, card.indexOf(';', card.indexOf('if (w >= 0', from)) + 1)
+    // LSL's (integer) of a string reads its leading digits, and 0 for none.
+    const js = translate(parse
+      .replace(/\(integer\)llList2String\(x, 0\)/, '(Number.parseInt(x[0] ?? "", 10) || 0)')
+      .replace('llList2String(x, 0) == (string)w', '(x[0] ?? "") === String(w)')
+      .replace('(integer)llGetSubString(llList2String(x, 1) + "000000", 0, 5)',
+        '(Number.parseInt(((x[1] ?? "") + "000000").slice(0, 6), 10) || 0)')
+      .replace(/\bgLen\b/g, 'len'))
+    expect(js).not.toMatch(/\bll[A-Z]|\(integer\)/)
+    // llParseString2List drops the empty pieces.
+    const run = new Function('value', 'lsl',
+      `const x = value.split(".").filter((p) => p !== "");\nlet len;\n${js}\nreturn len;`)
+    const micros = (value: string): number => run(value, LSL)
+    expect(micros('0')).toBe(0)
+    expect(micros('12')).toBe(12_000_000)
+    expect(micros('12.1')).toBe(12_100_000)
+    expect(micros('0.5')).toBe(500_000)
+    expect(micros('143.766672')).toBe(143_766_672)
+    expect(micros('717.033333')).toBe(717_033_333)
+    expect(micros('2146.999999')).toBe(2_146_999_999)
+    // Past what an integer holds, and anything that isn't a plain length:
+    // (integer)"-0" is 0, which alone would let "-0.5" read as half a second.
+    expect(micros('2147')).toBe(0)
+    expect(micros('-1')).toBe(0)
+    expect(micros('-0.5')).toBe(0)
+    expect(micros('1e3')).toBe(0)
+    expect(micros('')).toBe(0)
+    expect(card).toContain('if (gLen > 0) llMessageLinked(LINK_THIS, MSG_CONTROL, "length " + (string)gLen + " " + gDataset, NULL_KEY);')
+
+    // The globe takes it only from the scripts, and only for the dataset
+    // it names, so a length for one dataset never times another.
+    const act = body(globe, 'act(key who, integer owner, string msg)')
+    expect(act).toMatch(/if \(cmd == "length" && who == NULL_KEY\)\n\s+\{\n\s+gLen = \(integer\)arg;\n\s+gLenFor = llList2String\(w, 2\);\n\s+return;/)
+    expect(body(globe, 'float position(list t)')).toContain('if (gLen > 0 && gLenFor == gDataset) return (float)loopUs(t, gLen) / 1000000.0;')
+    expect(body(info, 'string date()')).toContain('float f = (float)loopUs(now(), gLen) / (float)gLen;')
+  })
+
+  it('tells the globe there is no length each time it starts on a dataset, so one shown again never keeps an old one', () => {
+    // Found in review (#504): A's card gives a length, the globe shows
+    // Earth, then A again, and A's card now gives none, its media
+    // replaced by a single file, or the read failing. The globe keeps a
+    // length by the dataset it names, so unless told otherwise it would
+    // wrap A's moves on the old one while the page loops on another.
+    const none = 'llMessageLinked(LINK_THIS, MSG_CONTROL, "length 0 " + gDataset, NULL_KEY);'
+    const forget = body(info, 'forget()')
+    const tellsNone = forget.includes(none)
+    expect(tellsNone).toBe(true)
+    // forget() runs whenever the dataset isn't the one last read (pinned
+    // above), which Earth between two showings of A makes true twice.
+
+    // The exchange as the scripts make it: forget() and card() send what
+    // is pinned here and above, and the globe keeps it as its handler does.
+    const state = { dataset: '', len: 0, lenFor: '' }
+    const take = (msg: string) => {
+      const w = msg.split(' ').filter(p => p !== '')
+      state.len = Number.parseInt(w[1] ?? '', 10) || 0
+      state.lenFor = w[2] ?? ''
+    }
+    const show = (id: string, cardLen: number) => {
+      state.dataset = id
+      if (tellsNone) take(`length 0 ${id}`)
+      if (cardLen > 0) take(`length ${cardLen} ${id}`)
+    }
+    const exact = () => state.len > 0 && state.lenFor === state.dataset
+    show('A', 12_100_000)
+    expect(exact()).toBe(true)
+    show('', 0)
+    expect(exact()).toBe(false)
+    show('A', 0)
+    expect(exact()).toBe(false)
+    show('A', 143_766_672)
+    expect(state).toEqual({ dataset: 'A', len: 143_766_672, lenFor: 'A' })
+  })
+
+  it('moves the anchor without losing the time it takes to', () => {
+    // One reading of the clock, so the clip doesn't skip the moment
+    // between reading where it is and moving the anchor there.
+    const reanchor = body(globe, 'reanchor()')
+    expect(reanchor.match(/now\(\)/g)).toHaveLength(1)
+    expect(reanchor).toContain('gPos = position(t);')
+    const act = body(globe, 'act(key who, integer owner, string msg)')
+    const move = act.slice(act.indexOf('if (cmd == "jump" || cmd == "restart" || cmd == "nudge")'), act.indexOf('if (cmd == "tilt")'))
+    expect(move.match(/now\(\)/g)).toHaveLength(1)
+    expect(move).not.toContain('anchor();')
+    expect(move).toContain('to = position(t) + (float)arg;')
+    expect(move).toMatch(/gAtS = llList2Integer\(t, 0\);\n\s+gAtMs = llList2Integer\(t, 1\);/)
+  })
+
+  it('wraps a jump or a nudge round the loop once the length is known, and never before the start without one', () => {
+    // So a copy looping on a length of its own is brought back into step
+    // by a move as by a pause, and back past the start goes to the end.
+    const act = body(globe, 'act(key who, integer owner, string msg)')
+    expect(act).toMatch(
+      /if \(gLen > 0 && gLenFor == gDataset\) to -= len \* \(float\)llFloor\(to \/ len\);\n\s+else if \(to < 0\.0\) to = 0\.0;\n\s+gPos = to;/,
+    )
   })
 })
 

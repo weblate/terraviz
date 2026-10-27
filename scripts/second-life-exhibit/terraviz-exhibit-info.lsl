@@ -51,6 +51,9 @@
 // whole seconds, the page loops on the stream's own, and a date worked
 // out from the first would drift from the picture with every loop. When
 // the node has no exact length, as for a single file, the range shows.
+// This script tells the globe script the length too, and both count the
+// clip in whole microseconds round the loop (loopUs), so the date keeps
+// to the picture however long the globe is left playing.
 //
 // A node older than the card answers with the app's page instead. The
 // hover text then shows the title alone, "About" gives the dataset's
@@ -119,7 +122,7 @@ integer gEndSec;
 integer gRes;
 integer gSnapS;        // a sub-daily period in seconds, or 0
 integer gFrames;       // the period is a single day, month or year (P1D, P1M, P1Y)
-float   gDuration;     // the clip's length in seconds, 0 while unknown
+integer gLen;          // the clip's length in microseconds, 0 while unknown
 string  gWho;          // the credit
 string  gSpdx;         // the licence's SPDX id
 string  gLicText;      // the licence's statement and address
@@ -260,16 +263,43 @@ string range()
     return a + " to " + b;
 }
 
-// Where the clip is now, round the loop, as each visitor's page puts it.
-float position()
+// Where the clip is at `t`, a now() reading, in microseconds round a loop
+// of `d`: the anchor's position plus the time since it at the rate, in
+// whole numbers. Worked in floats the sum lost about 10 ms a day of play,
+// a third of a second a month and more at a higher rate, so the date in
+// the floating text drifted from the picture on a globe left playing, and
+// a pause landed off the frame every copy was showing. The rate has the
+// address's three places, so a millisecond of it is a whole number of
+// microseconds of clip. The globe script keeps the same copy, which
+// exhibit.test.ts holds the two to, and runs.
+integer loopUs(list t, integer d)
 {
-    float p = gPos;
-    if (!gPaused)
+    integer s = llList2Integer(t, 0) - gAtS;
+    integer ms = llList2Integer(t, 1) - gAtMs;
+    if (ms < 0) { s -= 1; ms += 1000; }
+    if (gPaused) { s = 0; ms = 0; }
+    integer r = llRound(gRate * 1000.0);
+    // The anchor's position, wrapped first in a float for one set past the
+    // loop, by a jump (up to 100000 s) or before the length was known:
+    // within a few milliseconds there, and tens of microseconds otherwise.
+    float f = (float)d / 1000000.0;
+    integer p = llRound((gPos - f * llFloor(gPos / f)) * 1000000.0) % d;
+    if (p < 0) p += d;
+    integer a = s % d;
+    if (a < 0) a += d;
+    integer b = (1000 * r) % d;
+    // p plus a times b, round d, a bit of b at a time, so that nothing
+    // leaves an integer's range.
+    while (b)
     {
-        list t = now();
-        p += ((float)(llList2Integer(t, 0) - gAtS) + (float)(llList2Integer(t, 1) - gAtMs) / 1000.0) * gRate;
+        if (b & 1) { p += a - d; if (p < 0) p += d; }
+        a += a - d;
+        if (a < 0) a += d;
+        b = b >> 1;
     }
-    return p - gDuration * llFloor(p / gDuration);
+    p += (ms * r) % d - d;
+    if (p < 0) p += d;
+    return p;
 }
 
 // The date on the globe now, or the dataset's range when the clip's
@@ -286,8 +316,8 @@ integer monthDays(integer y, integer m)
 string date()
 {
     if (!gDated) return "";
-    if (gDuration <= 0.0) return range();
-    float f = position() / gDuration;
+    if (gLen <= 0) return range();
+    float f = (float)loopUs(now(), gLen) / (float)gLen;
     if (f < 0.0) f = 0.0;
     if (f > 1.0) f = 1.0;
     float into = f * ((float)(gEndDay - gStartDay) * 86400.0 + (float)(gEndSec - gStartSec));
@@ -433,7 +463,7 @@ hover()
 // be made again.
 pace()
 {
-    integer moving = gDataset != "" && !gPaused && gDated && gDuration > 0.0 && gFor == gDataset;
+    integer moving = gDataset != "" && !gPaused && gDated && gLen > 0 && gFor == gDataset;
     if (moving || gRetryAt) llSetTimerEvent(TICK);
     else llSetTimerEvent(0.0);
 }
@@ -478,7 +508,7 @@ moved(key who)
     // on since by a second times its rate.
     integer paused = gPaused;
     gPaused = TRUE;
-    if (gFor == gDataset && gDuration > 0.0) d = date();
+    if (gFor == gDataset && gLen > 0) d = date();
     gPaused = paused;
     string s = "Playing.";
     if (d != "") s = "Playing from " + d + ".";
@@ -573,14 +603,23 @@ card(string b, integer cut)
     string p = value(b, "period");
     period(p);
     gFrames = p == "P1D" || p == "P1M" || p == "P1Y";
-    // The clip's exact length, or 0 when the node has none, as for a
-    // single file.
-    gDuration = (float)value(b, "exactDuration");
-    if (gDuration < 0.0) gDuration = 0.0;
+    // The clip's exact length in whole microseconds, read digit by digit
+    // from the plain decimal the node writes to six places, or 0 when the
+    // node has none, as for a single file. Anything else reads as none: a
+    // sign ("-0" reads as 0), an exponent, or 2147 s or more, which
+    // wouldn't fit an integer and shows the range (the node's longest was
+    // 717 s in October 2026). The globe script is told it too, to keep the
+    // clock round the loop.
+    list x = llParseString2List(value(b, "exactDuration"), ["."], []);
+    integer w = (integer)llList2String(x, 0);
+    gLen = 0;
+    if (w >= 0 && w < 2147 && llList2String(x, 0) == (string)w)
+        gLen = w * 1000000 + (integer)llGetSubString(llList2String(x, 1) + "000000", 0, 5);
+    if (gLen > 0) llMessageLinked(LINK_THIS, MSG_CONTROL, "length " + (string)gLen + " " + gDataset, NULL_KEY);
     // The node's read of the length didn't settle, and it says when to ask
     // again. The rest of the card stands meanwhile, showing the range.
     integer retry = (integer)value(b, "retry");
-    if (gVideo && gDuration == 0.0 && retry > 0) later(retry);
+    if (gVideo && gLen == 0 && retry > 0) later(retry);
     gHaveRec = TRUE;
 }
 
@@ -675,7 +714,12 @@ forget()
     gHaveRec = FALSE;
     gVideo = FALSE;
     gDated = FALSE;
-    gDuration = 0.0;
+    gLen = 0;
+    // The globe keeps a length by the dataset it names, so a dataset shown
+    // again after another would run on its old length, which its card
+    // may no longer give (its media replaced, or the read failing). It is
+    // told none until the card says.
+    llMessageLinked(LINK_THIS, MSG_CONTROL, "length 0 " + gDataset, NULL_KEY);
     gFrames = FALSE;
     gPage = "/dataset/" + gDataset;
     gCardTitle = "";
