@@ -211,6 +211,26 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
 
   let current: WebOutputSettings | null = null
   let disposed = false
+
+  /**
+   * The video as loud as the address and the browser allow. On every
+   * apply, since `steer` runs on animation frames, which a browser stops
+   * for a hidden page while its sound plays on, so a `#sound=0` arriving
+   * then waited until the page was drawn again (found in review). And on
+   * every frame, for an element loaded since, which arrives muted, and to
+   * mute one the browser has refused before the clock asks it to play
+   * again. The recovery rests on the clock asking a paused, playing-clock
+   * element to play on every frame (`syncVideoToState`): the unmute's own
+   * pause is silent, and only that next `play()` is refused. The default
+   * loader hands the same element as `element` and `video`.
+   */
+  const applySound = (): void => {
+    const media = mirror.current()
+    if (!current || media?.kind !== 'video') return
+    const element = media.element as HTMLVideoElement
+    const muted = !current.sound || soundRefused
+    if (element.muted !== muted) element.muted = muted
+  }
   /** The page's telemetry, once an address has turned it on. */
   let telemetry: Promise<WebTelemetry | null> | null = null
   /**
@@ -334,6 +354,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
         telemetry = deps.loadTelemetry().catch(() => null)
       }
       if (!previous || !sameClock(next.clock, previous.clock)) clockReadAtMs = nowMs()
+      applySound()
       if (!previous || next.datasetId !== previous.datasetId) showDataset(next.datasetId)
       deps.markDirty()
     },
@@ -360,18 +381,7 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
         wasSeeking = false
         return NOT_READY
       }
-      // Each frame, so a new element (loaded muted) and a `#sound` change
-      // both take it up at once, and a refusal mutes the element before
-      // the clock asks it to play again. The recovery rests on the clock
-      // asking a paused, playing-clock element to play on every frame
-      // (`syncVideoToState`): the unmute's own pause is silent, and only
-      // that next `play()` is refused. The default loader hands the same
-      // element as `element` and `video`.
-      if (media?.kind === 'video') {
-        const element = media.element as HTMLVideoElement
-        const muted = !current.sound || soundRefused
-        if (element.muted !== muted) element.muted = muted
-      }
+      applySound()
       const before = video.currentTime
       // The stream's own period, where it states one: copies agree on it
       // wherever the renditions do.

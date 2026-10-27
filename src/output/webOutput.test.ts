@@ -776,6 +776,16 @@ describe('sound', () => {
     return { out, element, video, show: (hash: string) => out.apply(readWebSettings('', hash)) }
   }
 
+  it('takes a # change to the sound at once, with no frame drawn', () => {
+    // A browser stops drawing a hidden page while its sound plays on, so
+    // a mute that waited for a frame waited until the page was seen again.
+    const h = soundHarness(() => null)
+    h.show('#t=0&sound=1')
+    expect(h.element.muted).toBe(false)
+    h.show('#t=0&sound=0')
+    expect(h.element.muted).toBe(true)
+  })
+
   it('plays muted unless the address asks for sound, and follows a # change', () => {
     const h = soundHarness(() => null)
     h.show('#t=0')
