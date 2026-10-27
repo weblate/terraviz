@@ -401,11 +401,20 @@ export interface PageQuery {
 }
 
 /**
- * Which list a page came from: FNV-1a over the ids of every dataset that
- * matched, in order, as eight hex digits. Two pages of one tag that differ
- * here came from different lists, so paging between them may have skipped
- * or repeated a dataset, which the menu then says. The ids alone, so a
- * changed title doesn't count as a changed list.
+ * Which list a page came from, as eight hex digits: FNV-1a over the ids of
+ * every dataset that matched, in order. **Opaque, and a notice only.** A
+ * reader compares it for equality between two pages of one tag, never
+ * computes it: two that differ came from different lists, so paging between
+ * them may have skipped or repeated a dataset. Isolates can hold lists up
+ * to `LIST_TTL_MS` apart (`LIST_STALE_MS` while reads fail), so after a
+ * change it can alternate between two values on consecutive requests, and
+ * no request can ask for a particular list: a reader that started over, or
+ * asked again, whenever it changed could loop. It also changes when the
+ * match or the order does without the catalog changing (a deploy, a
+ * runtime's collation). The ids alone, so a retitle that leaves a dataset
+ * in place changes nothing; one that moves it does. Never empty, since no
+ * datasets hash to `811c9dc5`; a page without it is from a node older than
+ * the field.
  */
 export function listHash(ids: string[]): string {
   let h = 0x811c9dc5

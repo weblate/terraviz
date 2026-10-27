@@ -1889,7 +1889,8 @@ driven by its owner in chat, with none of the visitor controls.
     title }] }`.
     - `list` names the list the page came from, eight hex digits (below,
       under what it costs the node). Added 27 October with the first
-      menu script.
+      menu script, so a page from a node deployed between 26 and 27
+      October has none; when present it is never empty.
     - The datasets the output page can show: an image or video format
       whose data reference the manifest can resolve. So no tours, no
       `peer:` rows, and no row whose reference and format disagree.
@@ -1927,8 +1928,10 @@ driven by its owner in chat, with none of the visitor controls.
       so the loop that drops whole tags from the least common end
       until the reply fits is a guard; `more: true` says when tags
       were left.
-    - A tag's `count` equals the page's `total` for that tag, which a
-      test holds.
+    - A tag's `count` equals the page's `total` for that tag from the
+      same isolate's list, which a test holds. The tags carry no `list`
+      and a script keeps them ten minutes, so "Water (12)" followed by
+      "1 to 9 of 11" is expected after a change.
     - It is a resource of its own, not a parameter of the page, so
       each path keeps one budget.
   - **Budgets, proved by arithmetic:** every field has a cap counted
@@ -1936,8 +1939,9 @@ driven by its owner in chat, with none of the visitor controls.
     included, and a reply's budget is their sum: a card at most 2,048
     bytes, a page 1,024, the tags 2,048.
     - The page holds by construction: nine 26-byte ids, nine 48-byte
-      titles, a 40-byte tag, six-digit numbers and the envelope come
-      to 964 bytes.
+      titles, a 40-byte tag, six-digit numbers, an eight-digit `list`
+      and the envelope come to 982 bytes, which leaves 42 for any
+      later field.
     - The card's fixed fields take about 200 bytes, and the abstract
       what's left.
     - Tests sum the caps, and hold each reply with worst-case data:
@@ -1986,10 +1990,20 @@ driven by its owner in chat, with none of the visitor controls.
       the page's alone; 18 bytes of the page's budget held for it, which
       nothing else could spend; and shipped before or with the first
       menu script, since a rezzed one can't learn it later. It shipped
-      with that script on 27 October: FNV-1a over the ids, as eight hex
-      digits (`listHash`), spending exactly the 18 bytes. The ids alone,
-      so a retitled dataset that stays in place changes nothing. How the
-      menu uses it is under "The menu" in the steps below.
+      with that script on 27 October, spending exactly the 18 bytes.
+      **It is opaque and a notice only** (the API review of the built
+      field): a reader compares it for equality between two pages of one
+      tag and never computes it, though today it is FNV-1a over the ids
+      (`listHash`). Isolates can hold lists a minute apart, five while
+      reads fail, so after a change it can alternate between two values
+      on consecutive requests, and no request can ask for a particular
+      list; a reader that started over or asked again whenever it changed
+      could loop, and a rezzed one couldn't be fixed. It can also change
+      with no change to the catalog, when a deploy or the runtime's
+      collation changes the match or the order. The ids alone, so a
+      retitle that leaves a dataset in place changes nothing, and one
+      that moves it does. How the menu uses it is under "The menu" in the
+      steps below.
     - Cloudflare doesn't store a Function's reply at its edge, so
       `Cache-Control` saves the node nothing; it is for browsers:
       `public, max-age=60`, and `no-store` for a card with a `retry`

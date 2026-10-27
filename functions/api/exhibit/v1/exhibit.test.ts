@@ -662,6 +662,49 @@ describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
     sqlite = setup(rows.map((r, i) => (i === 11 ? { ...r, weight: 5 } : r)))
     resetExhibitListForTests()
     expect((await page(sqlite)).body.list).not.toBe(first.list)
+    // So does a retitle that moves its dataset, since the title orders them.
+    sqlite = setup(rows.map((r, i) => (i === 3 ? { ...r, title: 'A00' } : r)))
+    resetExhibitListForTests()
+    expect((await page(sqlite)).body.list).not.toBe(first.list)
+  })
+
+  it('names the list by what matched alone, not by how it was paged or by rows the page leaves out', async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({ id: ULID(i + 1), title: `T${String(i).padStart(2, '0')}`, tags: ['Air'] }))
+    let sqlite = setup(rows)
+    const air = (await page(sqlite, '?tag=Air')).body.list
+    for (const query of ['?tag=Air&limit=1', '?tag=Air&limit=4&offset=3', '?tag=Air&offset=99']) {
+      expect((await page(sqlite, query)).body.list, query).toBe(air)
+    }
+    // Rows a page never lists: a tour, a peer's, one whose reference and
+    // format disagree, one not public, and an id longer than a ULID.
+    sqlite = setup([
+      ...rows,
+      { id: ULID(20), title: 'A tour', format: 'tour/json', data_ref: 'r2:t.json', tags: ['Air'] },
+      { id: ULID(21), title: 'A peer', data_ref: 'peer:NODE1/x', tags: ['Air'] },
+      { id: ULID(22), title: 'A mismatch', format: 'image/png', data_ref: 'vimeo:2', tags: ['Air'] },
+      { id: ULID(23), title: 'Private', visibility: 'private', tags: ['Air'] },
+      { id: `X${'1'.repeat(30)}`, title: 'Long id', tags: ['Air'] },
+    ])
+    resetExhibitListForTests()
+    expect((await page(sqlite, '?tag=Air')).body.list).toBe(air)
+    // A tag joining a dataset changes that tag's list and no other's.
+    sqlite = setup([...rows.map((r, i) => (i < 2 ? { ...r, tags: ['Air', 'Water'] } : r)), { id: ULID(30), title: 'W', tags: ['Water'] }])
+    resetExhibitListForTests()
+    const water = (await page(sqlite, '?tag=Water')).body.list
+    sqlite = setup([...rows.map((r, i) => (i < 3 ? { ...r, tags: ['Air', 'Water'] } : r)), { id: ULID(30), title: 'W', tags: ['Water'] }])
+    resetExhibitListForTests()
+    expect((await page(sqlite, '?tag=Water')).body.list).not.toBe(water)
+    expect((await page(sqlite, '?tag=Air')).body.list).toBe(air)
+  })
+
+  it('computes the list as it always has, so a change to it is deliberate', () => {
+    // FNV-1a over the ids joined by line breaks, as eight lowercase hex
+    // digits, checked against an independent implementation. A reader
+    // never computes it, but a change still costs every visitor paging
+    // at the time a notice that a dataset may have moved.
+    expect(listHash([])).toBe('811c9dc5')
+    expect(listHash(['01KQG611HF8YXJNRBEHT0757KT', '01KQG65ZW1JC7M27EQ1CYD8YZ7'])).toBe('f0832b8f')
+    expect(listHash(['01KQG65ZW1JC7M27EQ1CYD8YZ7', '01KQG611HF8YXJNRBEHT0757KT'])).toBe('ae28ed5b')
   })
 
   it('lists only what the output page can show, in the order browse lists it', async () => {
@@ -760,6 +803,8 @@ describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
       datasets: Array.from({ length: 9 }, () => ({ id: 'x'.repeat(PAGE_CAPS.id), title: 'x'.repeat(PAGE_CAPS.title) })),
     }
     expect(byteLength(worst)).toBeLessThanOrEqual(PAGE_BUDGET)
+    // As the plan counts it: 982 bytes, leaving 42 for any later field.
+    expect(byteLength(worst)).toBe(982)
     // `list` spends the 18 bytes the API review held back for it before
     // any script read a page.
     expect(Buffer.byteLength(',"list":""') + PAGE_CAPS.list).toBe(18)
