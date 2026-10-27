@@ -1727,9 +1727,12 @@ driven by its owner in chat, with none of the visitor controls.
 - **Notecards in the globe, all optional, re-read when they change:**
   - `presenters`: one username a line. A legacy name such as "Eric
     Hackathorn" is read as its username. A display name never is.
-  - `datasets`: the menu, one `Name = id` a line. Without it the menu
-    offers the smoke-test script's five.
-  - `settings`: the four numbers, as `name = value` lines:
+  - `datasets`: a menu of the owner's own, one `Name = id` a line.
+    Without it the menu is the node's catalog, by category ("The menu"
+    under the exhibit's reads, below), with the smoke-test script's five
+    standing in when the node can't give it.
+  - `settings`: the four numbers and the categories, as `name = value`
+    lines:
     - `radius`: the distance that counts as at the globe, in metres
       (15);
     - `idle minutes`: how long after the last visitor leaves before
@@ -1738,6 +1741,8 @@ driven by its owner in chat, with none of the visitor controls.
       last action (60);
     - `talk minutes`: how long with no presenter at the globe before a
       talk ends (2).
+    - `categories`: which of the node's categories the menu offers, by
+      name and in that order, such as `Water, Air` (all of them).
   - a notecard named by a dataset's id, given to a visitor who asks
     about that dataset in place of the chat abstract.
 - **The exhibit's own reads from the node** (designed 25 October and
@@ -2030,12 +2035,59 @@ driven by its owner in chat, with none of the visitor controls.
        held where the record took 6, and no JSON or HTML code of its
        own. Done 26 October, 185 lines shorter; `/9 memory` in-world is
        still to measure.
-    2. The menu. The info script stays the only script with an
-       `http_response`. It reads pages for the visitors script and
-       relays their ids and titles. A link message reaches every
-       script in the prim with a handler for one, the globe script
-       included, so the relay is as compact as it can be, or the
-       visitors script moves to a child prim of its own.
+    2. The menu (designed 27 October, on the design of 25 October; not
+       yet built). The maintainer chose on 25 October a menu read live
+       from the node over two cheaper alternatives: a page on the node
+       that writes the `datasets` notecard, which the owner would redo
+       for every catalog change, and notecard lines taking the app's
+       dataset links, still a hand-made list. So a dataset published on
+       the node reaches the globe with nothing typed.
+       - **In-world:** Datasets opens the node's categories, with how
+         many datasets each has, and "All datasets", since some are in
+         none (twelve of 175 in October). A category opens its
+         datasets nine to a page. On a page the buttons are numbers and
+         the menu's text lists the titles: a button holds 24 bytes, 115
+         of the 175 titles were longer, and 20 came out the same when
+         cut to fit. A category's button is its name where every name
+         on that page fits a button whole, and numbers otherwise. A
+         choice goes to the globe as `show <id> <title>`, as the
+         notecard menu's does, and the globe checks it with the node.
+       - **The owner's say:** a `datasets` notecard still replaces the
+         live menu with its own list, for an exhibit with a theme, and
+         `categories` in `settings` narrows the live menu to those
+         named, in the owner's order and whatever their case. When the
+         node can't give the menu (no node yet, Second Life throttling
+         the object's requests, an error, or a reply that isn't a page,
+         as from a node older than these reads), the visitor gets the
+         built-in five, and the owner is told why once, until the node
+         answers again.
+       - **The info script reads, the visitors script shows.** The info
+         script stays the only script with an `http_response`, since a
+         reply reaches every script in the prim with a handler for one.
+         The visitors script asks it by link message (`MSG_MENU_ASK`,
+         `tags` or `page <offset> <tag>`, with the visitor's key), it
+         asks the node, at most one request in flight a visitor so a
+         slow reply can't open a menu they have moved on from, and it
+         relays the reply (`MSG_MENU`). A link message reaches every
+         script in the prim too, the globe's included, which has the
+         least room, so the relay is lines rather than the node's JSON:
+         a page comes to about 700 characters, and the categories to
+         about 100 on the node in October and 1,450 at their caps. Moving
+         the visitors script to a prim of its own, the other way to keep
+         the relay from the globe script, was left for if this doesn't
+         fit.
+       - **Kept, and for how long:** the categories for ten minutes;
+         the page a visitor has open, its ids and where it starts, while
+         their menu stays answerable (five minutes), for at most four
+         visitors at once, the oldest giving way. Outside a talk only
+         the visitor holding the globe and the owner can open Datasets,
+         so four is more than an exhibit needs.
+       - **The page's `list`** (below) says when the catalog changed
+         between two pages of one category. The menu then says a
+         dataset may have moved between pages, and doesn't start over:
+         pages from two isolates can come from lists a minute apart, so
+         a menu that started over at every change might never page
+         forward.
     3. Phase 4b's buttons, with the owner's chat commands moved to a
        fourth script to give the globe script room.
   - **The node and the scripts go together.** A TerraViz node without
