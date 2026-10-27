@@ -10,7 +10,7 @@
 //   The source:  https://github.com/zyra-project/terraviz
 //
 // WHAT THIS SCRIPT DOES
-// It is one of the exhibit's three scripts, and the one that says what the
+// It is one of the exhibit's four scripts, and the one that says what the
 // globe shows. terraviz-exhibit.lsl tells it what that is after every
 // change. From the node it reads the dataset's card, a reply of at most
 // 2 KB that the node writes for the exhibit, its text already plain and
@@ -32,9 +32,10 @@
 // - "About", from the touch menu. If the globe holds a notecard named by
 //   the dataset's id, the visitor is given it. Otherwise they get the
 //   abstract, the full credit, the licence and a link to the dataset's
-//   page, in their own chat, in pieces of about 1 KB. Only the first 500
-//   characters of the abstract are given, which cuts most of them, and
-//   the link has the rest.
+//   page, in their own chat, in pieces of about 1 KB. At most the first
+//   500 characters of the abstract are given, which cuts most of them,
+//   and the link has the rest. A node from 27 October 2026 on sends no
+//   more than those.
 //
 // A DATE is the dataset's start time plus the share of its span that the
 // clip has played, the arithmetic of the app's videoTimeToDate. How it is
@@ -59,7 +60,12 @@
 // hover text then shows the title alone, "About" gives the dataset's
 // page, and the owner is told once.
 //
-// The owner can ask "/9 memory": each of the three scripts says how much
+// terraviz-exhibit-menu.lsl reads the dataset menu from the node too, from a
+// prim of its own: a web reply reaches every script in the prim it arrives
+// in, and this script has little room to spare while it reads a card (63
+// KB of 64 in-world on 27 October 2026, with a card filled to 2 KB).
+//
+// The owner can ask "/9 memory": each of the four scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
 // reading a card or answering "About", which are when it needs the most.
 
@@ -407,7 +413,15 @@ string fit(string s, integer max)
 // by the id, and which means nothing to a visitor.
 string called()
 {
-    if ((gTitle == "" || gTitle == gDataset) && gFor == gDataset && gCardTitle != "") return gCardTitle;
+    if (gFor == gDataset && gCardTitle != "")
+    {
+        if (gTitle == "" || gTitle == gDataset) return gCardTitle;
+        // The node's menu's title, which the node cut to 48 bytes and ended
+        // with "...": the card's is the same title whole, or cut far later.
+        integer n = llStringLength(gTitle);
+        if (n > 3 && llGetSubString(gTitle, -3, -1) == "..."
+            && llSubStringIndex(gCardTitle, llGetSubString(gTitle, 0, n - 4)) == 0) return gCardTitle;
+    }
     return gTitle;
 }
 

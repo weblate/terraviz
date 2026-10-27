@@ -14,13 +14,16 @@
 //   The source:  https://github.com/zyra-project/terraviz
 //
 // WHAT THIS SCRIPT DOES
-// It is one of three scripts that make a sphere a TerraViz exhibit: a
+// It is one of four scripts that make a sphere a TerraViz exhibit: a
 // globe that stays up all the time, that anyone who walks up can use, and
 // that a presenter can take over for a talk.
 //   terraviz-exhibit.lsl           this one: what the globe shows
 //   terraviz-exhibit-visitors.lsl  touches, menus, talks, who is nearby
 //   terraviz-exhibit-info.lsl      the floating text, and "About"
-// All three go in the sphere's Content tab.
+//   terraviz-exhibit-menu.lsl      the dataset menu from the node, in a
+//                                  small prim of its own linked to the sphere
+// The first three go in the sphere's Content tab, the menu script in that
+// small prim's.
 //
 // The sphere's surface shows TerraViz's output page: a web page that
 // draws the whole Earth unwrapped into a flat 2:1 picture, which Second
@@ -77,7 +80,7 @@
 //   /9 level               stand a tilted sphere back as it was
 //   /9 home                make the sphere's rotation now its rest, which a reset keeps
 //   /9 upright             stand the poles upright again
-//   /9 memory              each of the three scripts says how much of its 64 KB it uses
+//   /9 memory              each of the four scripts says how much of its 64 KB it uses
 // The visitors script answers /9 talk and /9 presenters too.
 //
 // TELEMETRY
@@ -99,8 +102,8 @@ integer CHAN = 9;
 integer FACE = 0;              // a sphere has only face 0
 integer UPRIGHT_ON_START = TRUE; // FALSE for a mesh globe with its own mapping
 
-// The link messages the three scripts share. The numbers are arbitrary;
-// all three must agree, and exhibit.test.ts holds them to it.
+// The link messages the three scripts in the sphere share. The numbers are
+// arbitrary; all three must agree, and exhibit.test.ts holds them to it.
 integer MSG_STATE   = 271001;  // globe to all: what the globe shows, as JSON
 integer MSG_CONTROL = 271002;  // visitors or info to globe: a control, for the key who asked
 integer MSG_HELLO   = 271003;  // any to globe: say the state again (a script reset)
