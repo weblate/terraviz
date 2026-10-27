@@ -534,13 +534,25 @@ each avatar used, and what steps 2 and 9 showed.
   again (step 9 of the smoke test). The dataset menu, added the same
   day, went into the visitors script first and stopped it at once with
   a Stack-Heap Collision, so it became a fourth script, the menu
-  script, which reads the node itself. In the sphere its pages then
-  reached the info script, which ran out of room reading the card of a
-  dataset chosen from the menu (Age of the Seafloor), so the menu
-  script is in a prim of its own: a reply reaches only the prim whose
-  script asked. What crosses between the prims is a link message of a
-  line or two: the node and the categories one way, a choice the other.
-  The new layout isn't measured yet.
+  script, which reads the node itself, from a prim of its own so that
+  no reply of its reaches a script in the sphere. What crosses between
+  the prims is a link message of a line or two: the node and the
+  categories one way, a choice the other. The info script then stopped
+  three times reading the card of a dataset chosen from the menu, and
+  the cause was an older copy of it, most likely from the first menu
+  build, about 90 lines longer, which rested at 56 KB: replaced, it
+  rested at 49. That day
+  `/9 memory` read, with the menu in its own prim: the globe script 57
+  KB, and at most 60 while showing a dataset; the info script 51, and
+  **at most 63** while reading the card of Clouds (colorized) -
+  Real-time, filled to 2 KB, and answering About; the visitors script
+  49; the menu script 44, and at most 48 while reading the node for a
+  menu. A card is held whole while it is read, and that card's abstract
+  was 1,496 characters, of which the info script keeps 500, so the node
+  now sends no more than those 500 (in bytes, so never more characters)
+  and a card is about 1 KB. So a script copied from an older build is
+  the first thing to rule out after a collision: open it and check the
+  first lines say what this README's file does.
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With
@@ -567,10 +579,12 @@ each avatar used, and what steps 2 and 9 showed.
   move or a change of rate shows.
 - **Long text is cut.** The node cuts what doesn't fit a card at a
   word, ending `...`: a credit past 200 bytes, a licence statement past
-  400 with its address, and the abstract to what the rest of the card
-  leaves. The info script keeps the first 500 characters of the
-  abstract, which cuts most of them (135 of the 143 on the node in
-  October 2026). "About" then says the rest is at the dataset's page.
+  400 with its address, and the abstract past 500 bytes, the 500
+  characters the info script keeps, which cuts most of them (135 of the
+  143 on the node in October 2026). A node from before 27 October sends
+  the abstract to what the rest of the card leaves, and the info script
+  cuts it to 500 itself. "About" then says the rest is at the dataset's
+  page.
   A date or a period is never cut: one the node couldn't read whole is
   left out, and the floating text shows no date, or a yearly dataset's
   date to the day.

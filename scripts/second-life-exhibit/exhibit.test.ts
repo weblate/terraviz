@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { serializeDataset } from '../../functions/api/v1/_lib/dataset-serializer'
 import {
   CARD_BUDGET,
+  CARD_CAPS,
   CARD_SKELETON,
   PAGE_BUDGET,
   PAGE_CAPS,
@@ -251,10 +252,13 @@ describe('second-life exhibit scripts', () => {
     // gate in the globe script.
     expect(act.indexOf('if (cmd == "earth"')).toBeLessThan(act.indexOf("// Everything below is the owner's."))
     // The info script reads a card, which the node keeps within its budget,
-    // and keeps a little of the abstract.
+    // and keeps a little of the abstract. The node sends no more of it than
+    // that: the card is held whole while it is read, and a card of 2,048
+    // bytes took the info script to 63 KB of 64 in-world. The cap is in
+    // bytes, so never more characters than the script keeps.
     expect(Number(constant(info, 'integer', 'CARD_MAX'))).toBe(CARD_BUDGET)
     expect(CARD_BUDGET).toBe(2048)
-    expect(Number(constant(info, 'integer', 'ABSTRACT_MAX'))).toBeLessThanOrEqual(500)
+    expect(Number(constant(info, 'integer', 'ABSTRACT_MAX'))).toBe(CARD_CAPS.abstract)
     // And the globe says how full showing a dataset left it.
     const shown = body(globe, 'show(key who, string id, string title)')
     const statements = shown.slice(shown.indexOf('{') + 1).split('\n').filter((line) => line.trim() !== '' && !/^\s*\/\//.test(line))

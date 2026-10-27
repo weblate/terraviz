@@ -1951,8 +1951,14 @@ driven by its owner in chat, with none of the visitor controls.
       titles, a 40-byte tag, six-digit numbers, an eight-digit `list`
       and the envelope come to 982 bytes, which leaves 42 for any
       later field.
-    - The card's fixed fields take about 200 bytes, and the abstract
-      what's left.
+    - The card's fixed fields take about 200 bytes, and the abstract at
+      most 500, the 500 characters the info script keeps (counted in
+      bytes, so never more characters). Until 27 October the abstract
+      took what was left, up to 2,048 bytes in all, and the bytes past
+      500 were thrown away on arrival: in-world, reading such a card and
+      answering About took the info script to 63 KB of its 64, since a
+      reply is held whole while it is read. The caps now sum within the
+      budget, the abstract's included, as the page's and the tags' do.
     - Tests sum the caps, and hold each reply with worst-case data:
       CJK, quotes, control characters, padded titles. The first menu
       read's review found two ways past its budget, a title padded
@@ -2065,9 +2071,8 @@ driven by its owner in chat, with none of the visitor controls.
        still to measure.
     2. The menu (built 27 October, on the design of 25 October, as a
        fourth script after the first build overflowed the visitors
-       script in-world, and moved the same day into a prim of its own
-       after its replies overflowed the info script; `/9 memory` still
-       to measure). The maintainer chose on
+       script in-world, and moved the same day into a prim of its own;
+       measured in-world that day, below). The maintainer chose on
        25 October a menu read live
        from the node over two cheaper alternatives: a page on the node
        that writes the `datasets` notecard, which the owner would redo
@@ -2119,12 +2124,25 @@ driven by its owner in chat, with none of the visitor controls.
          dataset chosen from the menu (Age of the Seafloor). A reply
          that reaches a script that didn't ask is still copied into
          that script's memory before it is set aside, and counts there
-         until Second Life collects it; with the menu's replies arriving
-         as it read a card, that was more than the info script had. So
-         the menu script is in a small prim linked to the globe, where
-         only its own replies reach it, and this step's first rule,
-         that in the globe prim only the info script has an
-         `http_response`, stands. The visitors script opens it
+         until Second Life collects it, so the menu's replies were taken
+         for the cause and the menu script moved to a small prim linked
+         to the globe, where only its own replies reach it, and this
+         step's first rule, that in the globe prim only the info script
+         has an `http_response`, stands. The info script went on
+         stopping with the menu out of its prim, though, and the cause
+         was an older copy of it still in the globe, most likely the
+         first build's, about 90 lines longer: it rested at 56 KB, and
+         replaced, at 49. So the move is not shown to have been needed. It stays,
+         because the info script turned out to have no room for anyone
+         else's replies: with the menu in its own prim, `/9 memory` read
+         the globe script 57 KB, at most 60 showing a dataset; the info
+         script 51, **at most 63** reading a card filled to 2 KB (Clouds
+         (colorized) - Real-time) and answering About; the visitors
+         script 49; the menu script 44, at most 48 reading the node. A
+         card is held whole while it is read, and the info script keeps
+         500 characters of an abstract that filled the card's rest, so
+         the card now sends no more than those 500 ("Budgets", above),
+         about 1 KB in all. The visitors script opens it
          (`MSG_MENU_OPEN`, to the whole object since the scripts are in
          different prims) for a visitor who may act, handing it the
          node, which it reads from the globe script's state, and the

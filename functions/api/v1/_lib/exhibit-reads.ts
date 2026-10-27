@@ -71,7 +71,15 @@ export const PAGE_MAX_LIMIT = 9
 export const PAGE_MAX_OFFSET = 100_000
 export const TAGS_MAX = 30
 
-/** A card's caps, in bytes as sent. The abstract takes what's left. */
+/**
+ * A card's caps, in bytes as sent. The abstract's is the 500 characters
+ * the info script keeps (its `ABSTRACT_MAX`, which every copy that reads a
+ * card has had), counted in bytes so it is never more characters. A reply
+ * is held whole in the script's 64 KB while it reads it: in-world on 27
+ * October 2026 a card filled to 2,048 bytes took the info script to 63 KB
+ * reading it and answering About, and the bytes past 500 of an abstract
+ * were thrown away on arrival.
+ */
 export const CARD_CAPS = {
   id: 64,
   page: 9 + 64, // "/dataset/" and a slug or an id
@@ -86,6 +94,7 @@ export const CARD_CAPS = {
   credit: 200,
   license: 64,
   licenseText: 400,
+  abstract: 500,
   truncated: 5,
 } as const
 
@@ -386,10 +395,11 @@ export function buildCard(entry: ListEntry, length: HlsDurationReading): Exhibit
     abstract: '',
     truncated: false,
   }
-  // The abstract takes whatever the rest leaves, counted with `false`,
-  // the longer of the two values `truncated` can end as.
+  // The abstract within its cap, and never more than the rest leaves,
+  // counted with `false`, the longer of the two values `truncated` can end
+  // as: the caps' sum keeps that room above the cap, which a test holds.
   const room = CARD_BUDGET - byteLength({ ...card, truncated: false })
-  card.abstract = fit(exhibitProse(row.abstract, { markdown: true }), room)
+  card.abstract = fit(exhibitProse(row.abstract, { markdown: true }), Math.min(CARD_CAPS.abstract, room))
   card.truncated = truncated
   return card
 }
