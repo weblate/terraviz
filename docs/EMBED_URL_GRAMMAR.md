@@ -179,9 +179,10 @@ is [`SECOND_LIFE_COMPAT.md`](SECOND_LIFE_COMPAT.md) §10 question 10.
   rather than holding a still frame; Second Life's own viewer lets a
   page on a prim play aloud by itself. Each copy plays its own sound
   track, as close to the others as the pictures are: a seek to catch up
-  is a skip in the sound, each pass round a loop repeats it, and `rate`
-  changes its speed along with the picture's, within the rates the
-  browser plays sound at (some silence it far from 1).
+  is a skip in the sound, catching up without one plays it up to a
+  quarter faster or slower for a while, each pass round a loop repeats
+  it, and `rate` changes its speed along with the picture's, within the
+  rates the browser plays sound at (some silence it far from 1).
 - **`sound` fails toward muted**, as `telemetry` fails toward off: only
   `1` or `true` (case-insensitive, untrimmed) turns it on, so
   `sound=off`, `=no`, a bare `sound` and an empty value leave the page

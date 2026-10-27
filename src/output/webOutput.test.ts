@@ -723,10 +723,25 @@ describe('sound', () => {
 
   /** One video already on screen, as the mirror would hold it after a
    *  load: an element loaded muted, and its steerable half, whose play()
-   *  the browser refuses while unmuted when `refuse` says so. */
-  function soundHarness(refuse: (element: { muted: boolean }) => Error | null) {
-    const element = { muted: true }
-    let paused = true
+   *  the browser refuses while unmuted when `refuse` says so. With
+   *  `browser`, the element behaves as Chromium, Firefox and WebKit do
+   *  under a policy that wants a click: unmuted while it plays, it pauses
+   *  and says nothing, and the next play() is refused. */
+  function soundHarness(
+    refuse: (element: { muted: boolean }) => Error | null,
+    opts: { playing?: boolean; browser?: boolean } = {},
+  ) {
+    let muted = true
+    let paused = !opts.playing
+    const element = {
+      get muted() {
+        return muted
+      },
+      set muted(value: boolean) {
+        if (opts.browser && muted && !value && !paused) paused = true
+        muted = value
+      },
+    }
     const video: SyncTarget = {
       readyState: 4,
       duration: 1000,
@@ -792,6 +807,38 @@ describe('sound', () => {
     h.show('#t=0&sound=1&rate=2')
     h.out.steer()
     expect(h.element.muted).toBe(true)
+  })
+
+  it('recovers as a browser does it: the unmute pauses in silence, and the next play() is refused', async () => {
+    // Playing muted, as every element starts. Unmuting it pauses it with
+    // no error at all; only the clock's next play() is refused. Were that
+    // play() not asked for, the page would hold a still frame unmuted.
+    const h = soundHarness(element => (element.muted ? null : notAllowed()), { playing: true, browser: true })
+    h.show('#t=0')
+    h.out.steer()
+    expect(h.video.paused).toBe(false)
+    h.show('#t=0&sound=1')
+    await until(() => {
+      h.out.steer()
+      return h.element.muted && !h.video.paused
+    }, 'playing again, muted')
+    expect(h.video.play).toHaveBeenCalled()
+  })
+
+  it('takes a refusal while muted for no verdict on sound', async () => {
+    // A browser that blocks all autoplay refuses a muted play() too. That
+    // says nothing about sound, so a later #sound=1 still unmutes.
+    const h = soundHarness(() => notAllowed())
+    h.show('#t=0')
+    h.out.steer()
+    const play = h.video.play as ReturnType<typeof vi.fn>
+    expect(play).toHaveBeenCalledTimes(1)
+    // The refusal lands (the page's handler runs) before sound is asked for.
+    await play.mock.results[0].value.catch(() => {})
+    await new Promise(r => setTimeout(r, 0))
+    h.show('#t=0&sound=1')
+    h.out.steer()
+    expect(h.element.muted).toBe(false)
   })
 
   it('takes a play() something interrupted for nothing more than that', async () => {

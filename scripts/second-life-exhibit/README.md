@@ -393,7 +393,7 @@ those:
 | `/9 turn <degrees>` | Turns the globe that far east, the way the Earth turns, or west for a negative number, as the menu's turn buttons do. Unlike `/9 rotation`, it doesn't move where the globe goes back to. |
 | `/9 tilt south`, `/9 tilt north` | Tips that pole 30° toward you, as the menu's pole buttons do for a visitor. |
 | `/9 level` | Stands a tipped globe back up, as it was at rest. |
-| `/9 sound on\|off` | Whether a dataset's sound track plays, for every visitor, without reloading anyone's page. On when the globe starts, unless `SOUND`, at the top of the globe script, is `FALSE`, which makes a silent exhibit last through resets. Each visitor hears their own copy, at their viewer's media volume, so it is as in step as the pictures are: a seek to catch up is a skip in the sound, and a short loop repeats its sound every pass. A browser that won't play aloud without a click plays the picture muted; Second Life's own viewer doesn't ask. |
+| `/9 sound on\|off` | Whether a dataset's sound track plays, for every visitor, without reloading anyone's page while changes go after the # (the default; under `/9 steer query` it reloads them as every change does). On when the globe starts, unless `SOUND`, at the top of the globe script, is `FALSE`, which makes a silent exhibit last through resets. Each visitor hears their own copy, at their viewer's media volume, so it is as in step as the pictures are: a seek to catch up is a skip in the sound, catching up without one plays it up to a quarter faster or slower for a while, and a short loop repeats its sound every pass. A browser that won't play aloud without a click plays the picture muted; Second Life's own viewer doesn't ask. |
 | `/9 home` | Makes the sphere's rotation now its rest, for a globe you have turned by hand or a mesh globe with its own mapping. The rest is kept in the object, so a reset doesn't lose it. On a default sphere `/9 upright` does this too, and a reset stands it upright as always. |
 | `/9 presenters` | What the notecards gave: how many presenters, where the menu comes from, and the settings. |
 | `/9 talk` | Whether a talk is on, and when none is, how many avatars are at the globe. `/9 talk start` and `/9 talk end` start and end one. |
@@ -499,7 +499,8 @@ stand at the globe.
     the second avatar's own media volume should change only what they
     hear. Then `/9 sound off`: it should go quiet with the picture
     playing on, and `/9 sound on` bring it back. Say which viewer, if
-    one plays it silent.
+    one plays it silent. Then `/9 memory`: the globe script's most while
+    showing a dataset is the number to report, since sound added to it.
 
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2, 9 and 11 showed.
@@ -574,7 +575,8 @@ each avatar used, and what steps 2, 9 and 11 showed.
   info script 51, and **at most 57** while reading a card or answering
   About, 7 KB to spare where it had 1; the visitors script 52; the menu
   script 44, and at most 51 while reading the node for a menu. The
-  globe script, with 4 KB to spare at its busiest, has the least room of
+  globe script, with 4 KB to spare at its busiest (measured before sound
+  was added, which step 11 measures again), has the least room of
   those that report a peak; the visitors script reports none. So a script copied from an older build is the
   first thing to rule out after a collision: open it and check the
   first lines say what this README's file does.

@@ -97,9 +97,10 @@
 // A dataset with a sound track plays it in each visitor's own viewer, at
 // their media volume and fainter with distance from the globe, so each
 // hears their own copy, as in step as the pictures are. A seek to catch
-// up is a skip in the sound, and a short loop repeats its sound every
-// pass. "/9 sound off" silences the globe until a reset; SOUND below sets
-// how it starts.
+// up is a skip in the sound, catching up without one plays it up to a
+// quarter faster or slower for a while, and a short loop repeats its
+// sound every pass. "/9 sound off" silences the globe until a reset, with
+// no reload while changes go after the #; SOUND below sets how it starts.
 //
 // Channel 9 rather than the smoke-test globe's 8 or the probe's 7, so one
 // command never reaches two kinds of object at once.
@@ -878,7 +879,7 @@ act(key who, integer owner, string msg)
     {
         if (larg != "on" && larg != "off") { tell(who, "sound on, or sound off."); return; }
         gSound = (larg == "on");
-        if (commit(saved)) tell(who, "Sound " + larg + ". A dataset with sound plays it for each visitor, at their own media volume.");
+        if (commit(saved)) tell(who, "Sound " + larg + ".");
         return;
     }
     if (cmd == "width")

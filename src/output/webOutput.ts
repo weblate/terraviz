@@ -44,12 +44,14 @@
  * alike. A short loop is safe once it is fully buffered.
  *
  * **Sound is the address's, unless the browser refuses it.** Every
- * element is loaded muted, which any browser lets play by itself, and
- * `steer` unmutes it while the address says `sound`. A browser whose
- * autoplay policy wants a click first refuses the unmuted `play()`; the
- * page then plays muted for the rest of its life, since that browser
- * would refuse again, rather than holding a still frame. Second Life's
- * own viewer lets a page on a prim play aloud by itself.
+ * element is loaded muted, which browsers normally let play by itself,
+ * and `steer` unmutes it while the address says `sound`. A browser whose
+ * autoplay policy wants a click first pauses an element unmuted while it
+ * plays, saying nothing, and refuses the next `play()` with a
+ * `NotAllowedError`; the page then plays muted for the rest of its life,
+ * since that browser would refuse again, rather than holding a still
+ * frame. Second Life's own viewer lets a page on a prim play aloud by
+ * itself.
  */
 
 import type { DatasetMirror } from './datasetMirror'
@@ -360,7 +362,11 @@ export function createWebOutput(deps: WebOutputDeps): WebOutput {
       }
       // Each frame, so a new element (loaded muted) and a `#sound` change
       // both take it up at once, and a refusal mutes the element before
-      // the clock asks it to play again.
+      // the clock asks it to play again. The recovery rests on the clock
+      // asking a paused, playing-clock element to play on every frame
+      // (`syncVideoToState`): the unmute's own pause is silent, and only
+      // that next `play()` is refused. The default loader hands the same
+      // element as `element` and `video`.
       if (media?.kind === 'video') {
         const element = media.element as HTMLVideoElement
         const muted = !current.sound || soundRefused

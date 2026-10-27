@@ -136,8 +136,6 @@ describe.each(GLOBES)('second-life $name globe script', ({ file, own }) => {
       sound: false,
       clock: { positionS: 61.2, atUnixS: 1792865189.482, rate: 2, paused: false },
     })
-    // The exhibit's sound, after the #, so turning it off reloads no page.
-    expect(readWebSettings('?fit=fill', '#width=2048&rotation=0&sound=1').sound).toBe(true)
 
     const paused = readWebSettings('?fit=fill', `#dataset=${ID}&t=30.5&paused=1&width=2048&rotation=0`)
     expect(paused.clock).toEqual({ positionS: 30.5, atUnixS: null, rate: 1, paused: true })

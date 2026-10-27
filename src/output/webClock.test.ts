@@ -121,6 +121,14 @@ describe('createWebClockSteer', () => {
     // An element whose play() returns nothing, as a test's fake may, is fine.
     const plain = video({ paused: true })
     expect(() => steer.steer(plain, clock({ atUnixS: AT }), LOADED_AT, LOADED_AT)).not.toThrow()
+    expect(plain.play).toHaveBeenCalled()
+    // And the seam's own play(), turning a finished element back to the
+    // start, is caught the same way.
+    const finished = video({ duration: 16, currentTime: 16, paused: true, play: vi.fn(() => Promise.reject(err)) })
+    const atSeam = createWebClockSteer({ monotonicMs: () => 0, onPlayRefused: e => refused.push(e) })
+    expect(atSeam.steer(finished, clock({ positionS: 0.1, atUnixS: AT }), LOADED_AT, LOADED_AT).seeked).toBe(true)
+    expect(finished.play).toHaveBeenCalledTimes(1)
+    await until(() => refused.length === 2, 'the seam\'s refusal')
   })
 
   /** A steer whose playhead layer runs on a clock the test moves. */

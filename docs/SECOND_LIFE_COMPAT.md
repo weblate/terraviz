@@ -1740,8 +1740,9 @@ driven by its owner in chat, with none of the visitor controls.
     anything but `1` or `true`, as `telemetry` is, so every address and
     globe without it stays silent and `sound=off` never plays aloud
     (`docs/EMBED_URL_GRAMMAR.md`).
-  - **The exhibit globe.** It writes `sound` after the `#` unless the
-    owner says `/9 sound off`, or sets `SOUND` to `FALSE` for a globe
+  - **The exhibit globe.** It writes `sound=1` after the `#` (before it
+    under `/9 steer query`, where every change reloads) unless the owner
+    says `/9 sound off`, or sets `SOUND` to `FALSE` for a globe
     that starts silent. The maintainer chose on 27 October to have it
     on by default for the exhibit, and owner-only rather than a
     visitor's button, since everyone at the globe hears it.
@@ -1758,7 +1759,9 @@ driven by its owner in chat, with none of the visitor controls.
   - **What visitors hear.** Each visitor hears their own copy, at their
     viewer's media volume and fainter with distance, as close to the
     others as the pictures are. A seek to catch up is a skip in the
-    sound, and a short loop repeats its sound every pass.
+    sound, catching up without one plays it up to a quarter faster or
+    slower for a while (the control law's rate trim), and a short loop
+    repeats its sound every pass.
 - **Notecards in the globe, all optional, re-read when they change:**
   - `presenters`: one username a line. A legacy name such as "Eric
     Hackathorn" is read as its username. A display name never is.
