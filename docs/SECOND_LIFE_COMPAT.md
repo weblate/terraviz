@@ -2137,9 +2137,19 @@ driven by its owner in chat, with none of the visitor controls.
          within three seconds (seen at the visitors script's next
          five-second check), the menu script missing or stopped, the
          visitor gets the built-in datasets and the owner is told once.
-         The two messages have numbers of their own (271008, 271009),
-         not the in-prim build's, so a globe still holding that build's
-         copy can't take one message for the other. It asks the node
+         The open carries when it was asked, and the menu script leaves
+         one two seconds old unanswered, so an answer can't follow the
+         built-in datasets as a second menu; both scripts read the
+         region's clock. A copy of the menu script left in the globe's
+         prim answers nothing, so an owner upgrading from the in-prim
+         build is told to move it rather than meeting the info script's
+         collision again. The two messages have numbers of their own
+         (271008, 271009), not the in-prim build's, so a globe still
+         holding that build's copy can't take one message for the
+         other. The menu script gives its prim the globe's name, which
+         heads its menus. One exhibit to an object: two globes linked
+         into one build would each open the other's menu (found in
+         review). It asks the node
          only for a category and where a page starts, one read in
          flight a visitor, so a slow reply to a read they have since
          replaced opens nothing, and a new node starts its categories

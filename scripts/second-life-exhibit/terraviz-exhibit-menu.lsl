@@ -40,6 +40,12 @@
 // the node's categories, by name in any case and in that order, with "All
 // datasets" among them if named.
 //
+// A copy of this script in the globe's own prim answers nothing, so the
+// visitors script gives the built-in datasets and tells the owner it goes
+// in a prim of its own. It gives this prim the globe's name, which heads
+// its menus. One exhibit to an object: two globes linked into one build
+// would each open the other's menu.
+//
 // The owner can ask "/9 memory": this script says how much of its 64 KB it
 // uses, and the most it has used reading the node for a menu.
 
@@ -51,7 +57,7 @@ integer CHAN = 9;
 // The menu's own numbers are new ones, never the earlier relay's
 // (271006, 271007), so a prim holding scripts of both builds can't take
 // one message for the other.
-integer MSG_MENU_OPEN = 271008;  // visitors to menu: the node and the categories, in lines; open the menu for the key
+integer MSG_MENU_OPEN = 271008;  // visitors to menu: the node, the categories and when, in lines; open the menu for the key
 integer MSG_MENU_DONE = 271009;  // menu to visitors: "open", then "show <id> <title>", "main" or "datasets", for the key
 
 // A page's budget and the categories', in bytes, as the node states them.
@@ -64,6 +70,11 @@ integer TAGS_TTL = 600;      // seconds the node's categories are kept before as
 integer LIVE_PAGES = 4;      // pages kept for visitors with one open, each at most 1 KB as the node sent it
 integer CTX_TTL = 300;       // seconds a menu stays answerable after it opened
 integer CTX_MAX = 8;         // menus open at once
+// An open this many seconds old by the region's clock goes unanswered: the
+// visitors script gives the built-in datasets at its MENU_WAIT (3), and an
+// answer this late could reach it after them, a second menu on the first.
+// exhibit.test.ts holds it below MENU_WAIT.
+integer OPEN_LATE = 2;
 
 // The ids the globe script takes. exhibit.test.ts holds them to its.
 string  ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
@@ -478,19 +489,29 @@ default
 
     link_message(integer sender, integer n, string str, key id)
     {
-        if (n != MSG_MENU_OPEN) return;
+        // Only from another prim: a copy of this script in the globe's
+        // prim stays silent, since its replies would reach the info script
+        // there and take it past 64 KB.
+        if (n != MSG_MENU_OPEN || sender == llGetLinkNumber()) return;
+        list w = llParseStringKeepNulls(str, ["\n"], []);
+        // Asked too long ago: the visitors script gives its own datasets.
+        if (unix() - (integer)llList2String(w, 2) >= OPEN_LATE) return;
         // Said at once, so the visitors script knows this script is running
         // and doesn't give the visitor its built-in datasets.
         done(id, "open");
-        list w = llParseStringKeepNulls(str, ["\n"], []);
+        // A menu is headed with its prim's name, so this prim takes the globe's.
+        string name = llGetLinkName(sender);
+        if (llGetObjectName() != name) llSetObjectName(name);
         string node = llList2String(w, 0);
-        // Another node: nothing the last one said stands, and the owner
-        // hears of this one's trouble.
+        // Another node: nothing the last one said stands, a read still on
+        // its way from it included, and the owner hears of this one's
+        // trouble.
         if (node != gNode)
         {
             gTagsAt = 0;
             gTags = [];
             gPages = [];
+            gReqs = [];
             gTold = FALSE;
         }
         gNode = node;
@@ -547,7 +568,9 @@ default
             return;
         }
         integer at = llListFindList(gCtx, [who]);
-        if (at == -1 || at % 3 != 0) return;   // no menu of theirs is open
+        // No menu of theirs is open, or it was shown longer ago than a
+        // menu answers (the timer that forgets it runs once a minute).
+        if (at == -1 || at % 3 != 0 || unix() - llList2Integer(gCtx, at + 2) > CTX_TTL) return;
         integer page = llList2Integer(gCtx, at + 1);
         if (msg == BTN_MENU) { done(who, "main"); return; }
 

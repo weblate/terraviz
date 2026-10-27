@@ -658,12 +658,14 @@ describe("the exhibit's dataset menu", () => {
     expect(info).not.toContain('/api/exhibit/v1/tags')
     expect(visitors).toContain('gLive = gMenu == [];')
     expect(visitors).toContain('if (gLive) gMenu = DEFAULT_MENU;')
-    expect(visitors).toMatch(/if \(msg == BTN_DATASETS\)\n\s+\{\n(?:\s+\/\/.*\n)*\s+if \(!gLive\) \{ datasetsMenu\(who, 0\); return; \}\n\s+llMessageLinked\(LINK_SET, MSG_MENU_OPEN, gNode \+ "\\n" \+ gCategories, who\);/)
+    expect(visitors).toMatch(/if \(msg == BTN_DATASETS\)\n\s+\{\n(?:\s+\/\/.*\n)*\s+if \(!gLive\) \{ datasetsMenu\(who, 0\); return; \}\n(?:\s+\/\/.*\n)*\s+llMessageLinked\(LINK_SET, MSG_MENU_OPEN, gNode \+ "\\n" \+ gCategories \+ "\\n" \+ \(string\)unix\(\), who\);/)
     // Datasets is offered only to a visitor who may act, so the menu
     // script is opened only for one.
     expect(visitors.indexOf("if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }\n\n        if (msg == BTN_DATASETS)")).toBeGreaterThan(-1)
-    // It says at once that it is there, before anything it can fail at.
-    expect(opened()).toMatch(/if \(n != MSG_MENU_OPEN\) return;\n(?:\s+\/\/.*\n)*\s+done\(id, "open"\);/)
+    // It says at once that it is there, before anything it can fail at,
+    // unless it is in the visitors script's own prim, where its replies
+    // would reach the info script, or asked too long ago.
+    expect(opened()).toMatch(/if \(n != MSG_MENU_OPEN \|\| sender == llGetLinkNumber\(\)\) return;\n\s+list w = llParseStringKeepNulls\(str, \["\\n"\], \[\]\);\n(?:\s+\/\/.*\n)*\s+if \(unix\(\) - \(integer\)llList2String\(w, 2\) >= OPEN_LATE\) return;\n(?:\s+\/\/.*\n)*\s+done\(id, "open"\);/)
     expect(opened()).toMatch(/open\(id\);\n\s+\}\s*$/)
     // What comes back: the main menu, the built-in datasets, or a choice,
     // which the visitors script holds to the hold and any talk, and which
@@ -686,10 +688,40 @@ describe("the exhibit's dataset menu", () => {
     // One wait a visitor, and a bounded number in all.
     const open = visitors.slice(visitors.indexOf('if (msg == BTN_DATASETS)'), visitors.indexOf('if (msg == BTN_PAUSE)'))
     expect(open).toMatch(/if \(o != -1\) gOpening = llDeleteSubList\(gOpening, o, o \+ 1\);\n\s+gOpening \+= \[who, unix\(\)\];\n\s+if \(llGetListLength\(gOpening\) > CTX_MAX \* 2\) gOpening = llDeleteSubList\(gOpening, 0, 1\);/)
-    // Long enough for a link message to cross the object, short enough
-    // that a visitor isn't left waiting.
-    expect(Number(constant(visitors, 'integer', 'MENU_WAIT'))).toBeGreaterThanOrEqual(2)
-    expect(Number(constant(visitors, 'integer', 'MENU_WAIT'))).toBeLessThanOrEqual(5)
+    // Long enough for a link message to cross the object. It is checked
+    // every TICK, so a visitor waits at most MENU_WAIT + TICK seconds.
+    const wait = Number(constant(visitors, 'integer', 'MENU_WAIT'))
+    expect(wait).toBeGreaterThanOrEqual(2)
+    expect(wait + Number(constant(visitors, 'float', 'TICK'))).toBeLessThanOrEqual(8)
+    // Never both menus: the menu script answers only while the request is
+    // under OPEN_LATE whole seconds old, so before OPEN_LATE seconds have
+    // passed, and the visitors script gives its own at MENU_WAIT whole
+    // seconds, after more than MENU_WAIT - 1 have. Both read the region's
+    // clock, so an answer has over a second to arrive first.
+    const late = Number(constant(menu, 'integer', 'OPEN_LATE'))
+    expect(late).toBeGreaterThanOrEqual(1)
+    expect(wait - late).toBeGreaterThanOrEqual(1)
+    for (let asked = 0; asked < 1; asked += 0.05) {
+      for (let answered = asked; answered < asked + 4; answered += 0.05) {
+        if (Math.floor(answered) - Math.floor(asked) >= late) continue // not answered
+        for (let check = asked; check < asked + 6; check += 0.05) {
+          if (Math.floor(check) - Math.floor(asked) >= wait) {
+            expect(check - answered, `${asked} ${answered} ${check}`).toBeGreaterThan(1 - 1e-9)
+            break
+          }
+        }
+      }
+    }
+  })
+
+  it("answers a menu for as long as the docs say, and as nobody else's", () => {
+    // Five minutes from the last menu shown, though the timer that forgets
+    // it runs once a minute.
+    expect(Number(constant(menu, 'integer', 'CTX_TTL'))).toBe(300)
+    expect(listen()).toContain('if (at == -1 || at % 3 != 0 || unix() - llList2Integer(gCtx, at + 2) > CTX_TTL) return;')
+    expect(readme.replace(/\s+/g, ' ')).toContain('for the five minutes the menu answers')
+    // Headed with the globe's name, as the visitors script's menus are.
+    expect(opened()).toMatch(/string name = llGetLinkName\(sender\);\n\s+if \(llGetObjectName\(\) != name\) llSetObjectName\(name\);/)
   })
 
   it('tells the owner once why the node gave no menu, and gives the visitor the built-in five', () => {
@@ -746,14 +778,16 @@ describe("the exhibit's dataset menu", () => {
     // One read in flight a visitor, and a bounded number in all.
     expect(read).toMatch(/integer at = llListFindList\(gReqs, \[who\]\);\n\s+if \(at != -1 && at % 2 == 1\) gReqs = llDeleteSubList\(gReqs, at - 1, at\);/)
     expect(read).toContain('while (llGetListLength(gReqs) > CTX_MAX * 2) gReqs = llDeleteSubList(gReqs, 0, 1);')
-    // A reply this script didn't ask for, the info script's cards among
-    // them, is set aside at once; so is one for a menu that has closed.
+    // A reply this script didn't ask for is set aside at once; so is one
+    // for a menu that has closed.
     const reply = menu.slice(menu.indexOf('    http_response('), menu.indexOf('    listen('))
     expect(reply).toMatch(/integer at = llListFindList\(gReqs, \[req\]\);\n\s+if \(at == -1 \|\| at % 2 != 0\) return;/)
     expect(reply).toMatch(/at = llListFindList\(gCtx, \[who\]\);\n\s+if \(at == -1 \|\| at % 3 != 0\) return;/)
     expect(info).toMatch(/http_response\(key req, integer status, list meta, string body\)\n\s+\{\n\s+if \(req != gReq\) return;/)
-    // And neither is in the globe script, which has the least room.
+    // In the globe's prim only the info script has a handler: every reply
+    // reaches every script there that has one.
     expect(globe).not.toContain('http_response')
+    expect(visitors).not.toContain('http_response')
   })
 
   it("reads only what the node's replies carry", async () => {
@@ -924,8 +958,10 @@ describe("the exhibit's dataset menu", () => {
     expect(state).toContain('list w = llParseStringKeepNulls(str, ["\\n"], []);')
     expect(state).toContain('string node = llList2String(w, 0);')
     expect(state).toContain('string cats = llList2String(w, 1);')
-    // The node's categories and pages are of the node they came from.
-    expect(state).toMatch(/if \(node != gNode\)\n\s+\{\n\s+gTagsAt = 0;\n\s+gTags = \[\];\n\s+gPages = \[\];/)
+    // The node's categories, pages and reads are of the node they came from.
+    expect(state).toMatch(/if \(node != gNode\)\n\s+\{\n\s+gTagsAt = 0;\n\s+gTags = \[\];\n\s+gPages = \[\];\n\s+gReqs = \[\];/)
+    // A state without a node hands over none, which the menu reports.
+    expect(visitors).toMatch(/gNode = llJsonGetValue\(str, \["node"\]\);\n\s+if \(gNode == JSON_INVALID\) gNode = "";/)
     // Names between commas, trimmed, none empty.
     expect(state).toContain('list parts = llParseString2List(cats, [","], []);')
     expect(state).toContain('if (c != "") gCategories += [c];')

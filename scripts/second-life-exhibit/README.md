@@ -88,23 +88,22 @@ way.
 4. Make the menu script's prim, a small cube hidden inside the sphere:
    1. Rez a cube (Build, then the cube in the Create tab, then click
       the ground).
-   2. In the build floater's General tab, give it the sphere's name,
-      such as `TerraViz`. A visitor's dataset menu and anything the
-      script says are headed with the name of the prim it is in, so
-      with the same name they read as the globe's.
-   3. In the Object tab, set its size to 0.1 in all three, and its
-      position to the sphere's (copy the three numbers from the
-      sphere's Object tab).
-   4. In the Texture tab, set Transparency to 100, so nothing shows if
+   2. In the build floater's Object tab, set its size to 0.1 in all
+      three, and its position to the sphere's (copy the three numbers
+      from the sphere's Object tab).
+   3. In the Texture tab, set Transparency to 100, so nothing shows if
       the sphere is ever smaller than the cube or see-through.
-   5. In its Content tab, make a **New Script** and replace its text
-      with `terraviz-exhibit-menu.lsl`, saving it.
-   6. Link the cube to the sphere: with the cube selected, Shift-click
+   4. In its Content tab, make a **New Script** and replace its text
+      with `terraviz-exhibit-menu.lsl`, saving it. Its name doesn't
+      matter: the script gives the cube the sphere's name the first
+      time a visitor opens the menu, since a menu is headed with the
+      name of the prim it comes from.
+   5. Link the cube to the sphere: with the cube selected, Shift-click
       the sphere, so it is selected last, and choose Build → Link
       (Ctrl+L). The prim selected last becomes the root, so the sphere
       stays the root and moving it moves the cube with it. The sphere
       is outlined in yellow and the cube in blue.
-   7. To reach the cube's Content tab later, edit the sphere, tick
+   6. To reach the cube's Content tab later, edit the sphere, tick
       **Edit linked** in the build floater, and choose Build → Select
       Linked Parts → Select Next Part (Ctrl+.) until the cube is
       selected: inside the sphere it can't be clicked.
@@ -485,22 +484,33 @@ stand at the globe.
    script's while reading a card or answering About, and the menu
    script's while reading the node for a menu: say what they were.
 
+10. **Without the menu script.** Open the cube's menu script and untick
+    Running. A visitor's Datasets should give the five built-in
+    datasets within about eight seconds, and you should be told once
+    that the menu script didn't answer. Tick Running again, and
+    Datasets should open the node's categories, with no second menu.
+
 When you report results, say which viewer and version (Help → About)
 each avatar used, and what steps 2 and 9 showed.
 
 ## Things that will trip you up
 
-- **Put the scripts in the sphere, and in a build make the sphere a
-  child prim.** A tilt turns the prim the scripts are in, so as the root
+- **Put the globe's three scripts in the sphere, and in a build make
+  the sphere a child prim.** A tilt turns the prim the scripts are in, so as the root
   of a build, with a stand linked to it, the whole build would tip. The
   menu script's cube can be linked anywhere in the build, the root
-  included; the scripts find each other across the whole object.
+  included; the scripts find each other across the whole object. One
+  exhibit to an object, though: two globes linked into one build would
+  each open the other's menu.
 - **Keep the menu script out of the sphere.** In the sphere with the
-  other three, its pages of the node's catalog reach the info script
-  too, which then stops with a Stack-Heap Collision the next time it
-  reads a dataset's card. A visitor's Datasets gives the five built-in
-  datasets while the menu script is missing or stopped, after a few
-  seconds' wait, and you are told once.
+  other three, its pages of the node's catalog would reach the info
+  script too, which stopped with a Stack-Heap Collision the next time
+  it read a dataset's card. So a copy there answers nothing, as one left
+  from the build that had it there would be: Datasets gives the five
+  built-in datasets after a few seconds' wait, and you are told once
+  that the menu script didn't answer. Delete it from the sphere and put
+  it in the cube. The same happens while the cube's copy is missing or
+  stopped.
 
 - **A script stops for good at 64 KB.** It reports a Stack-Heap
   Collision and does nothing more until it is reset, and a script with

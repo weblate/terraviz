@@ -77,7 +77,7 @@ integer MSG_ABOUT   = 271005;  // visitors to info: tell the key about what the 
 // script is in a prim of its own. New numbers, never the earlier relay's
 // (271006, 271007), so a prim holding scripts of both builds can't take
 // one message for the other.
-integer MSG_MENU_OPEN = 271008;  // visitors to menu: the node and the categories, in lines; open the menu for the key
+integer MSG_MENU_OPEN = 271008;  // visitors to menu: the node, the categories and when, in lines; open the menu for the key
 integer MSG_MENU_DONE = 271009;  // menu to visitors: "open", then "show <id> <title>", "main" or "datasets", for the key
 
 // The settings, and what the "settings" notecard may set them to.
@@ -437,7 +437,8 @@ check()
         llMessageLinked(LINK_THIS, MSG_CONTROL, "rest", NULL_KEY);
     }
     // The menu script didn't say it opened the node's menu: it isn't in
-    // the object, or has stopped. The visitor gets the built-in datasets.
+    // the object, is in the globe's prim, or has stopped. The visitor gets
+    // the built-in datasets.
     while (gOpening != [] && t - llList2Integer(gOpening, 1) >= MENU_WAIT)
     {
         key v = llList2Key(gOpening, 0);
@@ -628,6 +629,7 @@ default
         gPaused = (integer)llJsonGetValue(str, ["paused"]);
         gTurned = (integer)llJsonGetValue(str, ["turned"]);
         gNode = llJsonGetValue(str, ["node"]);
+        if (gNode == JSON_INVALID) gNode = "";
         // Any change restarts the idle clock, so a choice made from beyond
         // the radius isn't undone at the next check.
         gLastSeen = unix();
@@ -710,7 +712,8 @@ default
         {
             // Without a datasets notecard, the menu script's: the node's catalog.
             if (!gLive) { datasetsMenu(who, 0); return; }
-            llMessageLinked(LINK_SET, MSG_MENU_OPEN, gNode + "\n" + gCategories, who);
+            // When it was asked, so it never answers after the built-in datasets.
+            llMessageLinked(LINK_SET, MSG_MENU_OPEN, gNode + "\n" + gCategories + "\n" + (string)unix(), who);
             integer o = llListFindList(gOpening, [who]);
             if (o != -1) gOpening = llDeleteSubList(gOpening, o, o + 1);
             gOpening += [who, unix()];

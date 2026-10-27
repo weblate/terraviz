@@ -22,7 +22,8 @@
 //   terraviz-exhibit-info.lsl      the floating text, and "About"
 //   terraviz-exhibit-menu.lsl      the dataset menu from the node, in a
 //                                  small prim of its own linked to the sphere
-// All three go in the sphere's Content tab.
+// The first three go in the sphere's Content tab, the menu script in that
+// small prim's.
 //
 // The sphere's surface shows TerraViz's output page: a web page that
 // draws the whole Earth unwrapped into a flat 2:1 picture, which Second
