@@ -59,12 +59,12 @@
 // hover text then shows the title alone, "About" gives the dataset's
 // page, and the owner is told once.
 //
-// terraviz-exhibit-menu.lsl reads the dataset menu from the node too. A web
-// reply reaches every script in the prim with an http_response, so this one
-// receives its pages and categories, each within 2 KB as a card is, and
-// sets them aside at once.
+// terraviz-exhibit-menu.lsl reads the dataset menu from the node too, from a
+// prim of its own: a web reply reaches every script in the prim it arrives
+// in, and in this one its pages took this script past its 64 KB while it
+// read a card (in-world, 27 October 2026).
 //
-// The owner can ask "/9 memory": each of the three scripts says how much
+// The owner can ask "/9 memory": each of the four scripts says how much
 // of its 64 KB it uses, and this one also says the most it has used while
 // reading a card or answering "About", which are when it needs the most.
 

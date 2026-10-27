@@ -13,8 +13,11 @@
 // It is one of the exhibit's four scripts: the dataset menu read from the
 // node's catalog, which terraviz-exhibit-visitors.lsl opens for whoever
 // chooses Datasets when the globe has no "datasets" notecard. It is a
-// script of its own because the visitors script had no room left for it
-// (a Stack-Heap Collision in-world, 27 October 2026).
+// script of its own because the visitors script had no room left for it,
+// and in a prim of its own, linked to the globe, because a web reply
+// reaches every script in the prim it arrives in: in the globe's prim its
+// pages landed in the info script too, which then ran out of memory
+// reading a card (both Stack-Heap Collisions in-world, 27 October 2026).
 // - The menu opens on the node's categories, with how many datasets each
 //   has, and "All datasets", since some are in none. A category opens its
 //   datasets nine to a page, in the order the app's browse lists them.
@@ -31,27 +34,25 @@
 //
 // It reads the node itself (/api/exhibit/v1/tags and
 // /api/exhibit/v1/datasets), asking only for a category and where a page
-// starts, nothing about who asked. A web reply reaches every script in the
-// prim with an http_response, so this one also receives the info script's
-// cards, and that one this one's pages, each within 2 KB, and each sets
-// the other's aside at once.
-//
-// NOTECARD: "categories = Water, Air" in the "settings" notecard narrows
-// the menu to those of the node's categories, by name in any case and in
-// that order, with "All datasets" among them if named. The visitors script
-// reads the rest of that notecard.
+// starts, nothing about who asked. The visitors script says which node,
+// and the "categories" line of the globe's "settings" notecard, each time
+// it opens the menu: "categories = Water, Air" narrows the menu to those of
+// the node's categories, by name in any case and in that order, with "All
+// datasets" among them if named.
 //
 // The owner can ask "/9 memory": this script says how much of its 64 KB it
 // uses, and the most it has used reading the node for a menu.
 
 integer CHAN = 9;
 
-// The link messages the four scripts share. exhibit.test.ts holds the
-// numbers to the others'.
-integer MSG_STATE     = 271001;  // globe to all: what the globe shows, as JSON
-integer MSG_HELLO     = 271003;  // any to globe: say the state again (a script reset)
-integer MSG_MENU_OPEN = 271006;  // visitors to menu: open the node's menu for the key
-integer MSG_MENU_DONE = 271007;  // menu to visitors: "show <id> <title>", "main" or "datasets", for the key
+// The link messages this script and the visitors script share, sent to the
+// whole object (LINK_SET) since they are in different prims.
+// exhibit.test.ts holds the numbers to the visitors script's.
+// The menu's own numbers are new ones, never the earlier relay's
+// (271006, 271007), so a prim holding scripts of both builds can't take
+// one message for the other.
+integer MSG_MENU_OPEN = 271008;  // visitors to menu: the node and the categories, in lines; open the menu for the key
+integer MSG_MENU_DONE = 271009;  // menu to visitors: "open", then "show <id> <title>", "main" or "datasets", for the key
 
 // A page's budget and the categories', in bytes, as the node states them.
 // A request reads one byte more, so a reply of exactly the budget can't
@@ -74,8 +75,9 @@ string  BTN_MENU = "Main menu";
 string  BTN_ALL = "All datasets";
 string  BTN_KINDS = "Categories";
 
-string  gNode;               // the node the globe shows, from the globe script
-list    gCategories;         // the settings notecard's "categories", or [] for all the node's
+string  gNode;               // the node the globe shows, from the visitors script
+string  gCats;               // the settings notecard's "categories", as written
+list    gCategories;         // those, or [] for all the node's
 list    gTags;               // the node's categories: tag, count, tag, count...
 integer gTagsAt;             // when the node gave them, 0 for never
 integer gKindsAt;            // when the categories offered last changed
@@ -90,10 +92,6 @@ integer gPeak;               // the most memory used reading the node for a menu
 // older menu still means what that menu meant.
 integer gDlgKinds;           // the categories
 integer gDlgLive;            // a page of datasets
-
-key     gCardReq;            // the settings notecard, read for "categories"
-integer gLine;
-list    gNew;
 
 integer unix() { return llGetUnixTime(); }
 
@@ -172,7 +170,7 @@ integer pageOf(key who)
 // To the visitors script, for this visitor.
 done(key who, string what)
 {
-    llMessageLinked(LINK_THIS, MSG_MENU_DONE, what, who);
+    llMessageLinked(LINK_SET, MSG_MENU_DONE, what, who);
 }
 
 // A reply's string, or "" for a value it lacks.
@@ -320,6 +318,8 @@ string failure(integer status)
 // owner hears why, once until the node gives one again.
 liveFailed(key who, string why)
 {
+    integer asked = llListFindList(gRefetched, [who]);
+    if (asked != -1) gRefetched = llDeleteSubList(gRefetched, asked, asked);
     if (!gTold)
         llOwnerSay("[exhibit] The node didn't give the dataset menu: " + why + ". Visitors get the built-in datasets until it does.");
     gTold = TRUE;
@@ -358,12 +358,16 @@ livePage(key who, string body)
     integer total = (integer)llJsonGetValue(body, ["total"]);
     integer offset = (integer)llJsonGetValue(body, ["offset"]);
     string tag = value(body, ["tag"]);
-    // Ids the globe takes, no more than a page holds, or it isn't a page.
+    // Ids the globe takes, no more than a page holds, each id and title
+    // within the node's own caps (26 and 48 bytes, so as many characters at
+    // most), or it isn't a page: a choice goes on to the globe script,
+    // which has the least room.
     integer n = 0;
     integer ok = TRUE;
     while (ok && n <= PAGE && llJsonValueType(body, ["datasets", n]) != JSON_INVALID)
     {
-        ok = isId(value(body, ["datasets", n, "id"]));
+        string id = value(body, ["datasets", n, "id"]);
+        ok = isId(id) && llStringLength(id) <= 26 && llStringLength(value(body, ["datasets", n, "title"])) <= 48;
         ++n;
     }
     if (!ok || n > PAGE) { liveFailed(who, failure(200)); return; }
@@ -431,28 +435,6 @@ livePage(key who, string body)
     menu(who, text, b, gDlgLive);
 }
 
-// The settings notecard, for its "categories" line alone.
-readSettings()
-{
-    gNew = [];
-    gLine = 0;
-    gCardReq = NULL_KEY;
-    if (llGetInventoryType("settings") == INVENTORY_NOTECARD) gCardReq = llGetNotecardLine("settings", 0);
-    else applySettings();
-}
-
-applySettings()
-{
-    gCardReq = NULL_KEY;
-    gCategories = gNew;
-    // The categories offered may have changed, and the owner hears of the
-    // new settings' trouble with the node.
-    gKindsAt = unix();
-    gTold = FALSE;
-    if (gCategories != [])
-        llOwnerSay("[exhibit] The dataset menu offers the node's categories " + llDumpList2String(gCategories, ", ") + ".");
-}
-
 default
 {
     state_entry()
@@ -462,10 +444,7 @@ default
         llListen(gDlgKinds, "", NULL_KEY, "");
         llListen(gDlgLive, "", NULL_KEY, "");
         llListen(CHAN, "", llGetOwner(), "");
-        readSettings();
         llSetTimerEvent(60.0);
-        // The globe script says the node.
-        llMessageLinked(LINK_THIS, MSG_HELLO, "", NULL_KEY);
     }
 
     on_rez(integer p) { llResetScript(); }
@@ -473,7 +452,6 @@ default
     changed(integer c)
     {
         if (c & CHANGED_OWNER) llResetScript();
-        if (c & CHANGED_INVENTORY) readSettings();
         // A region restart drops a read in flight, which then never
         // answers: the visitor touches the globe again.
         if (c & CHANGED_REGION_START) gReqs = [];
@@ -490,41 +468,52 @@ default
             if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 3);
             else i += 4;
         }
-    }
-
-    dataserver(key q, string data)
-    {
-        if (q != gCardReq) return;
-        if (data == EOF) { applySettings(); return; }
-        string line = llStringTrim(data, STRING_TRIM);
-        integer eq = llSubStringIndex(line, "=");
-        if (eq > 0 && llToLower(llStringTrim(llGetSubString(line, 0, eq - 1), STRING_TRIM)) == "categories")
+        i = 0;
+        while (i < llGetListLength(gRefetched))
         {
-            // Names, not ids, between commas, in the order the menu shows
-            // them. (Guarded, since a backwards range means everything
-            // outside it.)
-            gNew = [];
-            list parts = [];
-            if (eq < llStringLength(line) - 1) parts = llParseString2List(llGetSubString(line, eq + 1, -1), [","], []);
-            integer i;
-            for (i = 0; i < llGetListLength(parts); ++i)
-            {
-                string c = llStringTrim(llList2String(parts, i), STRING_TRIM);
-                if (c != "") gNew += [c];
-            }
+            if (llListFindList(gCtx, [llList2Key(gRefetched, i)]) == -1) gRefetched = llDeleteSubList(gRefetched, i, i);
+            else ++i;
         }
-        ++gLine;
-        gCardReq = llGetNotecardLine("settings", gLine);
     }
 
     link_message(integer sender, integer n, string str, key id)
     {
-        if (n == MSG_MENU_OPEN) { open(id); return; }
-        if (n != MSG_STATE) return;
-        string node = llJsonGetValue(str, ["node"]);
-        if (node == JSON_INVALID) return;
-        if (node != gNode) gTagsAt = 0;
+        if (n != MSG_MENU_OPEN) return;
+        // Said at once, so the visitors script knows this script is running
+        // and doesn't give the visitor its built-in datasets.
+        done(id, "open");
+        list w = llParseStringKeepNulls(str, ["\n"], []);
+        string node = llList2String(w, 0);
+        // Another node: nothing the last one said stands, and the owner
+        // hears of this one's trouble.
+        if (node != gNode)
+        {
+            gTagsAt = 0;
+            gTags = [];
+            gPages = [];
+            gTold = FALSE;
+        }
         gNode = node;
+        // The owner's categories, when they change: names, not ids, between
+        // commas, in the order the menu shows them.
+        string cats = llList2String(w, 1);
+        if (cats != gCats)
+        {
+            gCats = cats;
+            gCategories = [];
+            list parts = llParseString2List(cats, [","], []);
+            integer i;
+            for (i = 0; i < llGetListLength(parts); ++i)
+            {
+                string c = llStringTrim(llList2String(parts, i), STRING_TRIM);
+                if (c != "") gCategories += [c];
+            }
+            // The categories offered changed, and the owner hears of the
+            // new settings' trouble with the node.
+            gKindsAt = unix();
+            gTold = FALSE;
+        }
+        open(id);
     }
 
     http_response(key req, integer status, list meta, string body)

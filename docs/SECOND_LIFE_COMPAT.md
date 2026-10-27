@@ -1644,12 +1644,14 @@ driven by its owner in chat, with none of the visitor controls.
 
 *How the controller is built* (in
 [`scripts/second-life-exhibit/`](../scripts/second-life-exhibit/README.md)):
-- **Four scripts in the globe prim, talking by link messages.** A
+- **Four scripts, talking by link messages: three in the globe prim
+  and one in a prim linked to it.** A
   script gets 64 KB in all, and a dataset record costs about 1.8 bytes
   of it per character while held (§4.1). One script doing everything
   would hold a record while it also holds menus, notecards and visitor
   lists, so the work is split three ways, and since 27 October four,
-  for the dataset menu below:
+  for the dataset menu below, whose script is in a small prim of its
+  own because a web reply reaches every script in the prim that asked:
   - **globe** owns the address, the clock and the media. It is the
     smoke-test script's core and writes the same keys, though since 27
     October not always the same `t` (below), and it is
@@ -1699,7 +1701,9 @@ driven by its owner in chat, with none of the visitor controls.
   - **menu** owns the dataset menu read from the node's catalog, which
     the visitors script opens for whoever chooses Datasets when the
     globe has no `datasets` notecard ("The menu", step 2 of the
-    exhibit's reads, below). It reads the node itself.
+    exhibit's reads, below). It reads the node itself, from a prim of
+    its own linked to the globe, and takes the node and the owner's
+    categories from the visitors script each time it opens.
 - **What visitors can do.** A touch opens a menu for whoever touched.
   "About" is always there, since reading changes nothing. The
   controls are pause or play, back and forward ten seconds, start
@@ -2061,7 +2065,9 @@ driven by its owner in chat, with none of the visitor controls.
        still to measure.
     2. The menu (built 27 October, on the design of 25 October, as a
        fourth script after the first build overflowed the visitors
-       script in-world; `/9 memory` still to measure). The maintainer chose on
+       script in-world, and moved the same day into a prim of its own
+       after its replies overflowed the info script; `/9 memory` still
+       to measure). The maintainer chose on
        25 October a menu read live
        from the node over two cheaper alternatives: a page on the node
        that writes the `datasets` notecard, which the owner would redo
@@ -2098,29 +2104,46 @@ driven by its owner in chat, with none of the visitor controls.
          again; told of categories it lacks once, not at every refresh.
          A category emptied since it was listed sends the visitor back
          to the categories.
-       - **A script of its own, which reads the node itself.** It went
-         into the visitors script first, the info script reading the
-         node and relaying each reply in lines, and in-world the
-         visitors script stopped at once with a Stack-Heap Collision
-         (27 October): the menu had taken it past 64 KB before it held a
-         page. So the menu is a fourth script, `terraviz-exhibit-menu`,
-         and the visitors and info scripts are as they were but for a few
-         lines. The visitors script opens it (`MSG_MENU_OPEN`) for a
-         visitor who may act, and it hands back (`MSG_MENU_DONE`) a
-         choice, which the visitors script holds to the hold and any talk
-         as it does the notecard menu's, or the main menu, or the
-         built-in datasets. It reads the node itself, with its own
-         `http_response`: a web reply reaches every script in the prim
-         with one, so it receives the info script's cards and the info
-         script its pages, each within 2 KB, each set aside at once, and
-         nothing of the menu reaches the globe script, which has the
-         least room. That reverses this step's first rule, that the info
-         script be the only script with an `http_response`, which was
-         about scripts with no room to spare; the menu script has room.
-         It reads the `categories` line of the `settings` notecard
-         itself, and asks the node only for a category and where a page
-         starts, one read in flight a visitor, so a slow reply to a read
-         they have since replaced opens nothing.
+       - **A script of its own, in a prim of its own, which reads the
+         node itself.** It went into the visitors script first, the
+         info script reading the node and relaying each reply in lines,
+         and in-world the visitors script stopped at once with a
+         Stack-Heap Collision (27 October): the menu had taken it past
+         64 KB before it held a page. So the menu became a fourth
+         script, `terraviz-exhibit-menu`, with the visitors and info
+         scripts as they were but for a few lines. In the globe prim
+         beside them it read the node with its own `http_response`, on
+         the reasoning that each reply was within 2 KB and set aside at
+         once by the scripts that hadn't asked. In-world the info
+         script then stopped the same way while reading the card of a
+         dataset chosen from the menu (Age of the Seafloor). A reply
+         that reaches a script that didn't ask is still copied into
+         that script's memory before it is set aside, and counts there
+         until Second Life collects it; with the menu's replies arriving
+         as it read a card, that was more than the info script had. So
+         the menu script is in a small prim linked to the globe, where
+         only its own replies reach it, and this step's first rule,
+         that in the globe prim only the info script has an
+         `http_response`, stands. The visitors script opens it
+         (`MSG_MENU_OPEN`, to the whole object since the scripts are in
+         different prims) for a visitor who may act, handing it the
+         node, which it reads from the globe script's state, and the
+         `categories` line of the `settings` notecard as written, since
+         a script reads notecards only in its own prim. The menu script
+         says at once that it opened (`MSG_MENU_DONE`, `open`), and
+         later hands back a choice, which the visitors script holds to
+         the hold and any talk as it does the notecard menu's, or the
+         main menu, or the built-in datasets. When no `open` comes
+         within three seconds (seen at the visitors script's next
+         five-second check), the menu script missing or stopped, the
+         visitor gets the built-in datasets and the owner is told once.
+         The two messages have numbers of their own (271008, 271009),
+         not the in-prim build's, so a globe still holding that build's
+         copy can't take one message for the other. It asks the node
+         only for a category and where a page starts, one read in
+         flight a visitor, so a slow reply to a read they have since
+         replaced opens nothing, and a new node starts its categories
+         and pages afresh.
        - **Kept, and for how long:** the categories for ten minutes,
          about 0.2 KB in October and 2.4 KB at their caps; the page a
          visitor has open, as the node sent it, while their menu stays
@@ -2138,7 +2161,8 @@ driven by its owner in chat, with none of the visitor controls.
          might never page forward. A page past the end asks for the last
          page, once.
     3. Phase 4b's buttons, with the owner's chat commands moved to a
-       fourth script to give the globe script room.
+       fifth script to give the globe script room. It goes in the globe
+       prim, since it neither asks the node nor needs to be apart.
   - **The node and the scripts go together.** A TerraViz node without
     these reads answers them with the app's page and a 200, not JSON,
     which Second Life refuses with its own HTTP 415, since the script

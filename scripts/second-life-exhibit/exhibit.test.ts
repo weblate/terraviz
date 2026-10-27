@@ -8,6 +8,7 @@ import {
   CARD_BUDGET,
   CARD_SKELETON,
   PAGE_BUDGET,
+  PAGE_CAPS,
   PAGE_MAX_LIMIT,
   parsePageQuery,
   resetExhibitListForTests,
@@ -26,7 +27,7 @@ import { freshMigratedDb } from '../lib/catalog-migrations'
 // LSL compiles only in-world, so nothing here runs the scripts. What the
 // globe script writes into the page's address is held to the page by
 // ../second-life-probe/globe.test.ts, which checks both globe scripts.
-// These tests hold the exhibit's three scripts to each other and to the
+// These tests hold the exhibit's four scripts to each other and to the
 // node: a link message, a state key or a command one script renamed would
 // leave the others quietly doing nothing, with no error anywhere.
 
@@ -88,11 +89,18 @@ describe('second-life exhibit scripts', () => {
 
   it('send every message to a script that handles it', () => {
     for (const [name, script] of Object.entries(SCRIPTS)) {
-      for (const sent of new Set(all(script, /llMessageLinked\(LINK_THIS, (MSG_\w+)/g))) {
+      const sends = [...script.matchAll(/llMessageLinked\((LINK_\w+), (MSG_\w+)/g)]
+      expect(sends.length, name).toBeGreaterThan(0)
+      for (const [, target, sent] of sends) {
         const handlers = Object.entries(SCRIPTS).filter(
           ([other, s]) => other !== name && new RegExp(`\\bn [!=]= ${sent}\\b`).test(s),
         )
         expect(handlers.length, `${name} sends ${sent}`).toBeGreaterThan(0)
+        // The menu script is in a prim of its own, so what passes between
+        // it and the visitors script goes to the whole object; everything
+        // else stays in the globe's prim.
+        const across = handlers.some(([other]) => other === 'menu') || name === 'menu'
+        expect(target, `${name} sends ${sent}`).toBe(across ? 'LINK_SET' : 'LINK_THIS')
       }
     }
   })
@@ -102,11 +110,15 @@ describe('second-life exhibit scripts', () => {
     // The keys are the literals; their values are the globe's variables.
     const broadcast = new Set(literals(list))
     expect(broadcast.size).toBeGreaterThan(0)
-    for (const [name, script] of Object.entries({ visitors, info, menu })) {
+    for (const [name, script] of Object.entries({ visitors, info })) {
       const read = all(script, /llJsonGetValue\(str, \["(\w+)"\]\)/g)
       expect(read.length, name).toBeGreaterThan(0)
       for (const key of read) expect(broadcast, `${name} reads ${key}`).toContain(key)
     }
+    // The menu script, in a prim of its own, hears the state only through
+    // the visitors script, which reads the node from it.
+    expect(menu).not.toMatch(/MSG_STATE|MSG_HELLO|llJsonGetValue\(str/)
+    expect(all(visitors, /llJsonGetValue\(str, \["(\w+)"\]\)/g)).toContain('node')
   })
 
   it('ask the globe only for what it lets a visitor do', () => {
@@ -458,6 +470,7 @@ describe('second-life exhibit scripts', () => {
     const chan = constant(globe, 'integer', 'CHAN')
     expect(constant(visitors, 'integer', 'CHAN')).toBe(chan)
     expect(constant(info, 'integer', 'CHAN')).toBe(chan)
+    expect(constant(menu, 'integer', 'CHAN')).toBe(chan)
     // The globe answers anything it doesn't know with its help text, so
     // it has to stay quiet on the visitors script's commands.
     expect(body(globe, 'act(key who, integer owner, string msg)')).toMatch(
@@ -465,10 +478,13 @@ describe('second-life exhibit scripts', () => {
     )
     expect(visitors).toMatch(/cmd == "talk"/)
     expect(visitors).toMatch(/cmd == "presenters"/)
-    // All three say how much memory they use.
+    // All four say how much memory they use, and the menu script nothing
+    // else: it answers no command, so it never asks the globe for one.
     expect(globe).toMatch(/cmd == "memory"/)
     expect(visitors).toMatch(/cmd == "memory"/)
     expect(info).toMatch(/!= "memory"/)
+    expect(menu).toMatch(/!= "memory"\) return;/)
+    expect(menu).not.toContain('MSG_CONTROL')
   })
 
   it('read the notecards and settings the docs name', () => {
@@ -630,39 +646,67 @@ describe("the exhibit's dataset menu", () => {
   const kindsAnswer = (): string => listen().slice(listen().indexOf('if (ch == gDlgKinds)'), listen().indexOf('if (ch != gDlgLive) return;'))
   const pageAnswer = (): string => listen().slice(listen().indexOf('if (ch != gDlgLive) return;'))
 
-  it('is a script of its own, which the visitors script opens and hands back to', () => {
-    // The visitors script had no room for it: a Stack-Heap Collision
-    // in-world, 27 October. It keeps only the switch and the hand-back.
+  const opened = (): string => menu.slice(menu.indexOf('    link_message('), menu.indexOf('    http_response('))
+
+  it('is a script in a prim of its own, which the visitors script opens and hands back to', () => {
+    // The visitors script had no room for it, and in the globe's prim its
+    // web replies reached the info script too: two Stack-Heap Collisions
+    // in-world, 27 October. The visitors script keeps the switch and the
+    // hand-back; the info script never sees a page.
     expect(visitors).not.toContain('kindsMenu')
+    expect(all(info, /"(\/api\/[^"]*)"/g)).toEqual(['/api/exhibit/v1/datasets/'])
+    expect(info).not.toContain('/api/exhibit/v1/tags')
     expect(visitors).toContain('gLive = gMenu == [];')
     expect(visitors).toContain('if (gLive) gMenu = DEFAULT_MENU;')
-    expect(visitors).toMatch(/if \(msg == BTN_DATASETS\)\n\s+\{\n(?:\s+\/\/.*\n)*\s+if \(gLive\) llMessageLinked\(LINK_THIS, MSG_MENU_OPEN, "", who\);\n\s+else datasetsMenu\(who, 0\);/)
+    expect(visitors).toMatch(/if \(msg == BTN_DATASETS\)\n\s+\{\n(?:\s+\/\/.*\n)*\s+if \(!gLive\) \{ datasetsMenu\(who, 0\); return; \}\n\s+llMessageLinked\(LINK_SET, MSG_MENU_OPEN, gNode \+ "\\n" \+ gCategories, who\);/)
     // Datasets is offered only to a visitor who may act, so the menu
     // script is opened only for one.
     expect(visitors.indexOf("if (!mayAct(who)) { llRegionSayTo(who, 0, whyNot()); return; }\n\n        if (msg == BTN_DATASETS)")).toBeGreaterThan(-1)
-    expect(menu).toContain('if (n == MSG_MENU_OPEN) { open(id); return; }')
+    // It says at once that it is there, before anything it can fail at.
+    expect(opened()).toMatch(/if \(n != MSG_MENU_OPEN\) return;\n(?:\s+\/\/.*\n)*\s+done\(id, "open"\);/)
+    expect(opened()).toMatch(/open\(id\);\n\s+\}\s*$/)
     // What comes back: the main menu, the built-in datasets, or a choice,
     // which the visitors script holds to the hold and any talk, and which
     // is only ever a show.
     const back = visitors.slice(visitors.indexOf('if (n == MSG_MENU_DONE)'), visitors.indexOf('if (n != MSG_STATE) return;'))
+    expect(back).toMatch(/gOpening = llDeleteSubList\(gOpening, o, o \+ 1\);\n\s+gNoMenu = FALSE;\n\s+if \(str == "open"\) return;/)
     expect(back).toContain('if (str == "main") { mainMenu(id); return; }')
     expect(back).toContain('if (str == "datasets") { datasetsMenu(id, 0); return; }')
     expect(back).toMatch(/if \(llGetSubString\(str, 0, 4\) != "show "\) return;\n\s+if \(!mayAct\(id\)\) \{ llRegionSayTo\(id, 0, whyNot\(\)\); return; \}\n\s+ask\(id, str\);/)
-    expect(all(menu, /done\(who, "(\w+)/g).sort()).toEqual(['datasets', 'main', 'show'])
-    // The categories line of the settings notecard is the menu script's.
-    expect(body(visitors, 'setting(string line)')).toContain('if (name == "categories") return;')
-    expect(menu).toContain('== "categories")')
+    expect(all(menu, /done\((?:who|id), "(\w+)/g).sort()).toEqual(['datasets', 'main', 'open', 'show'])
+    // The numbers are new, so a prim still holding the earlier build's
+    // menu relay can't take one message for the other.
+    expect(Object.values(messages(menu)).sort()).toEqual(['271008', '271009'])
+  })
+
+  it('gives the visitor the built-in datasets when the menu script never answers, and tells the owner once', () => {
+    const fallback = body(visitors, 'check()')
+    expect(fallback).toMatch(/while \(gOpening != \[\] && t - llList2Integer\(gOpening, 1\) >= MENU_WAIT\)\n\s+\{\n\s+key v = llList2Key\(gOpening, 0\);\n\s+gOpening = llDeleteSubList\(gOpening, 0, 1\);\n\s+if \(!gNoMenu\)\n\s+llOwnerSay\([^;]+;\n\s+gNoMenu = TRUE;\n\s+datasetsMenu\(v, 0\);/)
+    expect(fallback).toContain('see the README')
+    // One wait a visitor, and a bounded number in all.
+    const open = visitors.slice(visitors.indexOf('if (msg == BTN_DATASETS)'), visitors.indexOf('if (msg == BTN_PAUSE)'))
+    expect(open).toMatch(/if \(o != -1\) gOpening = llDeleteSubList\(gOpening, o, o \+ 1\);\n\s+gOpening \+= \[who, unix\(\)\];\n\s+if \(llGetListLength\(gOpening\) > CTX_MAX \* 2\) gOpening = llDeleteSubList\(gOpening, 0, 1\);/)
+    // Long enough for a link message to cross the object, short enough
+    // that a visitor isn't left waiting.
+    expect(Number(constant(visitors, 'integer', 'MENU_WAIT'))).toBeGreaterThanOrEqual(2)
+    expect(Number(constant(visitors, 'integer', 'MENU_WAIT'))).toBeLessThanOrEqual(5)
   })
 
   it('tells the owner once why the node gave no menu, and gives the visitor the built-in five', () => {
-    expect(body(menu, 'liveFailed(key who, string why)')).toMatch(
+    const failed = body(menu, 'liveFailed(key who, string why)')
+    expect(failed).toMatch(
       /if \(!gTold\)\n\s+llOwnerSay\([^;]+;\n\s+gTold = TRUE;\n\s+done\(who, "datasets"\);/,
     )
+    // A visitor sent to the last page and then failed isn't held as sent,
+    // so their next page past the end is asked for again.
+    expect(failed).toMatch(/integer asked = llListFindList\(gRefetched, \[who\]\);\n\s+if \(asked != -1\) gRefetched = llDeleteSubList\(gRefetched, asked, asked\);/)
     // Until the node gives a menu again, and of categories it lacks once a
-    // settings notecard, not at every refresh of them.
+    // settings notecard, not at every refresh of them; and of a new node's
+    // or new categories' trouble.
     expect(body(menu, 'livePage(key who, string body)')).toContain('gTold = FALSE;')
     expect(body(menu, 'tagsRead(key who, string body)')).toContain('if (kinds() != []) gTold = FALSE;')
-    expect(body(menu, 'applySettings()')).toMatch(/gKindsAt = unix\(\);\n\s+gTold = FALSE;/)
+    expect(opened()).toMatch(/gKindsAt = unix\(\);\n\s+gTold = FALSE;/)
+    expect(opened()).toMatch(/if \(node != gNode\)\n\s+\{[^}]*gTold = FALSE;/)
     // Every failure has its reason: no node yet, a request throttled, a
     // reply that isn't JSON, and one that isn't a menu this script reads.
     const failure = body(menu, 'string failure(integer status)')
@@ -740,11 +784,18 @@ describe("the exhibit's dataset menu", () => {
     const live = body(menu, 'livePage(key who, string body)')
     expect(live).toContain('gPages += [who, tag, from, body];')
     expect(live).toContain('while (llGetListLength(gPages) > LIVE_PAGES * 4) gPages = llDeleteSubList(gPages, 0, 3);')
-    // Ids the globe takes, no more than a page holds, or it isn't a page.
-    expect(live).toMatch(/while \(ok && n <= PAGE && llJsonValueType\(body, \["datasets", n\]\) != JSON_INVALID\)\n\s+\{\n\s+ok = isId\(value\(body, \["datasets", n, "id"\]\)\);/)
+    // Ids the globe takes, no more than a page holds, each id and title
+    // within the node's caps, or it isn't a page.
+    expect(live).toMatch(/while \(ok && n <= PAGE && llJsonValueType\(body, \["datasets", n\]\) != JSON_INVALID\)\n\s+\{\n\s+string id = value\(body, \["datasets", n, "id"\]\);\n\s+ok = isId\(id\) && llStringLength\(id\) <= (\d+) && llStringLength\(value\(body, \["datasets", n, "title"\]\)\) <= (\d+);/)
+    const [, idCap, titleCap] = live.match(/llStringLength\(id\) <= (\d+) && llStringLength\(value\(body, \["datasets", n, "title"\]\)\) <= (\d+)/) ?? []
+    // The node's caps are bytes, and a character takes at least one.
+    expect(Number(idCap)).toBe(PAGE_CAPS.id)
+    expect(Number(titleCap)).toBe(PAGE_CAPS.title)
     expect(live).toContain('if (!ok || n > PAGE) { liveFailed(who, failure(200)); return; }')
-    // A page goes with the menu that showed it.
+    // A page goes with the menu that showed it, and so does being sent to
+    // the last page.
     expect(menu).toContain('if (llListFindList(gCtx, [llList2Key(gPages, i)]) == -1) gPages = llDeleteSubList(gPages, i, i + 3);')
+    expect(menu).toContain('if (llListFindList(gCtx, [llList2Key(gRefetched, i)]) == -1) gRefetched = llDeleteSubList(gRefetched, i, i);')
     // A read keeps the visitor's menu answerable until its reply.
     expect(body(menu, 'read(key who, string path, integer budget)')).toContain('remember(who, pageOf(who));')
     // /9 memory says the most it took, as the other scripts do.
@@ -820,7 +871,7 @@ describe("the exhibit's dataset menu", () => {
     expect(ans.indexOf('gKindsAt >')).toBeLessThan(ans.indexOf('askPage('))
     // They change when the node's or the owner's do, and only then.
     expect(body(menu, 'tagsRead(key who, string body)')).toContain('if (llDumpList2String(kinds(), "\\n") != before) gKindsAt = gTagsAt;')
-    expect(body(menu, 'applySettings()')).toContain('gKindsAt = unix();')
+    expect(opened()).toMatch(/if \(cats != gCats\)\n\s+\{\n\s+gCats = cats;[\s\S]*?gKindsAt = unix\(\);/)
   })
 
   it("says when the list changed between two pages of a category, and doesn't start over", () => {
@@ -859,11 +910,25 @@ describe("the exhibit's dataset menu", () => {
     expect(body(menu, 'kindsMenu(key who, integer page)')).toContain('if (count == 1) { askPage(who, llList2String(k, 0), 0); return; }')
   })
 
-  it('reads the node it shows from the globe script, and asks again for the categories of a new one', () => {
-    const state = menu.slice(menu.indexOf('    link_message('), menu.indexOf('    http_response('))
-    expect(state).toContain('string node = llJsonGetValue(str, ["node"]);')
-    expect(state).toContain('if (node != gNode) gTagsAt = 0;')
-    expect(menu).toMatch(/llMessageLinked\(LINK_THIS, MSG_HELLO, "", NULL_KEY\);\n\s+\}/)
+  it('takes the node and the categories from the visitors script each time it opens, and forgets a node it no longer shows', () => {
+    // A script reads notecards from its own prim alone, so the settings
+    // notecard's categories come with the node, as the visitors script
+    // read them.
+    expect(menu).not.toMatch(/llGetNotecardLine|llGetInventory|dataserver/)
+    expect(body(visitors, 'setting(string line)')).toMatch(
+      /if \(name == "categories"\)\n\s+\{\n\s+gNewCategories = "";\n\s+if \(eq < llStringLength\(line\) - 1\) gNewCategories = llStringTrim\(llGetSubString\(line, eq \+ 1, -1\), STRING_TRIM\);\n\s+return;/,
+    )
+    expect(body(visitors, 'nextCard()')).toContain('gCategories = gNewCategories;')
+    expect(body(visitors, 'readCards()')).toContain('gNewCategories = "";')
+    const state = opened()
+    expect(state).toContain('list w = llParseStringKeepNulls(str, ["\\n"], []);')
+    expect(state).toContain('string node = llList2String(w, 0);')
+    expect(state).toContain('string cats = llList2String(w, 1);')
+    // The node's categories and pages are of the node they came from.
+    expect(state).toMatch(/if \(node != gNode\)\n\s+\{\n\s+gTagsAt = 0;\n\s+gTags = \[\];\n\s+gPages = \[\];/)
+    // Names between commas, trimmed, none empty.
+    expect(state).toContain('list parts = llParseString2List(cats, [","], []);')
+    expect(state).toContain('if (c != "") gCategories += [c];')
   })
 })
 

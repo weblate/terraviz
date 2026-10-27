@@ -34,14 +34,17 @@ item 4 and §9 Phase 2.
 | `terraviz-exhibit.lsl` | **The globe script.** Owns the address, the clock and the media: the smoke test's globe, taking requests from the others. The only one with settings to edit. |
 | `terraviz-exhibit-visitors.lsl` | **The visitors script.** Touches and menus, the hold, talks, and who is at the globe. |
 | `terraviz-exhibit-info.lsl` | **The info script.** The floating text, and "About". |
-| `terraviz-exhibit-menu.lsl` | **The menu script.** The dataset menu from the node's catalog, which the visitors script opens. |
+| `terraviz-exhibit-menu.lsl` | **The menu script.** The dataset menu from the node's catalog, which the visitors script opens. It goes in a small prim of its own, linked to the globe. |
 | `exhibit.test.ts` | Holds the four scripts to each other and to the node: their link messages, the state they share, the commands a visitor may send, the card fields read, and what the node keeps for copies already rezzed. `../second-life-probe/globe.test.ts` holds the globe script's address to the output page. |
 
 A script in Second Life has 64 KB in all, which is why there are four:
 one script reading what the node says about a dataset while also holding menus,
 notecards and the visitor list would run out. The menu script is the
 fourth because the dataset menu, written into the visitors script first,
-stopped it at once with a Stack-Heap Collision in-world.
+stopped it at once with a Stack-Heap Collision in-world. It is in a prim
+of its own because a web reply reaches every script in the prim that
+asked: in the sphere, the menu's pages stopped the info script the same
+way.
 
 ## Before you start
 
@@ -53,7 +56,9 @@ stopped it at once with a Stack-Heap Collision in-world.
 - **Which node the globe shows.** `NODE`, at the top of
   `terraviz-exhibit.lsl`, is `https://terraviz.zyra-project.org`. The
   probe kit's README says how to point it at a preview deploy instead.
-  The other two scripts take the node from the globe script.
+  The other scripts take the node from the globe script: the visitors
+  and info scripts as it changes, and the menu script from the visitors
+  script each time a visitor opens the menu.
 - **A node with the exhibit's reads.** The info script reads a dataset's
   card, a reply of at most 2 KB that the node writes for this exhibit
   (`/api/exhibit/v1/datasets/<id>`). A node that predates the cards
@@ -69,16 +74,43 @@ stopped it at once with a Stack-Heap Collision in-world.
 ## Setting it up
 
 1. Rez a sphere. A default prim sphere is fine.
-2. In its Content tab, make four **New Script**s and replace their
-   text with the four `.lsl` files here, one each, saving each. Set
-   `NODE` in the globe script first if you need to. The order doesn't
-   matter: each asks the others for what it missed.
+2. In its Content tab, make three **New Script**s and replace their
+   text with the globe, visitors and info scripts
+   (`terraviz-exhibit.lsl`, `terraviz-exhibit-visitors.lsl`,
+   `terraviz-exhibit-info.lsl`), one each, saving each. Set `NODE` in
+   the globe script first if you need to. The order doesn't matter:
+   each asks the others for what it missed.
 3. Within a few seconds the sphere stands its poles upright and shows
    the live Earth, and the floating text gives the live Earth's line
    and its credit. Chat shows the visitors script's
    summary of what the notecards gave: with none, no presenters and the
    dataset menu from the node's catalog.
-4. Add any of the notecards below, and say `/9 presenters` to check what
+4. Make the menu script's prim, a small cube hidden inside the sphere:
+   1. Rez a cube (Build, then the cube in the Create tab, then click
+      the ground).
+   2. In the build floater's General tab, give it the sphere's name,
+      such as `TerraViz`. A visitor's dataset menu and anything the
+      script says are headed with the name of the prim it is in, so
+      with the same name they read as the globe's.
+   3. In the Object tab, set its size to 0.1 in all three, and its
+      position to the sphere's (copy the three numbers from the
+      sphere's Object tab).
+   4. In the Texture tab, set Transparency to 100, so nothing shows if
+      the sphere is ever smaller than the cube or see-through.
+   5. In its Content tab, make a **New Script** and replace its text
+      with `terraviz-exhibit-menu.lsl`, saving it.
+   6. Link the cube to the sphere: with the cube selected, Shift-click
+      the sphere, so it is selected last, and choose Build → Link
+      (Ctrl+L). The prim selected last becomes the root, so the sphere
+      stays the root and moving it moves the cube with it. The sphere
+      is outlined in yellow and the cube in blue.
+   7. To reach the cube's Content tab later, edit the sphere, tick
+      **Edit linked** in the build floater, and choose Build → Select
+      Linked Parts → Select Next Part (Ctrl+.) until the cube is
+      selected: inside the sphere it can't be clicked.
+5. `/9 memory` should answer from all four scripts, the menu script
+   among them. A visitor's Datasets now opens the node's categories.
+6. Add any of the notecards below, and say `/9 presenters` to check what
    was read.
 
 The media is deliberately not clickable, for anyone. A visitor who could
@@ -258,7 +290,10 @@ a dataset may have moved between pages. When the node can't give
 the menu (Second Life is limiting the object's web requests, the node
 answers with an error, or it is a node from before October 2026 with no
 menu to give), the visitor gets the five built-in datasets below, and
-you are told once why, until the node answers again.
+you are told once why, until the node answers again. They get them too
+if the menu script doesn't answer the visitors script within a few
+seconds, because it isn't in the object or has stopped, and you are told
+that once.
 
 ### `datasets`
 
@@ -304,7 +339,7 @@ categories = Water, Air
 | `idle minutes` | how long after the last visitor leaves before the live Earth comes back | 1 to 1440 |
 | `hold seconds` | how long a visitor holds the globe after their last choice | 10 to 3600 |
 | `talk minutes` | how long with no presenter at the globe before a talk ends | 1 to 120 |
-| `categories` | which of the node's categories the menu offers, in that order, by name in any case, between commas, with `All datasets` among them if you want it (all of them, with "All datasets"); read by the menu script | names the node has |
+| `categories` | which of the node's categories the menu offers, in that order, by name in any case, between commas, with `All datasets` among them if you want it (all of them, with "All datasets"). The visitors script reads it and hands it to the menu script, which can't read the sphere's notecards from its own prim | names the node has |
 
 A value outside its range is ignored, with a word to the owner. A
 category the node doesn't have is left out of the menu; with none of
@@ -390,8 +425,9 @@ floating text and the object's description say so while it is on.
 You need a second avatar, or a friend, for most of this. Have them
 stand at the globe.
 
-1. **Setup.** `/9 presenters` lists what was read. `/9 debug on` should
-   show the readout on the globe.
+1. **Setup.** `/9 presenters` lists what was read. `/9 memory` should
+   answer from all four scripts. `/9 debug on` should show the readout
+   on the globe.
 2. **Does a left-click reach the script?** The second avatar left-clicks
    the globe. If a menu opens, a left-click works in their viewer and
    the floating text's "Right-click" is more than they need. If not,
@@ -456,7 +492,15 @@ each avatar used, and what steps 2 and 9 showed.
 
 - **Put the scripts in the sphere, and in a build make the sphere a
   child prim.** A tilt turns the prim the scripts are in, so as the root
-  of a build, with a stand linked to it, the whole build would tip.
+  of a build, with a stand linked to it, the whole build would tip. The
+  menu script's cube can be linked anywhere in the build, the root
+  included; the scripts find each other across the whole object.
+- **Keep the menu script out of the sphere.** In the sphere with the
+  other three, its pages of the node's catalog reach the info script
+  too, which then stops with a Stack-Heap Collision the next time it
+  reads a dataset's card. A visitor's Datasets gives the five built-in
+  datasets while the menu script is missing or stopped, after a few
+  seconds' wait, and you are told once.
 
 - **A script stops for good at 64 KB.** It reports a Stack-Heap
   Collision and does nothing more until it is reset, and a script with
@@ -464,7 +508,7 @@ each avatar used, and what steps 2 and 9 showed.
   the globe script rested at 62 KB and the other two at about 50, and
   every web reply goes to every script in the sphere with a handler for
   one. A copy a script makes counts too, until Second Life collects it.
-  So only the info script asks the node anything, the globe script
+  So in the sphere only the info script asks the node anything, the globe script
   shows a choice without checking it first, and the info script reads
   the node's card for a dataset, at most 2 KB with its text already
   plain, rather than the dataset's record. Before the card, `/9 memory`
@@ -479,11 +523,14 @@ each avatar used, and what steps 2 and 9 showed.
   another script should, and code added to any of them needs measuring
   again (step 9 of the smoke test). The dataset menu, added the same
   day, went into the visitors script first and stopped it at once with
-  a Stack-Heap Collision, so it is a fourth script, the menu script,
-  which reads the node itself. Nothing of the menu reaches the globe
-  script. The menu script's replies reach the info script, and the info
-  script's cards the menu script, each within 2 KB, and each sets the
-  other's aside at once. None of it is measured yet.
+  a Stack-Heap Collision, so it became a fourth script, the menu
+  script, which reads the node itself. In the sphere its pages then
+  reached the info script, which ran out of room reading the card of a
+  dataset chosen from the menu (Age of the Seafloor), so the menu
+  script is in a prim of its own: a reply reaches only the prim whose
+  script asked. What crosses between the prims is a link message of a
+  line or two: the node and the categories one way, a choice the other.
+  The new layout isn't measured yet.
 - **The info script checks a choice after it is shown.** For a second or
   two, a dataset the node doesn't have, or one the page can't show, is in every visitor's
   page address, and the page shows the live Earth while it fails. With
