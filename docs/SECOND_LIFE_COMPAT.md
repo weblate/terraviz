@@ -2072,8 +2072,9 @@ driven by its owner in chat, with none of the visitor controls.
     1. The info script reads the card in place of the record and the
        manifest: one request, or a second after a `retry`, about 4 KB
        held where the record took 6, and no JSON or HTML code of its
-       own. Done 26 October, 185 lines shorter; `/9 memory` in-world is
-       still to measure.
+       own. Done 26 October, 185 lines shorter; measured in-world on 27
+       October at 48 KB, at most 52 reading a card or answering About
+       (the exhibit README), before the menu's own steps below.
     2. The menu (built 27 October, on the design of 25 October, as a
        fourth script after the first build overflowed the visitors
        script in-world, and moved the same day into a prim of its own;
@@ -2150,8 +2151,11 @@ driven by its owner in chat, with none of the visitor controls.
          reading the node. A card is held whole while it is read, and
          the info script keeps 500 characters of an abstract that filled
          the card's rest, so the card now sends no more than those 500
-         ("Budgets", above), about 1 KB for that card. What that does to
-         the peak is still to measure. The visitors script opens it
+         ("Budgets", above), about 1 KB for that card. With cards that
+         size the info script read 51 KB, and **at most 57** reading
+         cards and answering About, 7 KB to spare where it had 1; the
+         menu script at most 51, the globe script still at most 60. The
+         visitors script opens it
          (`MSG_MENU_OPEN`, to the whole object since the scripts are in
          different prims) for a visitor who may act, handing it the
          node, which it reads from the globe script's state, and the

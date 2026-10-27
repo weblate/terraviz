@@ -552,8 +552,15 @@ each avatar used, and what steps 2 and 9 showed.
   reading the node for a menu. A card is held whole while it is read,
   and that card's abstract was 1,496 characters, of which the info
   script keeps 500, so the node now sends no more than those 500
-  characters, and that card is about 1 KB. What that does to the peak
-  isn't measured yet. So a script copied from an older build is the
+  characters, and that card is about 1 KB. Most cards are now about
+  that size, since most abstracts are longer than 500 characters. With
+  them `/9 memory` read, after a reset, cards read and About answered:
+  the globe script 57 KB, and at most 60 while showing a dataset; the
+  info script 51, and **at most 57** while reading a card or answering
+  About, 7 KB to spare where it had 1; the visitors script 52; the menu
+  script 44, and at most 51 while reading the node for a menu. The
+  globe script, with 4 KB to spare at its busiest, is again the one with
+  the least room. So a script copied from an older build is the
   first thing to rule out after a collision: open it and check the
   first lines say what this README's file does.
 - **The info script checks a choice after it is shown.** For a second or
