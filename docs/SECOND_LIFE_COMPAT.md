@@ -1885,8 +1885,11 @@ driven by its owner in chat, with none of the visitor controls.
       dataset published a moment ago is found, and one retracted a
       moment ago is a 404.
   - **`GET /api/exhibit/v1/datasets?tag=&offset=&limit=`, a page of
-    the menu:** `{ total, offset, limit, tag, datasets: [{ id, title
-    }] }`.
+    the menu:** `{ total, offset, limit, tag, list, datasets: [{ id,
+    title }] }`.
+    - `list` names the list the page came from, eight hex digits (below,
+      under what it costs the node). Added 27 October with the first
+      menu script.
     - The datasets the output page can show: an image or video format
       whose data reference the manifest can resolve. So no tours, no
       `peer:` rows, and no row whose reference and format disagree.
@@ -1977,14 +1980,16 @@ driven by its owner in chat, with none of the visitor controls.
     - So a retracted dataset can stay in pages for up to a minute, or
       five while reads fail, and pages from different isolates can come
       from lists as far apart, so a page can skip or repeat a row. Its
-      card is a 404 at once, and the output page refuses it. The menu
-      should learn to notice the change, and the API review set three
-      conditions for the field that will say so: a `list`, a short hash
-      of the matching datasets' ids in order rather than the page's
-      alone; 18 bytes of the page's budget held for it now
-      (`PAGE_RESERVED`), which nothing else may spend; and shipped
-      before or with the first menu script, since a rezzed one can't
-      learn it later.
+      card is a 404 at once, and the output page refuses it. The API
+      review set three conditions for the field that says so: a `list`,
+      a short hash of the matching datasets' ids in order rather than
+      the page's alone; 18 bytes of the page's budget held for it, which
+      nothing else could spend; and shipped before or with the first
+      menu script, since a rezzed one can't learn it later. It shipped
+      with that script on 27 October: FNV-1a over the ids, as eight hex
+      digits (`listHash`), spending exactly the 18 bytes. The ids alone,
+      so a retitled dataset that stays in place changes nothing. How the
+      menu uses it is under "The menu" in the steps below.
     - Cloudflare doesn't store a Function's reply at its edge, so
       `Cache-Control` saves the node nothing; it is for browsers:
       `public, max-age=60`, and `no-store` for a card with a `retry`

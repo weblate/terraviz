@@ -21,12 +21,12 @@ import {
   CARD_CAPS,
   CARD_SKELETON,
   exhibitList,
+  listHash,
   LIST_STALE_MS,
   LIST_TTL_MS,
   PAGE_BUDGET,
   PAGE_CAPS,
   PAGE_MAX_OFFSET,
-  PAGE_RESERVED,
   buildCard,
   buildTags,
   resetExhibitListForTests,
@@ -632,8 +632,36 @@ describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
     const sqlite = setup([{ id: ULID(1) }])
     const { status, body } = await page(sqlite)
     expect(status).toBe(200)
-    expect(Object.keys(body)).toEqual(['total', 'offset', 'limit', 'tag', 'datasets'])
-    expect(body).toEqual({ total: 1, offset: 0, limit: 9, tag: '', datasets: [{ id: ULID(1), title: `Title ${ULID(1)}` }] })
+    expect(Object.keys(body)).toEqual(['total', 'offset', 'limit', 'tag', 'list', 'datasets'])
+    expect(body).toEqual({
+      total: 1, offset: 0, limit: 9, tag: '', list: listHash([ULID(1)]),
+      datasets: [{ id: ULID(1), title: `Title ${ULID(1)}` }],
+    })
+    expect(body.list).toMatch(/^[0-9a-f]{8}$/)
+  })
+
+  it('names the list a page came from, the same on every page of it, and new when its ids change', async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({ id: ULID(i + 1), title: `T${String(i).padStart(2, '0')}`, tags: i < 4 ? ['Air'] : [] }))
+    let sqlite = setup(rows)
+    const first = (await page(sqlite)).body
+    // Every page of one list, past the end included, and the ids of every
+    // dataset that matched, in order, not only the page's.
+    expect((await page(sqlite, '?offset=9')).body.list).toBe(first.list)
+    expect((await page(sqlite, '?offset=50')).body.list).toBe(first.list)
+    expect(first.list).toBe(listHash(rows.map(r => r.id)))
+    // Each tag is a list of its own.
+    expect((await page(sqlite, '?tag=Air')).body.list).toBe(listHash(rows.slice(0, 4).map(r => r.id)))
+    // A title that changes without moving its dataset changes nothing.
+    sqlite = setup(rows.map((r, i) => (i === 3 ? { ...r, title: 'T03 again' } : r)))
+    resetExhibitListForTests()
+    expect((await page(sqlite)).body.list).toBe(first.list)
+    // A dataset gone, or one that moved, makes a new list.
+    sqlite = setup(rows.map((r, i) => (i === 3 ? { ...r, retracted: true } : r)))
+    resetExhibitListForTests()
+    expect((await page(sqlite)).body.list).not.toBe(first.list)
+    sqlite = setup(rows.map((r, i) => (i === 11 ? { ...r, weight: 5 } : r)))
+    resetExhibitListForTests()
+    expect((await page(sqlite)).body.list).not.toBe(first.list)
   })
 
   it('lists only what the output page can show, in the order browse lists it', async () => {
@@ -728,13 +756,15 @@ describe('GET /api/exhibit/v1/datasets, a page of the menu', () => {
     // nine ids and titles of the most bytes allowed.
     const n = Number('9'.repeat(PAGE_CAPS.number))
     const worst: ExhibitPage = {
-      total: n, offset: n, limit: n, tag: 'x'.repeat(PAGE_CAPS.tag),
+      total: n, offset: n, limit: n, tag: 'x'.repeat(PAGE_CAPS.tag), list: 'x'.repeat(PAGE_CAPS.list),
       datasets: Array.from({ length: 9 }, () => ({ id: 'x'.repeat(PAGE_CAPS.id), title: 'x'.repeat(PAGE_CAPS.title) })),
     }
-    // With room held back for the menu's change signal, which is to ship
-    // with the first menu script.
-    expect(byteLength(worst) + PAGE_RESERVED).toBeLessThanOrEqual(PAGE_BUDGET)
-    expect(PAGE_RESERVED).toBe(Buffer.byteLength(',"list":"0123abcd"'))
+    expect(byteLength(worst)).toBeLessThanOrEqual(PAGE_BUDGET)
+    // `list` spends the 18 bytes the API review held back for it before
+    // any script read a page.
+    expect(Buffer.byteLength(',"list":""') + PAGE_CAPS.list).toBe(18)
+    expect(listHash([])).toHaveLength(PAGE_CAPS.list)
+    expect(listHash(['x'.repeat(26)])).toHaveLength(PAGE_CAPS.list)
     expect(String(PAGE_MAX_OFFSET).length).toBeLessThanOrEqual(PAGE_CAPS.number)
   })
 

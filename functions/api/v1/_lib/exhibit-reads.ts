@@ -96,10 +96,11 @@ export const TAG_CAP = 40
 
 /**
  * A page's caps: the id a ULID's 26, a title the 48 a dialog can list nine
- * of, the echoed tag, and `total`, `offset` and `limit`, whole numbers of
- * at most six digits (`PAGE_MAX_OFFSET`, and a catalog under a million).
+ * of, the echoed tag, `total`, `offset` and `limit`, whole numbers of at
+ * most six digits (`PAGE_MAX_OFFSET`, and a catalog under a million), and
+ * `list`, eight hex digits (`listHash`).
  */
-export const PAGE_CAPS = { id: 26, title: 48, tag: TAG_CAP, number: 6 } as const
+export const PAGE_CAPS = { id: 26, title: 48, tag: TAG_CAP, number: 6, list: 8 } as const
 
 /** How long one isolate keeps its list. */
 export const LIST_TTL_MS = 60_000
@@ -108,12 +109,6 @@ export const LIST_TTL_MS = 60_000
  *  (`stale-while-revalidate=300`), since a dataset withdrawn meanwhile can
  *  stay in pages that long. */
 export const LIST_STALE_MS = 5 * 60_000
-
-/** Bytes of `PAGE_BUDGET` held back for the menu's change signal, a short
- *  hash of the matching list (`,"list":"<8 hex>"`), which is to ship with
- *  the first menu script (`docs/SECOND_LIFE_COMPAT.md`). Nothing else may
- *  spend them. */
-export const PAGE_RESERVED = 18
 
 /** Seconds a script waits before asking again for a length that didn't settle. */
 export const RETRY_SECONDS = 15
@@ -147,6 +142,7 @@ export interface ExhibitPage {
   offset: number
   limit: number
   tag: string
+  list: string
   datasets: Array<{ id: string; title: string }>
 }
 
@@ -404,6 +400,23 @@ export interface PageQuery {
   limit: number
 }
 
+/**
+ * Which list a page came from: FNV-1a over the ids of every dataset that
+ * matched, in order, as eight hex digits. Two pages of one tag that differ
+ * here came from different lists, so paging between them may have skipped
+ * or repeated a dataset, which the menu then says. The ids alone, so a
+ * changed title doesn't count as a changed list.
+ */
+export function listHash(ids: string[]): string {
+  let h = 0x811c9dc5
+  const s = ids.join('\n')
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
 export function buildPage(list: ListEntry[], query: PageQuery): ExhibitPage {
   const { tag } = query
   const matching = list.filter(e => e.showable && ID.test(e.row.id) && e.row.id.length <= PAGE_CAPS.id
@@ -413,6 +426,7 @@ export function buildPage(list: ListEntry[], query: PageQuery): ExhibitPage {
     offset: query.offset,
     limit: query.limit,
     tag,
+    list: listHash(matching.map(e => e.row.id)),
     datasets: matching.slice(query.offset, query.offset + query.limit).map(e => ({
       id: e.row.id,
       title: cutProse(exhibitPlainText(e.row.title), PAGE_CAPS.title).text,
