@@ -1645,7 +1645,8 @@ driven by its owner in chat, with none of the visitor controls.
   would hold a record while it also holds menus, notecards and visitor
   lists, so the work is split three ways:
   - **globe** owns the address, the clock and the media. It is the
-    smoke-test script's core, unchanged in what it writes, and it is
+    smoke-test script's core and writes the same keys, though since 27
+    October not always the same `t` (below), and it is
     the only script that changes what visitors see. It takes the
     owner's chat commands, as before, and control requests from the
     visitors script, and from the info script to put back a dataset the
@@ -1660,6 +1661,15 @@ driven by its owner in chat, with none of the visitor controls.
     and a third of a second a month, a second a month at 4×. So the
     floating text's date drifted from the picture on a globe left
     playing, and a pause landed off the frame every copy showed. The
+    `t` it writes on a pause, a move or a change of rate is now within
+    the loop, and a copy looping on a length of its own (one playing
+    the stream itself) is brought back into step by each. The exactness
+    rests on the card's length being the page's to the microsecond,
+    which holds for playlists that write lengths to six places, as
+    TerraViz's bundles and Vimeo's streams do; one written finer could
+    differ by half a microsecond a loop. A clip of 2147 s or more is
+    too long to count in microseconds and shows its range, its clock
+    kept in the float as before (the node's longest was 717 s). The
     arithmetic is tested by translating the scripts' own function into
     JavaScript, with every integer held to 32 bits.
   - **visitors** owns people. It turns touches into menus, keeps the
@@ -1788,7 +1798,11 @@ driven by its owner in chat, with none of the visitor controls.
       is kept to the millisecond), or `""`. `period` is an ISO 8601
       duration the node could parse, or `""`.
     - `exactDuration` is the clip's exact length in seconds, the one
-      the page loops on, or 0 when the node has none. **0 means only
+      the page loops on, or 0 when the node has none. It is written as
+      a plain decimal of at most six places, never with an exponent,
+      since the info script reads its digits into whole microseconds
+      (since 27 October), and a test on the node holds it to that form.
+      **0 means only
       that**: which rows have a length is the node's to widen, and
       neither value says where a video is hosted. Today the length is
       read from the stream's own playlists, for an HLS bundle the node

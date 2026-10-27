@@ -603,14 +603,18 @@ card(string b, integer cut)
     string p = value(b, "period");
     period(p);
     gFrames = p == "P1D" || p == "P1M" || p == "P1Y";
-    // The clip's exact length in whole microseconds, as the node rounds it,
-    // or 0 when the node has none, as for a single file. One of 2147 s or
-    // more wouldn't fit an integer; the node's longest is 717. The globe
-    // script is told it too, to keep the clock round the loop.
+    // The clip's exact length in whole microseconds, read digit by digit
+    // from the plain decimal the node writes to six places, or 0 when the
+    // node has none, as for a single file. Anything else reads as none: a
+    // sign ("-0" reads as 0), an exponent, or 2147 s or more, which
+    // wouldn't fit an integer and shows the range (the node's longest was
+    // 717 s in October 2026). The globe script is told it too, to keep the
+    // clock round the loop.
     list x = llParseString2List(value(b, "exactDuration"), ["."], []);
     integer w = (integer)llList2String(x, 0);
     gLen = 0;
-    if (w >= 0 && w < 2147) gLen = w * 1000000 + (integer)llGetSubString(llList2String(x, 1) + "000000", 0, 5);
+    if (w >= 0 && w < 2147 && llList2String(x, 0) == (string)w)
+        gLen = w * 1000000 + (integer)llGetSubString(llList2String(x, 1) + "000000", 0, 5);
     if (gLen > 0) llMessageLinked(LINK_THIS, MSG_CONTROL, "length " + (string)gLen + " " + gDataset, NULL_KEY);
     // The node's read of the length didn't settle, and it says when to ask
     // again. The rest of the card stands meanwhile, showing the range.

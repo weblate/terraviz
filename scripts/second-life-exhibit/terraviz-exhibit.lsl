@@ -32,8 +32,10 @@
 // asks it for changes, as the info script does to put back a dataset the
 // page can't show, and it tells the other two what the globe shows after
 // each one. The info script also tells it how long the clip is, so that a
-// pause, a nudge or a change of rate lands on the frame every copy shows
-// however long the globe has played (position()).
+// pause, a nudge or a change of rate lands on the frame the copies show
+// however long the globe has played (position()): every copy that loops
+// on the stream's playlist total, and one looping on a length of its own
+// is brought back into step.
 //
 // Changes go after the address's #, which a web browser applies without
 // reloading the page. Firestorm 7.2.4 was seen to do the same in-world.
@@ -238,7 +240,7 @@ reanchor()
 // 10 ms and a month's only to a third of a second.
 float position(list t)
 {
-    if (gLen && gLenFor == gDataset) return (float)loopUs(t, gLen) / 1000000.0;
+    if (gLen > 0 && gLenFor == gDataset) return (float)loopUs(t, gLen) / 1000000.0;
     if (gPaused) return gPos;
     return gPos + since(t) * gRate;
 }
@@ -292,8 +294,9 @@ float degrees(float r)
 
 // A plain decimal with at most three places, as the page reads numbers:
 // no exponent, no padding. LSL's own (string) gives six places. A
-// float's fraction coarsens as it grows, to about 8 ms once a clip has
-// played for a day at full speed, which the page does not notice.
+// float's fraction coarsens as it grows: the position, kept round the loop
+// once the clip's length is known, holds to tens of microseconds, and
+// unwrapped, without one, to about 8 ms after a day's play at full speed.
 string num(float f)
 {
     string sign = "";
@@ -713,6 +716,9 @@ act(key who, integer owner, string msg)
     }
     if (cmd == "jump" || cmd == "restart" || cmd == "nudge")
     {
+        // One reading of the clock for where the clip is and the new anchor,
+        // as in reanchor(), so the clip skips nothing between them.
+        list t = now();
         float to = 0.0;
         if (cmd == "jump")
         {
@@ -726,19 +732,19 @@ act(key who, integer owner, string msg)
         else if (cmd == "nudge")
         {
             if (!isNumber(arg) || llFabs((float)arg) > NUDGE_MAX) { tell(who, "Nudge by how many seconds?"); return; }
-            // From where the clip is now. Past its end the page wraps round
-            // it. Back past its start goes round to the loop's end, as the
-            // clip plays, once its length is known; before that, to the start.
-            to = position(now()) + (float)arg;
-            if (to < 0.0)
-            {
-                float len = (float)gLen / 1000000.0;
-                if (gLen && gLenFor == gDataset) to -= len * (float)llFloor(to / len);
-                else to = 0.0;
-            }
+            to = position(t) + (float)arg;
         }
+        // Round the loop once its length is known, as the page plays it,
+        // so a copy on a period of its own lands in step with the rest too:
+        // back past the start goes round to the loop's end. A float holds a
+        // jump to 100000 s wrapped to a few milliseconds. Before the length
+        // is known, never before the start, and past the end the page wraps.
+        float len = (float)gLen / 1000000.0;
+        if (gLen > 0 && gLenFor == gDataset) to -= len * (float)llFloor(to / len);
+        else if (to < 0.0) to = 0.0;
         gPos = to;
-        anchor();
+        gAtS = llList2Integer(t, 0);
+        gAtMs = llList2Integer(t, 1);
         gBy = who;
         commit(saved);
         return;
@@ -901,8 +907,14 @@ act(key who, integer owner, string msg)
     {
         string what = "the live Earth";
         if (gDataset != "")
-            what = gTitle + " at " + num(position(now())) + " s, " + llList2String(["playing", "paused"], gPaused)
+        {
+            // The clip's length, once the info script has said it, which is
+            // also how the owner tells the clock is kept round the loop.
+            string of = "";
+            if (gLen > 0 && gLenFor == gDataset) of = " of " + num((float)gLen / 1000000.0);
+            what = gTitle + " at " + num(position(now())) + of + " s, " + llList2String(["playing", "paused"], gPaused)
                 + ", rate " + num(gRate);
+        }
         tell(who, "Showing " + what + ". Spin " + num(gSpin) + " degrees a second. Address: " + address());
         return;
     }

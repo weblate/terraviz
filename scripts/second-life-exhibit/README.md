@@ -182,12 +182,17 @@ an image, it shows the dataset's range instead. The length is the one
 the node reads from the stream's own playlists, its own HLS bundle's or
 a Vimeo stream's, such as Sea temperature's: Vimeo's API gives whole
 seconds, which isn't quite the stream's, and a date worked out from it
-would drift from the picture with every loop. Every visitor's copy of
-the page loops on that same length, read from the stream it plays. The
+would drift from the picture with every loop. A visitor's copy of the
+page that reads the stream's playlist, through hls.js, loops on that
+same length; one playing the stream itself, or a single file, loops on
+the video's own, which can differ by a few hundredths of a second. The
 info script tells the globe script the length too, and both count the
 clip in whole microseconds round the loop, so the date keeps to the
-picture however long the globe is left playing. A
-video with no playlist to read, a single file, shows its range. When
+picture however long the globe is left playing, and a pause, a move or
+a change of rate puts a copy on a length of its own back in step. A
+video with no playlist to read, a single file, shows its range, and so
+does a clip of 2147 s or more, too long for the scripts to count in
+microseconds (the node's longest was 717 s in October 2026). When
 the node couldn't read
 the length in time, the card says when to ask again, and the info
 script does. A card the node fails to send, an error or a
@@ -436,12 +441,16 @@ each avatar used, and what steps 2 and 9 showed.
   Two names that cut alike answer as the first.
 - **The date is UTC**, and follows the clip as the region's clock says:
   a second or so from the picture while playing, exact when paused. It
-  doesn't drift further on a clip left looping, since the scripts and
-  every viewer's page loop on the one length the node reads, and the
-  scripts count it in whole numbers. A video with no length to read
-  shows its range, and its clock, kept in a float, is about 10 ms out
-  after a day of play and a third of a second after a month, which only
-  a pause shows.
+  doesn't drift further on a clip left looping, since the scripts count
+  it in whole numbers round the one length the node reads, which is the
+  length a viewer's page loops on when it plays the stream through
+  hls.js. That rests on the node's length matching the page's to the
+  microsecond, which holds for a playlist that writes its segments'
+  lengths to six places, as TerraViz's own bundles and Vimeo's streams
+  do. A video with no length to read, or one of 2147 s or more, shows
+  its range, and its clock, kept in a float, is about 10 ms out after a
+  day of play and a third of a second after a month, which a pause, a
+  move or a change of rate shows.
 - **Long text is cut.** The node cuts what doesn't fit a card at a
   word, ending `...`: a credit past 200 bytes, a licence statement past
   400 with its address, and the abstract to what the rest of the card

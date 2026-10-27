@@ -27,6 +27,7 @@ import {
   PAGE_CAPS,
   PAGE_MAX_OFFSET,
   PAGE_RESERVED,
+  buildCard,
   buildTags,
   resetExhibitListForTests,
   TAG_CAP,
@@ -391,6 +392,24 @@ describe('GET /api/exhibit/v1/datasets/{id}, the card', () => {
     expect(body.exactDuration).toBeCloseTo(6.2, 6)
     expect(body.retry).toBe(0)
     expect(waitUntil).toHaveBeenCalledTimes(1)
+  })
+
+  it('writes the length as a plain decimal of at most six places, which a script reads digit by digit', async () => {
+    // The info script reads exactDuration's whole and fractional digits
+    // into microseconds (scripts/second-life-exhibit), so an exponent or a
+    // seventh place would be misread, by copies that can't be updated.
+    const sqlite = setup([{ id: ULID(1), data_ref: 'r2:videos/DS/U/master.m3u8' }])
+    const [entry] = await exhibitList(asD1(sqlite))
+    const lengths = [1e-6, 0.0000014, 0.1, 1.7, 4.333333333, 12.1, 143.7666721, 717.0333333, 2146.9999994,
+      123456.789012345, 999_999_999.9999994]
+    for (let i = 0; i < 200; i++) lengths.push(10 ** (Math.random() * 15 - 6))
+    for (const seconds of lengths) {
+      const text = JSON.stringify(buildCard(entry, { seconds, settled: true }))
+      const written = text.match(/"exactDuration":([^,}]+)/)?.[1]
+      expect(written, String(seconds)).toMatch(/^(0|[1-9]\d*)(\.\d{1,6})?$/)
+      // Rounded to the microsecond: half of one off, and a double's own error.
+      expect(Math.abs(Number(written) - (seconds < 1e9 ? seconds : 0))).toBeLessThanOrEqual(5e-7 + seconds * 1e-15)
+    }
   })
 
   it('reads no length for a row the page can\'t show', async () => {
